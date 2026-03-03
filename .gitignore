@@ -1,0 +1,41 @@
+# 環境與機密
+.env
+*.env
+!.env.example
+
+# 資料庫（可選：若不想把 .db 上傳就保留）
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+.env.local
+
+# IDE / 系統
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 建置 / 暫存
+*.egg-info/
+dist/
+build/
+*.log
