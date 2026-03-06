@@ -6,6 +6,14 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Cloud 上 Token 在 st.secrets，報價服務讀 os.environ，先同步（直接開此頁時 app.py 可能未跑）
+try:
+    if hasattr(st, "secrets") and st.secrets.get("FINMIND_TOKEN"):
+        os.environ.setdefault("FINMIND_TOKEN", str(st.secrets["FINMIND_TOKEN"]).strip())
+except Exception:
+    pass
+
 from db.database import get_session
 from db.models import Trade, StockMaster
 from services.price_service import get_quote_cached, fetch_stock_list_cached, clear_quote_cache
