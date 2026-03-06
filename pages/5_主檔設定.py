@@ -99,5 +99,6 @@ if st.button("同步股票列表（FinMind）"):
             sess.close()
 
 st.subheader("即時股價 API")
-st.caption("FINMIND_TOKEN：有設定則使用 FinMind，否則使用 Mock。FUGLE_API_KEY：預留。")
-st.code("FINMIND_TOKEN=your_token\nFUGLE_API_KEY=your_key", language="bash")
+st.markdown("**若要顯示正確即時／收盤價，必須設定 FINMIND_TOKEN。** 未設定時報價卡會顯示「模擬報價」（例如 2330 固定 580），僅供測試。")
+st.caption("FINMIND_TOKEN：至 https://finmindtrade.com 註冊並取得 API token，設為環境變數或下方 Secrets。")
+st.code("FINMIND_TOKEN=your_token\nFUGLE_API_KEY=your_key  # 預留", language="bash")
