@@ -99,7 +99,18 @@ if st.button("同步股票列表（FinMind）"):
             sess.close()
 
 st.subheader("即時股價 API")
+try:
+    secret_token = st.secrets.get("FINMIND_TOKEN", "") if hasattr(st, "secrets") else ""
+except Exception:
+    secret_token = ""
+token_set = bool(os.environ.get("FINMIND_TOKEN") or secret_token)
+if token_set:
+    st.success("**FINMIND_TOKEN：已設定 ✓** 報價應為 FinMind 真實資料，請到「交易輸入」按「更新即時現價」確認。")
+else:
+    st.warning("**FINMIND_TOKEN：未設定 ✗** 目前報價為模擬數據（例如 2330 固定 580）。")
 st.markdown("**若要顯示正確即時／收盤價，必須設定 FINMIND_TOKEN。** 未設定時報價卡會顯示「模擬報價」（例如 2330 固定 580），僅供測試。")
+st.caption("**若您是在 Streamlit Cloud 上執行**：Cloud 不會讀取 repo 裡的 .env，請務必到 App → **Settings** → **Secrets** 新增：`FINMIND_TOKEN = \"你的token\"`，存檔後等重新部署。")
+st.caption("本機執行：在專案根目錄放 `.env`，內容為 `FINMIND_TOKEN=你的token`，並**重新啟動** Streamlit。")
 st.caption("詳細步驟請見專案中的 **FinMind_Token取得步驟.md**，或依下列簡述操作：")
 st.markdown("""
 1. 打開 **https://finmindtrade.com** → 點「登入」或「註冊」  
