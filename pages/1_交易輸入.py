@@ -67,6 +67,10 @@ with col_right:
         master = next((s for s in stocks if s.stock_id == stock_key), None)
         if q:
             st.metric("現價", f"{q['price']:.2f}", f"{q['change']:+.2f} ({q['change_pct']:+.2f}%)")
+            if q.get("prev_close") is not None:
+                st.caption(f"昨收：{q['prev_close']:.2f}")
+            if q.get("limit_up") is not None and q.get("limit_down") is not None:
+                st.caption(f"漲停：{q['limit_up']:.2f}　跌停：{q['limit_down']:.2f}")
         else:
             st.info("無法取得報價（使用 Mock 或檢查 FINMIND_TOKEN）")
         st.caption(f"名稱：{master.name if master else '-'}")
