@@ -151,13 +151,15 @@ class MockPriceProvider(PriceProvider):
 
     def get_quote(self, stock_id: str) -> Optional[dict]:
         p = self._mock_prices.get(stock_id, 100.0)
-        prev = p - 5.0
+        prev = p - 5.0  # 昨收，與現價有差距才合理
         limit_up, limit_down = _compute_limit_prices(prev, is_etf=False)
+        chg = p - prev
+        chg_pct = (chg / prev * 100) if prev else 0.0
         return {
             "name": stock_id,
             "price": p,
-            "change": 0.0,
-            "change_pct": 0.0,
+            "change": chg,
+            "change_pct": chg_pct,
             "prev_close": prev,
             "limit_up": limit_up,
             "limit_down": limit_down,
@@ -182,6 +184,15 @@ def get_quote_cached(stock_id: str) -> Optional[dict]:
     if data:
         _price_cache[stock_id] = (data, now)
     return data
+
+
+def clear_quote_cache(stock_id: Optional[str] = None) -> None:
+    """清除報價快取：指定 stock_id 只清該檔，None 則清全部。用於「更新即時現價」按鈕。"""
+    global _price_cache
+    if stock_id is None:
+        _price_cache.clear()
+    elif stock_id in _price_cache:
+        del _price_cache[stock_id]
 
 
 # ---------- 股票列表 API ----------
