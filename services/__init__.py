@@ -5,6 +5,7 @@ from .price_service import (
     fetch_stock_list_finmind,
     fetch_stock_list_cached,
     clear_quote_cache,
+    get_finmind_debug,
 )
 from .pnl_engine import compute_matches, Lot
 
@@ -14,6 +15,7 @@ __all__ = [
     "fetch_stock_list_finmind",
     "fetch_stock_list_cached",
     "clear_quote_cache",
+    "get_finmind_debug",
     "compute_matches",
     "Lot",
 ]
