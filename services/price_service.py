@@ -3,6 +3,7 @@
 import os
 import time
 from abc import ABC, abstractmethod
+from datetime import date
 from typing import List, Optional
 
 _price_cache = {}
@@ -30,16 +31,18 @@ class FinMindPriceProvider(PriceProvider):
         self.token = token or os.environ.get("FINMIND_TOKEN")
 
     def _fetch_daily_price(self, stock_id: str, last_n_days: int = 5) -> List[dict]:
-        """取得最近幾日收盤，用於現價與漲跌停計算"""
+        """取得最近幾日收盤，用於現價與漲跌停計算。盡量請求到今日。"""
         if not self.token:
             return []
         try:
             import requests
             url = "https://api.finmindtrade.com/api/v4/data"
+            today = date.today().isoformat()
             params = {
                 "dataset": "TaiwanStockPrice",
                 "data_id": stock_id,
                 "token": self.token,
+                "end_date": today,
             }
             r = requests.get(url, params=params, timeout=8)
             if r.status_code != 200:
@@ -47,7 +50,8 @@ class FinMindPriceProvider(PriceProvider):
             data = r.json()
             if not data.get("data"):
                 return []
-            return data["data"][-last_n_days:]
+            rows = data["data"]
+            return rows[-last_n_days:] if len(rows) >= last_n_days else rows
         except Exception:
             return []
 
@@ -98,6 +102,8 @@ class FinMindPriceProvider(PriceProvider):
                     "open": open_p,
                     "high": float(tick.get("high", close)),
                     "low": float(tick.get("low", close)),
+                    "source": "finmind",
+                    "data_date": str(tick.get("date", ""))[:10],
                 }
             daily = self._fetch_daily_price(stock_id, 5)
             if not daily:
@@ -119,6 +125,8 @@ class FinMindPriceProvider(PriceProvider):
                 "open": open_p,
                 "high": float(last.get("max", close)),
                 "low": float(last.get("min", close)),
+                "source": "finmind",
+                "data_date": str(last.get("date", ""))[:10],
             }
         except Exception:
             return None
@@ -163,6 +171,7 @@ class MockPriceProvider(PriceProvider):
             "prev_close": prev,
             "limit_up": limit_up,
             "limit_down": limit_down,
+            "source": "mock",
         }
 
 
