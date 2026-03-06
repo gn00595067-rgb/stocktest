@@ -52,8 +52,33 @@ class FinMindPriceProvider(PriceProvider):
                 return []
             rows = data["data"]
             return rows[-last_n_days:] if len(rows) >= last_n_days else rows
-        except Exception:
+        except Exception as e:
             return []
+
+    def _fetch_daily_price_debug(self, stock_id: str) -> tuple:
+        """同 _fetch_daily_price，但回傳 (rows, error_message)。"""
+        if not self.token:
+            return [], "FINMIND_TOKEN 未設定"
+        try:
+            import requests
+            url = "https://api.finmindtrade.com/api/v4/data"
+            today = date.today().isoformat()
+            params = {
+                "dataset": "TaiwanStockPrice",
+                "data_id": stock_id,
+                "token": self.token,
+                "end_date": today,
+            }
+            r = requests.get(url, params=params, timeout=8)
+            if r.status_code != 200:
+                return [], f"API 狀態碼 {r.status_code}"
+            data = r.json()
+            if not data.get("data"):
+                return [], "API 回傳無資料（可能代號錯誤或無該日資料）"
+            rows = data["data"]
+            return rows, None
+        except Exception as e:
+            return [], str(e)
 
     def _fetch_realtime_tick(self, stock_id: str) -> Optional[dict]:
         """FinMind 即時 tick（需 sponsor，Bearer token）"""
@@ -193,6 +218,30 @@ def get_quote_cached(stock_id: str) -> Optional[dict]:
     if data:
         _price_cache[stock_id] = (data, now)
     return data
+
+
+def get_finmind_debug(stock_id: str = "2330") -> dict:
+    """
+    除錯用：回傳 Token 是否讀到、以及呼叫 FinMind API 的結果。
+    {"token_set": bool, "error": str or None, "message": str}
+    """
+    token = os.environ.get("FINMIND_TOKEN")
+    if not token or not str(token).strip():
+        return {"token_set": False, "error": "FINMIND_TOKEN 未讀到", "message": "請確認主檔/設定顯示「已設定」，或 Cloud 的 Secrets 已存檔並重新部署。"}
+    try:
+        import requests
+        url = "https://api.finmindtrade.com/api/v4/data"
+        today = date.today().isoformat()
+        params = {"dataset": "TaiwanStockPrice", "data_id": stock_id, "token": token, "end_date": today}
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            return {"token_set": True, "error": f"API 狀態碼 {r.status_code}", "message": "若為 401 表示 Token 無效或過期，請到 FinMind 重新複製或產生新 Token。"}
+        data = r.json()
+        if not data.get("data"):
+            return {"token_set": True, "error": "API 回傳無資料", "message": f"可能股票 {stock_id} 無該日資料或代號錯誤。"}
+        return {"token_set": True, "error": None, "message": "FinMind 連線正常"}
+    except Exception as e:
+        return {"token_set": True, "error": str(e), "message": "網路或連線異常，請稍後再試。"}
 
 
 def clear_quote_cache(stock_id: Optional[str] = None) -> None:
