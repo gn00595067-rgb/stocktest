@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from db.database import get_session
 from db.models import StockMaster
 from db.seed_data import run_seed
+from services.price_service import fetch_stock_list_finmind
 
 st.set_page_config(page_title="主檔/設定", layout="wide")
 st.title("主檔/設定")
@@ -65,6 +66,37 @@ st.subheader("種子資料")
 if st.button("載入種子資料（2330/2317/3706 等）"):
     run_seed()
     st.success("種子資料已寫入")
+
+st.subheader("從 FinMind 同步股票列表")
+st.caption("從 FinMind TaiwanStockInfo API 取得上市櫃清單，寫入 stock_master。需設定 FINMIND_TOKEN（可選，v3 免 token 但較慢）。")
+if st.button("同步股票列表（FinMind）"):
+    lst = fetch_stock_list_finmind()
+    if not lst:
+        st.warning("無法取得清單（請檢查網路或 FINMIND_TOKEN）")
+    else:
+        sess = get_session()
+        try:
+            for item in lst:
+                existing = sess.query(StockMaster).filter(StockMaster.stock_id == item["stock_id"]).first()
+                if existing:
+                    existing.name = item["name"]
+                    existing.industry_name = item.get("industry_name") or existing.industry_name
+                    existing.market = item.get("market") or existing.market
+                    existing.exchange = item.get("exchange") or existing.exchange
+                    existing.is_etf = item.get("is_etf", False)
+                else:
+                    sess.add(StockMaster(
+                        stock_id=item["stock_id"],
+                        name=item["name"],
+                        industry_name=item.get("industry_name"),
+                        market=item.get("market", "TW"),
+                        exchange=item.get("exchange", "TWSE"),
+                        is_etf=item.get("is_etf", False),
+                    ))
+            sess.commit()
+            st.success(f"已同步 {len(lst)} 筆股票至 stock_master")
+        finally:
+            sess.close()
 
 st.subheader("即時股價 API")
 st.caption("FINMIND_TOKEN：有設定則使用 FinMind，否則使用 Mock。FUGLE_API_KEY：預留。")
