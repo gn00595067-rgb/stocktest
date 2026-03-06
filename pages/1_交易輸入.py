@@ -131,8 +131,13 @@ with col_right:
                 st.caption(f"昨收：{q['prev_close']:.2f}")
             if q.get("limit_up") is not None and q.get("limit_down") is not None:
                 st.caption(f"漲停：{q['limit_up']:.2f}　跌停：{q['limit_down']:.2f}")
+            src = q.get("source", "")
+            if src == "mock":
+                st.warning("⚠️ 目前為**模擬報價**，非真實行情。請至「主檔/設定」設定 **FINMIND_TOKEN** 以取得正確即時價。")
+            elif src == "finmind":
+                st.caption(f"資料來源：FinMind" + (f"（{q.get('data_date', '')}）" if q.get("data_date") else ""))
         else:
-            st.info("無法取得報價（使用 Mock 或檢查 FINMIND_TOKEN）")
+            st.info("無法取得報價。請至「主檔/設定」設定 **FINMIND_TOKEN** 並按「更新即時現價」。")
         st.caption(f"名稱：{master.name if master else '-'}")
         st.caption(f"產業：{master.industry_name if master else '-'}")
 
