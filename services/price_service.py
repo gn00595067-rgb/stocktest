@@ -38,13 +38,16 @@ class FinMindPriceProvider(PriceProvider):
             import requests
             url = "https://api.finmindtrade.com/api/v4/data"
             today = date.today().isoformat()
+            from datetime import timedelta
+            start = (date.today() - timedelta(days=30)).isoformat()
             params = {
                 "dataset": "TaiwanStockPrice",
                 "data_id": stock_id,
-                "token": self.token,
+                "start_date": start,
                 "end_date": today,
             }
-            r = requests.get(url, params=params, timeout=8)
+            headers = {"Authorization": f"Bearer {self.token}"}
+            r = requests.get(url, params=params, headers=headers, timeout=8)
             if r.status_code != 200:
                 return []
             data = r.json()
@@ -52,7 +55,7 @@ class FinMindPriceProvider(PriceProvider):
                 return []
             rows = data["data"]
             return rows[-last_n_days:] if len(rows) >= last_n_days else rows
-        except Exception as e:
+        except Exception:
             return []
 
     def _fetch_daily_price_debug(self, stock_id: str) -> tuple:
@@ -61,15 +64,18 @@ class FinMindPriceProvider(PriceProvider):
             return [], "FINMIND_TOKEN 未設定"
         try:
             import requests
+            from datetime import timedelta
             url = "https://api.finmindtrade.com/api/v4/data"
             today = date.today().isoformat()
+            start = (date.today() - timedelta(days=30)).isoformat()
             params = {
                 "dataset": "TaiwanStockPrice",
                 "data_id": stock_id,
-                "token": self.token,
+                "start_date": start,
                 "end_date": today,
             }
-            r = requests.get(url, params=params, timeout=8)
+            headers = {"Authorization": f"Bearer {self.token}"}
+            r = requests.get(url, params=params, headers=headers, timeout=8)
             if r.status_code != 200:
                 return [], f"API 狀態碼 {r.status_code}"
             data = r.json()
@@ -230,10 +236,13 @@ def get_finmind_debug(stock_id: str = "2330") -> dict:
         return {"token_set": False, "error": "FINMIND_TOKEN 未讀到", "message": "請確認主檔/設定顯示「已設定」，或 Cloud 的 Secrets 已存檔並重新部署。"}
     try:
         import requests
+        from datetime import timedelta
         url = "https://api.finmindtrade.com/api/v4/data"
         today = date.today().isoformat()
-        params = {"dataset": "TaiwanStockPrice", "data_id": stock_id, "token": token, "end_date": today}
-        r = requests.get(url, params=params, timeout=10)
+        start = (date.today() - timedelta(days=30)).isoformat()
+        params = {"dataset": "TaiwanStockPrice", "data_id": stock_id, "start_date": start, "end_date": today}
+        headers = {"Authorization": f"Bearer {token}"}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
         if r.status_code != 200:
             return {"token_set": True, "error": f"API 狀態碼 {r.status_code}", "message": "若為 401 表示 Token 無效或過期，請到 FinMind 重新複製或產生新 Token。"}
         data = r.json()
@@ -264,8 +273,9 @@ def fetch_stock_list_finmind(token: str = None) -> List[dict]:
     try:
         import requests
         url = "https://api.finmindtrade.com/api/v4/data"
-        params = {"dataset": "TaiwanStockInfo", "token": token} if token else {"dataset": "TaiwanStockInfo"}
-        r = requests.get(url, params=params, timeout=30)
+        params = {"dataset": "TaiwanStockInfo"}
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        r = requests.get(url, params=params, headers=headers or None, timeout=30)
         if r.status_code != 200:
             url3 = "https://api.finmindtrade.com/api/v3/data"
             r = requests.get(url3, params={"dataset": "TaiwanStockInfo"}, timeout=30)
