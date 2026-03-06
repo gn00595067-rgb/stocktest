@@ -16,7 +16,7 @@ except Exception:
 
 from db.database import get_session
 from db.models import Trade, StockMaster
-from services.price_service import get_quote_cached, fetch_stock_list_cached, clear_quote_cache
+from services.price_service import get_quote_cached, fetch_stock_list_cached, clear_quote_cache, get_finmind_debug
 
 st.set_page_config(page_title="交易輸入", layout="wide")
 st.title("交易輸入（仿奇摩）")
@@ -145,7 +145,15 @@ with col_right:
             elif src == "finmind":
                 st.caption(f"資料來源：FinMind" + (f"（{q.get('data_date', '')}）" if q.get("data_date") else ""))
         else:
+            debug = get_finmind_debug(stock_key)
             st.info("無法取得報價。請至「主檔/設定」設定 **FINMIND_TOKEN** 並按「更新即時現價」。")
+            with st.expander("🔧 除錯資訊（點開查看原因）", expanded=True):
+                if not debug.get("token_set"):
+                    st.error("**Token 未讀到** — " + (debug.get("message") or ""))
+                    st.caption("若你已在 Cloud Secrets 設定，請確認：1) 變數名為 FINMIND_TOKEN  2) 存檔後等約 1 分鐘  3) 重新整理頁面或重新部署 App")
+                else:
+                    st.warning("**Token 已讀到，但 API 回傳錯誤** — " + (debug.get("error") or ""))
+                    st.caption(debug.get("message") or "")
         st.caption(f"名稱：{master.name if master else '-'}")
         st.caption(f"產業：{master.industry_name if master else '-'}")
 
