@@ -100,5 +100,13 @@ if st.button("同步股票列表（FinMind）"):
 
 st.subheader("即時股價 API")
 st.markdown("**若要顯示正確即時／收盤價，必須設定 FINMIND_TOKEN。** 未設定時報價卡會顯示「模擬報價」（例如 2330 固定 580），僅供測試。")
-st.caption("FINMIND_TOKEN：至 https://finmindtrade.com 註冊並取得 API token，設為環境變數或下方 Secrets。")
+st.caption("詳細步驟請見專案中的 **FinMind_Token取得步驟.md**，或依下列簡述操作：")
+st.markdown("""
+1. 打開 **https://finmindtrade.com** → 點「登入」或「註冊」  
+2. **註冊**：填信箱、密碼 → 收信點驗證連結  
+3. **登入**：https://finmindtrade.com/analysis/#/account/login  
+4. 登入後進入 **使用者資訊／帳戶／API** 頁面，複製 **API Token**  
+5. 本機：在專案 `.env` 加上 `FINMIND_TOKEN=你的token`，重啟 Streamlit  
+   Cloud：App → Settings → Secrets → 新增 `FINMIND_TOKEN = "你的token"`  
+""")
 st.code("FINMIND_TOKEN=your_token\nFUGLE_API_KEY=your_key  # 預留", language="bash")
