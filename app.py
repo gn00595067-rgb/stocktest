@@ -2,7 +2,10 @@
 """台股股價分析系統 - Streamlit 主入口"""
 import os
 from dotenv import load_dotenv
-load_dotenv()
+
+# 從專案根目錄載入 .env（避免因啟動目錄不同而讀不到）
+_project_root = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_project_root, ".env"))
 
 import streamlit as st
 
