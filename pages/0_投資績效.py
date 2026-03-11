@@ -99,8 +99,12 @@ def _inject_kpi_style():
         border: 1px solid #e9ecef;
         border-radius: 12px;
         padding: 1rem 1.25rem;
-        margin-bottom: 0.5rem;
+        margin-bottom: 0.75rem;
         box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        min-height: 7.5rem;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
     }
     .portfolio-kpi-label { font-size: 0.8rem; color: #6c757d; margin-bottom: 0.25rem; }
     .portfolio-kpi-value { font-size: 1.35rem; font-weight: 700; }
@@ -271,10 +275,11 @@ def _pnl_color(val):
         return ""
 
 
-# ---------- KPI 字卡（與 庫存損益 同風格） ----------
+# ---------- KPI 字卡（與 庫存損益 同風格，統一 4 欄排列、同高同距） ----------
 _inject_kpi_style()
 st.subheader("關鍵績效")
 
+# 統一每列 4 欄，卡片同寬、同高（CSS min-height）、間距一致
 # 第一列：總損益、已實現、未實現、勝率
 row1_1, row1_2, row1_3, row1_4 = st.columns(4)
 with row1_1:
@@ -306,8 +311,8 @@ with row1_4:
         <div class="portfolio-kpi-sub">獲利 {win_stocks} 支 · 虧損 {loss_stocks} 支</div>
     </div>""", unsafe_allow_html=True)
 
-# 第二列：最佳個股、最差個股
-row2_1, row2_2 = st.columns(2)
+# 第二列：最佳個股、空、最差個股、空（維持 4 欄對齊）
+row2_1, row2_2, row2_3, row2_4 = st.columns(4)
 with row2_1:
     best_label = str(best_row["label"]) if best_row is not None else "—"
     best_val = best_row[pnl_col] if best_row is not None else 0
@@ -319,6 +324,8 @@ with row2_1:
         <div class="portfolio-kpi-value {cls}">{_fmt_big(best_val)}</div>
     </div>""", unsafe_allow_html=True)
 with row2_2:
+    st.markdown("""<div style="min-height: 7.5rem; margin-bottom: 0.75rem;"></div>""", unsafe_allow_html=True)
+with row2_3:
     worst_label = str(worst_row["label"]) if worst_row is not None else "—"
     worst_val = worst_row[pnl_col] if worst_row is not None else 0
     cls = _pnl_color(worst_val)
@@ -328,9 +335,11 @@ with row2_2:
         <div class="portfolio-kpi-sublabel">{worst_label}</div>
         <div class="portfolio-kpi-value {cls}">{_fmt_big(worst_val)}</div>
     </div>""", unsafe_allow_html=True)
+with row2_4:
+    st.markdown("""<div style="min-height: 7.5rem; margin-bottom: 0.75rem;"></div>""", unsafe_allow_html=True)
 
-# 第三列：盈虧比、最大回撤、最大單筆
-row3_1, row3_2, row3_3 = st.columns(3)
+# 第三列：盈虧比、最大回撤、最大單筆、空（維持 4 欄對齊）
+row3_1, row3_2, row3_3, row3_4 = st.columns(4)
 with row3_1:
     st.markdown(f"""
     <div class="portfolio-kpi-card">
@@ -351,6 +360,8 @@ with row3_3:
         <div class="portfolio-kpi-value portfolio-kpi-value--positive">盈 {_fmt_big(max_single)}</div>
         <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {_fmt_big(min_single)}</div>
     </div>""", unsafe_allow_html=True)
+with row3_4:
+    st.markdown("""<div style="min-height: 7.5rem; margin-bottom: 0.75rem;"></div>""", unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
