@@ -25,6 +25,71 @@ from services.position_cost import compute_position_and_cost_by_stock
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
 st.title("損益總覽與投資績效")
 
+# ---------- 篩選條件：快速區間按鈕 + 日期框（與所選區間連動）、自訂可手動改日期 ----------
+today = date.today()
+if "pl_start" not in st.session_state:
+    st.session_state["pl_start"] = date(2000, 1, 1)
+if "pl_end" not in st.session_state:
+    st.session_state["pl_end"] = today
+
+st.markdown("#### 篩選條件")
+b1, b2, b3, b4, b5, b6 = st.columns(6)
+with b1:
+    btn_3d = st.button("近3天", key="pl_btn_3d")
+with b2:
+    btn_1w = st.button("近1週", key="pl_btn_1w")
+with b3:
+    btn_1m = st.button("近1個月", key="pl_btn_1m")
+with b4:
+    btn_6m = st.button("近半年", key="pl_btn_6m")
+with b5:
+    btn_1y = st.button("近1年", key="pl_btn_1y")
+with b6:
+    btn_all = st.button("全部", key="pl_btn_all")
+if btn_3d:
+    st.session_state["pl_start"] = today - timedelta(days=3)
+    st.session_state["pl_end"] = today
+    st.rerun()
+if btn_1w:
+    st.session_state["pl_start"] = today - timedelta(weeks=1)
+    st.session_state["pl_end"] = today
+    st.rerun()
+if btn_1m:
+    st.session_state["pl_start"] = today - timedelta(days=30)
+    st.session_state["pl_end"] = today
+    st.rerun()
+if btn_6m:
+    st.session_state["pl_start"] = today - timedelta(days=180)
+    st.session_state["pl_end"] = today
+    st.rerun()
+if btn_1y:
+    st.session_state["pl_start"] = today - timedelta(days=365)
+    st.session_state["pl_end"] = today
+    st.rerun()
+if btn_all:
+    st.session_state["pl_start"] = date(2000, 1, 1)
+    st.session_state["pl_end"] = today
+    st.rerun()
+
+col_d1, col_d2, col_p, col_m = st.columns([1, 1, 1.5, 1.2])
+with col_d1:
+    start_date = st.date_input("開始日期", key="pl_start")
+with col_d2:
+    end_date = st.date_input("結束日期", key="pl_end")
+with col_p:
+    policy = st.selectbox(
+        "沖銷方式",
+        ["CUSTOM"],
+        format_func=lambda x: "自定沖銷",
+    )
+with col_m:
+    display_mode = st.selectbox(
+        "顯示模式",
+        ["合計", "已實現", "未實現"],
+        format_func=lambda x: {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(x, x),
+    )
+st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
+
 # ---------- 與 Portfolio 一致的 KPI 卡片樣式 ----------
 def _inject_kpi_style():
     st.markdown("""
@@ -47,48 +112,6 @@ def _inject_kpi_style():
     </style>
     """, unsafe_allow_html=True)
 
-# ---------- 篩選列 ----------
-today = date.today()
-quick_options = {
-    "本週": (today - timedelta(days=7), today),
-    "近一個月": (today - timedelta(days=30), today),
-    "近3月": (today - timedelta(days=90), today),
-    "近6月": (today - timedelta(days=180), today),
-    "今年": (date(today.year, 1, 1), today),
-    "全部": (None, None),
-    "自訂": ("custom", "custom"),
-}
-col_q, col_d1, col_d2, col_p, col_m = st.columns([1.5, 1, 1, 1.5, 1.2])
-with col_q:
-    quick = st.selectbox(
-        "快速區間",
-        list(quick_options.keys()),
-        format_func=lambda x: x,
-    )
-if quick == "自訂":
-    _start, _end = today - timedelta(days=365), today
-else:
-    _start, _end = quick_options[quick]
-    if _start is None:
-        _start, _end = date(2000, 1, 1), today
-with col_d1:
-    start_date = st.date_input("開始日期", value=_start, key=f"pl_start_{quick}", disabled=(quick != "自訂"))
-with col_d2:
-    end_date = st.date_input("結束日期", value=_end, key=f"pl_end_{quick}", disabled=(quick != "自訂"))
-if quick != "自訂":
-    start_date, end_date = _start, _end
-with col_p:
-    policy = st.selectbox(
-        "沖銷方式",
-        ["CUSTOM"],
-        format_func=lambda x: "自定沖銷",
-    )
-with col_m:
-    display_mode = st.selectbox(
-        "顯示模式",
-        ["合計", "已實現", "未實現"],
-        format_func=lambda x: {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(x, x),
-    )
 
 sess = get_session()
 all_trades = sess.query(Trade).all()
@@ -96,14 +119,10 @@ masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
 custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
 
-# 區間內交易
-if quick == "全部":
-    start_date, end_date = date(2000, 1, 1), today
-    trades_in_range = [t for t in all_trades if start_date <= t.trade_date <= end_date]
-else:
-    if start_date > end_date:
-        start_date, end_date = end_date, start_date
-    trades_in_range = [t for t in all_trades if start_date <= t.trade_date <= end_date]
+# 區間內交易（start_date / end_date 來自上方按鈕或日期框，可手動改為自訂）
+if start_date > end_date:
+    start_date, end_date = end_date, start_date
+trades_in_range = [t for t in all_trades if start_date <= t.trade_date <= end_date]
 
 trade_by_id = {t.id: t for t in all_trades}
 buys_by_stock = defaultdict(list)
