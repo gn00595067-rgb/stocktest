@@ -318,6 +318,40 @@ with row2_2:
         unsafe_allow_html=True,
     )
 
+# ---------- 計算邏輯說明面板（置於 KPI 下方） ----------
+n_buys_range = sum(len(b) for b in buys_by_stock.values())
+n_sells_range = sum(len(s) for s in sells_by_stock.values())
+n_stocks_realized = len(realized_by_stock)
+n_stocks_position = len(position)
+policy_label = {"FIFO": "FIFO", "LIFO": "LIFO", "AVERAGE": "均價", "MINCOST": "MINCOST", "MAXCOST": "MAXCOST", "CLOSEST": "CLOSEST", "CUSTOM": "自定沖銷"}.get(policy, policy)
+
+with st.expander("📐 計算邏輯說明", expanded=False):
+    st.markdown("### 本頁 KPI 計算方式")
+    st.markdown("""
+    | 指標 | 計算邏輯 |
+    |------|----------|
+    | **總損益** | 已實現 ＋ 未實現（或依「顯示模式」只顯示其一）。 |
+    | **已實現** | 區間內所有「賣出」依所選沖銷方式與買進配對，每筆配對的 **淨損益** 加總。淨損益 ＝ 價差損益 － 買進手續費（按沖銷股數比例）－ 賣出手續費 － 證交稅。 |
+    | **未實現** | 用 **全部交易** 計算目前持倉，持倉成本含買進手續費；未實現 ＝ (現價 － 持倉均價) × 持倉股數。現價來自報價 API，無報價時以持倉均價代替。 |
+    | **勝率** | 損益為正的股票檔數 ÷ (損益為正 ＋ 損益為負的股票檔數) × 100%。不含損益為 0 的檔數。 |
+    | **最佳 / 最差個股** | 依「顯示模式」選定之損益欄位，取該欄最大值與最小值的股票。 |
+    """)
+    st.markdown("---")
+    st.markdown("### 本次計算的動態數據")
+    logic_df = pd.DataFrame([
+        {"項目": "區間", "數值": f"{start_date} ～ {end_date}"},
+        {"項目": "沖銷方式", "數值": policy_label},
+        {"項目": "顯示模式", "數值": {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(display_mode, display_mode)},
+        {"項目": "區間內買進筆數", "數值": n_buys_range},
+        {"項目": "區間內賣出筆數", "數值": n_sells_range},
+        {"項目": "有已實現損益的股票數", "數值": n_stocks_realized},
+        {"項目": "目前有持倉的股票數", "數值": n_stocks_position},
+        {"項目": "總損益（本頁）", "數值": f"{_fmt_big(total_pnl)} （{pnl_col}）"},
+        {"項目": "已實現加總", "數值": _fmt_big(realized_sum)},
+        {"項目": "未實現加總", "數值": _fmt_big(unrealized_sum)},
+    ])
+    st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
+
 # ---------- 主圖：橫向條圖（各股貢獻，從大到小） ----------
 st.subheader("各股損益（由大至小）")
 df_chart = df.sort_values(pnl_col, ascending=False).copy()
