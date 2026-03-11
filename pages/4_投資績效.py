@@ -24,6 +24,28 @@ from services.price_service import get_quote_cached
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
 st.title("損益總覽與投資績效")
 
+# ---------- 與 Portfolio 一致的 KPI 卡片樣式 ----------
+def _inject_kpi_style():
+    st.markdown("""
+    <style>
+    .portfolio-kpi-card {
+        background: linear-gradient(145deg, #fff 0%, #f8f9fa 100%);
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .portfolio-kpi-label { font-size: 0.8rem; color: #6c757d; margin-bottom: 0.25rem; }
+    .portfolio-kpi-value { font-size: 1.35rem; font-weight: 700; }
+    .portfolio-kpi-value--positive { color: #c62828; }
+    .portfolio-kpi-value--negative { color: #2e7d32; }
+    .portfolio-kpi-sub { font-size: 0.8rem; color: #94a3b8; margin-top: 0.35rem; }
+    .portfolio-kpi-sublabel { font-size: 0.95rem; font-weight: 600; color: #37474f; margin-bottom: 0.2rem; }
+    .portfolio-kpi-card .portfolio-kpi-value + .portfolio-kpi-value { margin-top: 0.35rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
 # ---------- 篩選列 ----------
 today = date.today()
 quick_options = {
@@ -232,98 +254,105 @@ def _fmt_big(val):
     return f"{v:,.0f}"
 
 
+def _fmt_pct(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "—"
+    try:
+        return f"{float(x):.2f}%"
+    except Exception:
+        return str(x)
+
+
 def _pnl_color(val):
-    if val is None:
-        return "#212529"
-    v = float(val)
-    return "#c00" if v >= 0 else "#0d7a0d"
+    """依正負回傳 CSS class（台股：正紅、負綠），與 Portfolio 一致"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    try:
+        v = float(val)
+        return "portfolio-kpi-value--positive" if v >= 0 else "portfolio-kpi-value--negative"
+    except Exception:
+        return ""
 
 
-# ---------- KPI 字卡（留白加大、風格統一） ----------
+# ---------- KPI 字卡（與 Portfolio 持倉與損益同風格） ----------
+_inject_kpi_style()
 st.subheader("關鍵績效")
-# 統一字卡樣式：圓角、陰影、留白，標題小字、數值大字
-_card_style = """
-    border-radius: 16px;
-    padding: 1.25rem 1.5rem;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
-    border: 1px solid rgba(0,0,0,0.06);
-    margin-bottom: 0.75rem;
-    min-height: 88px;
-"""
-_label_style = "font-size: 0.75rem; letter-spacing: 0.02em; color: #64748b; margin-bottom: 0.4rem; font-weight: 500;"
-_val_style = "font-size: 1.5rem; font-weight: 700; line-height: 1.3;"
-_sub_style = "font-size: 0.8rem; color: #94a3b8; margin-top: 0.35rem;"
 
 # 第一列：總損益、已實現、未實現、勝率
 row1_1, row1_2, row1_3, row1_4 = st.columns(4)
 with row1_1:
+    cls = _pnl_color(total_pnl)
     st.markdown(f"""
-    <div style="background: #fafbfc; {_card_style} border-left: 4px solid #64748b;">
-        <div style="{_label_style}">總損益</div>
-        <div style="{_val_style} color: {_pnl_color(total_pnl)};">{_fmt_big(total_pnl)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">總損益</div>
+        <div class="portfolio-kpi-value {cls}">{_fmt_big(total_pnl)}</div>
     </div>""", unsafe_allow_html=True)
 with row1_2:
+    cls = _pnl_color(realized_sum)
     st.markdown(f"""
-    <div style="background: #f0fdf4; {_card_style} border-left: 4px solid #22c55e;">
-        <div style="{_label_style}">已實現</div>
-        <div style="{_val_style} color: {_pnl_color(realized_sum)};">{_fmt_big(realized_sum)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">已實現</div>
+        <div class="portfolio-kpi-value {cls}">{_fmt_big(realized_sum)}</div>
     </div>""", unsafe_allow_html=True)
 with row1_3:
+    cls = _pnl_color(unrealized_sum)
     st.markdown(f"""
-    <div style="background: #fef2f2; {_card_style} border-left: 4px solid #ef4444;">
-        <div style="{_label_style}">未實現</div>
-        <div style="{_val_style} color: {_pnl_color(unrealized_sum)};">{_fmt_big(unrealized_sum)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">未實現</div>
+        <div class="portfolio-kpi-value {cls}">{_fmt_big(unrealized_sum)}</div>
     </div>""", unsafe_allow_html=True)
 with row1_4:
     st.markdown(f"""
-    <div style="background: #eff6ff; {_card_style} border-left: 4px solid #3b82f6;">
-        <div style="{_label_style}">勝率（股票）</div>
-        <div style="{_val_style} color: #1e293b;">{win_rate_pct:.1f}%</div>
-        <div style="{_sub_style}">獲利 {win_stocks} 支 · 虧損 {loss_stocks} 支</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">勝率（股票）</div>
+        <div class="portfolio-kpi-value">{win_rate_pct:.1f}%</div>
+        <div class="portfolio-kpi-sub">獲利 {win_stocks} 支 · 虧損 {loss_stocks} 支</div>
     </div>""", unsafe_allow_html=True)
 
-# 第二列：最佳個股、最差個股（兩卡較寬、不擠）
+# 第二列：最佳個股、最差個股
 row2_1, row2_2 = st.columns(2)
 with row2_1:
     best_label = str(best_row["label"]) if best_row is not None else "—"
     best_val = best_row[pnl_col] if best_row is not None else 0
+    cls = _pnl_color(best_val)
     st.markdown(f"""
-    <div style="background: #fffbeb; {_card_style} border-left: 4px solid #eab308;">
-        <div style="{_label_style}">最佳個股</div>
-        <div style="font-size: 1rem; font-weight: 600; color: #374151; margin-bottom: 0.25rem;">{best_label}</div>
-        <div style="{_val_style} color: #dc2626;">{_fmt_big(best_val)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最佳個股</div>
+        <div class="portfolio-kpi-sublabel">{best_label}</div>
+        <div class="portfolio-kpi-value {cls}">{_fmt_big(best_val)}</div>
     </div>""", unsafe_allow_html=True)
 with row2_2:
     worst_label = str(worst_row["label"]) if worst_row is not None else "—"
     worst_val = worst_row[pnl_col] if worst_row is not None else 0
+    cls = _pnl_color(worst_val)
     st.markdown(f"""
-    <div style="background: #fdf2f8; {_card_style} border-left: 4px solid #db2777;">
-        <div style="{_label_style}">最差個股</div>
-        <div style="font-size: 1rem; font-weight: 600; color: #374151; margin-bottom: 0.25rem;">{worst_label}</div>
-        <div style="{_val_style} color: #059669;">{_fmt_big(worst_val)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最差個股</div>
+        <div class="portfolio-kpi-sublabel">{worst_label}</div>
+        <div class="portfolio-kpi-value {cls}">{_fmt_big(worst_val)}</div>
     </div>""", unsafe_allow_html=True)
 
-# 第三列：盈虧比、最大回撤、最大單筆（三卡分開、不擠）
+# 第三列：盈虧比、最大回撤、最大單筆
 row3_1, row3_2, row3_3 = st.columns(3)
 with row3_1:
     st.markdown(f"""
-    <div style="background: #f8fafc; {_card_style} border-left: 4px solid #0ea5e9;">
-        <div style="{_label_style}">盈虧比</div>
-        <div style="{_val_style} color: #1e293b;">{profit_factor:.2f}</div>
-        <div style="{_sub_style}">獲利 ÷ 虧損</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">盈虧比</div>
+        <div class="portfolio-kpi-value">{profit_factor:.2f}</div>
+        <div class="portfolio-kpi-sub">獲利 ÷ 虧損</div>
     </div>""", unsafe_allow_html=True)
 with row3_2:
     st.markdown(f"""
-    <div style="background: #faf5ff; {_card_style} border-left: 4px solid #a855f7;">
-        <div style="{_label_style}">最大回撤</div>
-        <div style="{_val_style} color: #1e293b;">{_fmt_big(max_dd)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最大回撤</div>
+        <div class="portfolio-kpi-value">{_fmt_big(max_dd)}</div>
     </div>""", unsafe_allow_html=True)
 with row3_3:
     st.markdown(f"""
-    <div style="background: #f1f5f9; {_card_style} border-left: 4px solid #475569;">
-        <div style="{_label_style}">最大單筆</div>
-        <div style="font-size: 1.1rem; font-weight: 700; color: #dc2626;">盈 {_fmt_big(max_single)}</div>
-        <div style="font-size: 1.1rem; font-weight: 700; color: #059669;">虧 {_fmt_big(min_single)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最大單筆</div>
+        <div class="portfolio-kpi-value portfolio-kpi-value--positive">盈 {_fmt_big(max_single)}</div>
+        <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {_fmt_big(min_single)}</div>
     </div>""", unsafe_allow_html=True)
 
 st.markdown("---")
