@@ -97,7 +97,8 @@ sess.close()
 
 # 區間內交易
 if quick == "全部":
-    trades_in_range = all_trades
+    start_date, end_date = date(2000, 1, 1), today
+    trades_in_range = [t for t in all_trades if start_date <= t.trade_date <= end_date]
 else:
     if start_date > end_date:
         start_date, end_date = end_date, start_date
@@ -368,6 +369,12 @@ n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
 n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
 
 with st.expander("📐 計算邏輯說明", expanded=False):
+    st.markdown("### 「全部」區間定義（兩頁一致才可比較）")
+    st.markdown("""
+    - **本頁**：快速區間選「全部」時，使用 **2000-01-01 ～ 今天**，且 **已實現** 的買賣來自「全部交易」（無日期篩選）。
+    - **持倉與損益頁**：點「全部」按鈕時，開始日期 = **2000-01-01**、結束 = 今天；**已實現** = 該區間內賣出與區間內買進依自定沖銷配對後的淨損益。
+    - 兩頁都選「全部」時，區間一致，同一檔股票的 **已實現、未實現、合計** 應相同。若曾不一致，多為持倉頁「全部」先前為 2020-01-01 起算，已改為 2000-01-01 以與本頁對齊。
+    """)
     st.markdown("### 本頁 KPI 計算方式")
     st.markdown("""
     | 指標 | 計算邏輯 |
@@ -381,7 +388,15 @@ with st.expander("📐 計算邏輯說明", expanded=False):
     | **最大回撤** | 依「賣出日」累加已實現損益形成累積曲線，從累積高點回落的最大幅度。 |
     | **最大單筆盈/虧** | 單筆配對淨損益的最大值與最小值。 |
     """)
-    st.markdown("**若「各股損益」圖表與「持倉與損益」頁同一檔股票數字不同**：兩頁的 **已實現** 都是「該頁所選日期區間內」的已實現損益。本頁選「今年」、顯示「已實現」時，圖表是今年以來的已實現；持倉頁若選了不同區間（例如更早的開始日），該頁的已實現就是該區間的加總，因此同一檔（例如 3037 欣興）可能本頁為負、持倉頁為正。")
+    st.markdown("### 程式計算流程摘要（除錯用）")
+    st.markdown("""
+    | 項目 | 損益總覽與投資績效 | 持倉與損益 |
+    |------|-------------------|------------|
+    | 已實現 | 區間內交易 → 依 stock_id 分組買/賣 → 每檔 `compute_matches(buys, sells, custom_rules)` → 每筆配對 `net_pnl_for_match` 加總。**「全部」時**：區間 = 全部交易（無日期過濾）。 | `in_range = trades` 落在 start_date～end_date → 同上 per stock。**「全部」時**：start=2000-01-01、end=今天，故 in_range = 全部交易。 |
+    | 未實現 | **全部交易** → 每檔持倉成本與股數 → (現價 − 均價) × 股數；現價 = API 或持倉均價。 | 同上：持倉與成本用 **全部** 交易，未實現 = (現價 − 均價) × 股數。 |
+    | 沖銷 | 自定沖銷：`custom_rules` (sell_id, buy_id, qty)，`_custom_match` 依規則配對，`min(rule_qty, sl.qty, bl.qty)` 且會扣減 lot 剩餘。 | 同一套 `compute_matches` / `custom_rules`。 |
+    """)
+    st.markdown("**若「各股損益」圖表與「持倉與損益」頁同一檔股票數字不同**：兩頁的 **已實現** 都是「該頁所選日期區間內」的已實現損益。請確認兩頁皆選「全部」（本頁快速區間選「全部」、持倉頁點「全部」按鈕），則區間皆為 2000-01-01 至今，數字應一致。")
     st.markdown("---")
     st.markdown("### 本次計算的動態數據")
     logic_df = pd.DataFrame([

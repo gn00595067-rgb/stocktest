@@ -399,8 +399,9 @@ st.title("Portfolio 持倉與損益")
 with st.container():
     st.markdown("#### 篩選條件")
     # 先初始化日期 key，避免 widget 同時有 default value 與 session state 的警告
+    # 「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁的「全部」一致，兩頁已實現才會對齊
     if "portfolio_start" not in st.session_state:
-        st.session_state["portfolio_start"] = date(2020, 1, 1)
+        st.session_state["portfolio_start"] = date(2000, 1, 1)
     if "portfolio_end" not in st.session_state:
         st.session_state["portfolio_end"] = date.today()
 
@@ -440,7 +441,7 @@ with st.container():
         st.session_state["portfolio_end"] = today
         st.rerun()
     if btn_all:
-        st.session_state["portfolio_start"] = date(2020, 1, 1)
+        st.session_state["portfolio_start"] = date(2000, 1, 1)
         st.session_state["portfolio_end"] = today
         st.rerun()
 
@@ -457,6 +458,7 @@ with st.container():
             key="portfolio_policy",
         )
     st.caption("持倉與損益皆依 **自定沖銷** 規則計算。請至「自定沖銷設定」頁設定賣出與買進的配對。")
+    st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
 
 sess = get_session()
 trades = sess.query(Trade).filter(Trade.trade_date >= start_date, Trade.trade_date <= end_date).all()
