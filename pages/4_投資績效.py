@@ -20,6 +20,7 @@ from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.price_service import get_quote_cached
+from reports.portfolio_report import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
 st.title("損益總覽與投資績效")
@@ -130,38 +131,11 @@ for sid, sells in sells_by_stock.items():
         if sell_t:
             matches_with_sell_date.append((str(sell_t.trade_date), net_pnl))
 
-# 持倉與未實現（全部交易；剩餘成本含買進手續費）
-buys_all_by_stock = defaultdict(list)
-sells_all_by_stock = defaultdict(list)
-for t in all_trades:
-    lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
-    if (t.side or "").upper() == "BUY":
-        buys_all_by_stock[t.stock_id].append(lot)
-    else:
-        sells_all_by_stock[t.stock_id].append(lot)
-
+# 持倉與未實現：與 Portfolio 持倉與損益「同一套」持倉均價計算，避免兩頁均價不一致
 position = defaultdict(lambda: {"qty": 0, "cost": 0.0})
-for sid in set(buys_all_by_stock.keys()) | set(sells_all_by_stock.keys()):
-    # 每檔傳入複本，避免 compute_matches 內部改動影響其他檔；僅用自定沖銷
-    buys = [Lot(b.trade_id, b.qty, b.price, b.date) for b in buys_all_by_stock.get(sid, [])]
-    sells = [Lot(s.trade_id, s.qty, s.price, s.date) for s in sells_all_by_stock.get(sid, [])]
-    total_buy_qty = sum(b.qty for b in buys)
-    total_sell_qty = sum(s.qty for s in sells)
-    total_buy_cost = sum(b.qty * b.price for b in buys)
-    total_buy_fee = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in buys)
-    total_buy_cost_with_fee = total_buy_cost + total_buy_fee
-    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
-    matched_cost = sum(m[2] * m[3] for m in matches)
-    matched_buy_fee = 0.0
-    for m in matches:
-        buy_t = trade_by_id.get(m[0])
-        if buy_t and getattr(buy_t, "quantity", 0):
-            matched_buy_fee += float(getattr(buy_t, "fee", None) or 0) * (m[2] / buy_t.quantity)
-    remaining_cost = total_buy_cost_with_fee - matched_cost - matched_buy_fee
-    position_qty = total_buy_qty - total_sell_qty
-    if position_qty > 0:
-        position[sid]["qty"] = position_qty
-        position[sid]["cost"] = remaining_cost
+for sid, data in compute_position_and_cost_by_stock(all_trades, custom_rules=custom_rules).items():
+    position[sid]["qty"] = data["qty"]
+    position[sid]["cost"] = data["cost"]
 
 unrealized_by_stock = defaultdict(float)
 quote_source_by_sid = {}
