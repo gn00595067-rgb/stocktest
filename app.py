@@ -79,5 +79,5 @@ else:
         st.session_state["show_clear_confirm"] = True
         st.rerun()
 
-st.title("📈 台股股價分析系統")
-st.markdown("請從左側選單選擇功能：**交易輸入**、**交易匯入**、**Portfolio 持倉與損益**、**日成交明細**、**個股明細**、**投資績效（含損益總覽）**、**主檔/設定**。")
+# 首頁僅保留側邊欄功能，直接進入投資績效頁
+st.switch_page("pages/0_投資績效.py")
