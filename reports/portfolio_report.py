@@ -67,6 +67,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     position_qty = defaultdict(int)
     total_buy_cost = defaultdict(float)
     matched_cost = defaultdict(float)
+    debug_cost = {}  # sid -> {total_buy_cost, matched_cost, matched_buy_fee, remaining_cost, avg_cost} 供除錯
     for sid in set(list(buys_by_stock_user) + list(sells_by_stock_user)):
         all_buys = []
         all_sells = []
@@ -87,6 +88,15 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         )
         remaining_cost = total_buy_cost[sid] - matched_cost[sid] - matched_buy_fee
         total_buy_cost[sid] = remaining_cost
+        q = position_qty[sid]
+        debug_cost[sid] = {
+            "total_buy_cost_raw": total_buy_cost[sid] + matched_cost[sid] + matched_buy_fee,
+            "matched_cost": matched_cost[sid],
+            "matched_buy_fee": matched_buy_fee,
+            "remaining_cost": remaining_cost,
+            "position_qty": q,
+            "avg_cost": (remaining_cost / q if q else 0),
+        }
 
     # 每檔股票只向 API 取價一次，避免持倉多檔時爆量（FinMind 每小時約 600 次上限）
     unique_sids = [sid for sid, qty in position_qty.items() if qty > 0]
@@ -161,4 +171,4 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(in_range_buys, in_range_sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None))
         user_rows.append({"買賣人": user, "股票代號": sid, "市值": round(mv, 2), "總損益": round(unrealized + real, 2)})
     df_user = pd.DataFrame(user_rows).groupby("買賣人", as_index=False).agg({"市值": "sum", "總損益": "sum"}) if user_rows else pd.DataFrame()
-    return df, df_industry, df_user
+    return df, df_industry, df_user, debug_cost

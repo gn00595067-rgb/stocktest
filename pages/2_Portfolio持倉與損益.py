@@ -481,7 +481,7 @@ if policy == "CUSTOM":
     custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
 
-df, df_industry, df_user = build_portfolio_df(
+df, df_industry, df_user, debug_cost = build_portfolio_df(
     all_trades, masters, start_date, end_date, policy, get_quote_cached, custom_rules=custom_rules
 )
 
@@ -497,6 +497,25 @@ build_portfolio_kpi_cards(df)
 st.markdown("---")
 st.markdown("#### 📋 持倉明細")
 st.dataframe(style_portfolio_dataframe(df), use_container_width=True, hide_index=True)
+with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價）", expanded=False):
+    st.caption("以下為 **程式內部** 依「全部買進成本 − 已沖銷成本 − 已沖銷之買進手續費」算出剩餘持倉成本，再 ÷ 股數 = 均價。可對照檢查是哪一項導致均價異常。")
+    if debug_cost:
+        debug_rows = []
+        for sid in sorted(debug_cost.keys()):
+            d = debug_cost[sid]
+            name = (masters.get(sid).name if masters.get(sid) else "") or sid
+            debug_rows.append({
+                "股票": f"{sid} {name}".strip(),
+                "全部買進成本(含手續費)": round(d["total_buy_cost_raw"], 0),
+                "已沖銷成本": round(d["matched_cost"], 0),
+                "已沖銷買進手續費": round(d["matched_buy_fee"], 0),
+                "剩餘持倉成本": round(d["remaining_cost"], 0),
+                "持倉股數": d["position_qty"],
+                "均價(=剩餘÷股數)": round(d["avg_cost"], 2),
+            })
+        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("尚無持倉。")
 with st.expander("🔍 若某檔「均價」異常如何排查", expanded=False):
     st.markdown("""
     **均價怎麼來的**  

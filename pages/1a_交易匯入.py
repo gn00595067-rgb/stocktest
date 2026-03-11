@@ -354,7 +354,8 @@ def _find_header_row(rows, required_cols, from_row=0):
     return None, {}
 
 
-def _parse_sold_section(rows, stock_id, user, from_row=0):
+def _parse_sold_section(rows, stock_id, user, from_row=0, max_buy_price=None):
+    """max_buy_price: 若設為數字，買進股價超過此值之列整筆（買+賣+配對）略過不匯入。"""
     required = ["買賣日", "股數", "股價", "出售日", "賣價"]
     header_row_idx, col_map = _find_header_row(rows, required, from_row)
     if header_row_idx is None or not col_map:
@@ -402,6 +403,8 @@ def _parse_sold_section(rows, stock_id, user, from_row=0):
         price_sell = _parse_num(row[i_sell_price] if i_sell_price < ncol else None)
         if qty is None or qty <= 0 or price_buy is None or price_buy <= 0 or price_sell is None or price_sell <= 0:
             continue
+        if max_buy_price is not None and price_buy > max_buy_price:
+            continue
         qty = int(qty)
         if "小計" in str(row[1] if ncol > 1 else ""):
             break
@@ -415,7 +418,8 @@ def _parse_sold_section(rows, stock_id, user, from_row=0):
     return trades, rules, errors
 
 
-def _parse_inventory_section(rows, stock_id, user, from_row=0):
+def _parse_inventory_section(rows, stock_id, user, from_row=0, max_buy_price=None):
+    """max_buy_price: 若設為數字，買進股價超過此值之列略過不匯入。"""
     required = ["買賣日", "股數", "股價"]
     header_row_idx, col_map = _find_header_row(rows, required, from_row)
     if header_row_idx is None or not col_map:
@@ -439,6 +443,8 @@ def _parse_inventory_section(rows, stock_id, user, from_row=0):
         price = _parse_num(row[i_price] if i_price < len(row) else None)
         if qty is None or qty <= 0 or price is None or price <= 0:
             continue
+        if max_buy_price is not None and price > max_buy_price:
+            continue
         qty = int(qty)
         fee = _parse_num(row[i_fee]) if i_fee is not None and i_fee < len(row) else None
         trades.append({"user": user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price, 2), "quantity": qty, "is_daytrade": False, "fee": round(fee, 2) if fee is not None else None, "tax": None, "note": "Excel沖銷庫存-庫存"})
@@ -461,7 +467,7 @@ def _locate_sections(rows):
     return result
 
 
-def parse_partner_excel(path, sheet_name, user="匯入"):
+def parse_partner_excel(path, sheet_name, user="匯入", max_buy_price=None):
     rows = _read_sheet_rows(path, sheet_name)
     stock_id = _stock_id_from_sheet_name(sheet_name)
     if not stock_id:
@@ -480,18 +486,29 @@ def parse_partner_excel(path, sheet_name, user="匯入"):
     all_rules = []
     all_errors = []
     if sections["已出售"] is not None:
-        t, r, e = _parse_sold_section(rows, stock_id, user, sections["已出售"])
+        t, r, e = _parse_sold_section(rows, stock_id, user, sections["已出售"], max_buy_price=max_buy_price)
         all_trades.extend(t)
         all_rules.extend(r)
         all_errors.extend(e)
     if sections["庫存股票"] is not None:
-        t, e = _parse_inventory_section(rows, stock_id, user, sections["庫存股票"])
+        t, e = _parse_inventory_section(rows, stock_id, user, sections["庫存股票"], max_buy_price=max_buy_price)
         all_trades.extend(t)
         all_errors.extend(e)
     return all_trades, all_rules, all_errors
 
 
 user_default = st.text_input("買賣人／帳戶名稱", value="匯入", key="partner_import_user")
+max_buy_price = st.number_input(
+    "買進股價上限（選填，超過則該列不匯入；例如欣興歷史未逾 700 可填 700）",
+    min_value=0,
+    max_value=99999,
+    value=0,
+    step=50,
+    key="partner_max_buy_price",
+    help="若留 0 表示不限制。設為 700 時，解析到買進股價 >700 的列會略過，可避免誤鍵或欄位錯位造成均價異常。"
+)
+if max_buy_price and max_buy_price > 0:
+    st.caption(f"將略過「買進股價 > {max_buy_price}」的列（已出售與庫存皆適用）。")
 uploaded2 = st.file_uploader("上傳 Excel（.xlsx）", type=["xlsx"], key="partner_excel")
 if not uploaded2:
     st.info("請上傳 .xlsx 檔案。每個分頁代表一家公司，需含「已出售」與／或「庫存股票」區塊。")
@@ -524,7 +541,7 @@ else:
                 all_errors = []
                 by_sheet = []
                 for sn in selected_sheets:
-                    t, r, e = parse_partner_excel(path, sn, user_default)
+                    t, r, e = parse_partner_excel(path, sn, user_default, max_buy_price=(max_buy_price if max_buy_price and max_buy_price > 0 else None))
                     all_trades.extend(t)
                     all_rules.extend(r)
                     all_errors.extend(e)
