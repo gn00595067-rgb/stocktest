@@ -503,7 +503,7 @@ bar = alt.Chart(df_chart).mark_bar().encode(
     x=alt.X(f"{pnl_col}:Q", title="損益"),
     color=alt.condition(alt.datum[pnl_col] >= 0, alt.value("#991b1b"), alt.value("#166534")),
 )
-text = alt.Chart(df_chart).mark_text(font_variant_numeric="tabular-nums").encode(
+text = alt.Chart(df_chart).mark_text().encode(
     y=alt.Y("label_short:N", sort="-x", title="", scale=y_scale),
     x=alt.X(f"{pnl_col}:Q", title=""),
     text=alt.Text("pnl_fmt:N"),
@@ -601,7 +601,7 @@ if not df_ind.empty:
             color=alt.condition(alt.datum.顯示損益 > 0, alt.value("#991b1b"), alt.value("#166534")),
         )
     )
-    text_ind = alt.Chart(df_ind).mark_text(font_variant_numeric="tabular-nums", align=alt.condition(alt.datum.顯示損益 >= 0, alt.value("left"), alt.value("right")), dx=alt.condition(alt.datum.顯示損益 >= 0, alt.value(8), alt.value(-8))).encode(
+    text_ind = alt.Chart(df_ind).mark_text(align=alt.condition(alt.datum.顯示損益 >= 0, alt.value("left"), alt.value("right")), dx=alt.condition(alt.datum.顯示損益 >= 0, alt.value(8), alt.value(-8))).encode(
         x=alt.X("industry:N", sort="-y", title=""),
         y=alt.Y("顯示損益:Q", title=""),
         text=alt.Text("顯示損益_fmt:N"),
