@@ -4,6 +4,7 @@ import re
 import io
 import os
 import tempfile
+import time
 from datetime import datetime
 from collections import defaultdict
 
@@ -26,6 +27,26 @@ from db.models import Trade, StockMaster, CustomMatchRule
 st.set_page_config(page_title="交易匯入", layout="wide")
 st.title("交易匯入")
 st.caption("本頁提供兩種匯入方式：**一、券商 CSV/Excel 交易紀錄**；**二、Excel 沖銷庫存資料**（已出售＋庫存，每分頁一家公司）。")
+
+# ---------- 清空所有資料（交易＋自定沖銷規則，主檔股票列表保留） ----------
+with st.expander("⚠️ 清空所有資料", expanded=False):
+    st.caption("將刪除**所有交易**與**所有自定沖銷規則**，主檔股票列表會保留。此操作無法復原。")
+    if st.button("清空所有交易與沖銷規則", type="secondary", key="clear_all_btn"):
+        sess = get_session()
+        try:
+            n_rules = sess.query(CustomMatchRule).delete()
+            n_trades = sess.query(Trade).delete()
+            sess.commit()
+            st.session_state["clear_all_done"] = f"已刪除 {n_trades} 筆交易、{n_rules} 筆自定沖銷規則。"
+            st.rerun()
+        except Exception as e:
+            sess.rollback()
+            st.error(f"清空失敗：{e}")
+        finally:
+            sess.close()
+    if st.session_state.get("clear_all_done"):
+        st.success(st.session_state["clear_all_done"])
+        st.session_state.pop("clear_all_done", None)
 
 # ========== 一、券商 CSV / Excel 交易紀錄 ==========
 st.subheader("一、券商 CSV / Excel 交易紀錄")
@@ -277,9 +298,6 @@ st.markdown("---")
 st.subheader("二、Excel 沖銷庫存資料匯入")
 st.caption("匯入含 **已出售**（自訂沖銷配對、當沖紀錄）與 **庫存股票** 的 Excel：**每個分頁代表一家公司**。匯入後會建立交易並寫入自定沖銷規則。")
 
-if st.session_state.get("excel_import_success_msg"):
-    st.success(st.session_state["excel_import_success_msg"])
-
 
 def _parse_roc_date(s):
     if s is None or (isinstance(s, float) and pd.isna(s)):
@@ -500,6 +518,7 @@ else:
     _upload_key = (uploaded2.name, uploaded2.size)
     if _upload_key != st.session_state.get("excel_import_last_file"):
         st.session_state.pop("excel_import_success_msg", None)
+        st.session_state.pop("excel_import_success_time", None)
     st.session_state["excel_import_last_file"] = _upload_key
     path = None
     try:
@@ -585,6 +604,7 @@ else:
                                     sess.add(CustomMatchRule(sell_trade_id=created_sell[i], buy_trade_id=created_buy[i], matched_qty=r["qty"]))
                             sess.commit()
                             st.session_state["excel_import_success_msg"] = f"已匯入 {len(all_trades)} 筆交易、{len(all_rules)} 筆自定沖銷規則。可至「交易輸入」「自定沖銷設定」「庫存損益」檢視。"
+                            st.session_state["excel_import_success_time"] = time.time()
                             st.session_state["excel_import_last_file"] = (uploaded2.name, uploaded2.size)
                             st.rerun()
                         except OperationalError as e:
@@ -600,6 +620,14 @@ else:
                             st.error(f"匯入失敗：{e}")
                         finally:
                             sess.close()
+                    # 匯入成功訊息：僅顯示在確認匯入下方，10 秒後自動清除
+                    if st.session_state.get("excel_import_success_msg"):
+                        t0 = st.session_state.get("excel_import_success_time", 0)
+                        if time.time() - t0 < 10:
+                            st.success(st.session_state["excel_import_success_msg"])
+                        else:
+                            st.session_state.pop("excel_import_success_msg", None)
+                            st.session_state.pop("excel_import_success_time", None)
         finally:
             if path and os.path.isfile(path):
                 try:
