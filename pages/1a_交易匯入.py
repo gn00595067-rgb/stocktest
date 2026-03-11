@@ -1,13 +1,17 @@
 # -*- coding: utf-8 -*-
-"""交易匯入：上傳券商格式之交易紀錄 CSV/Excel，解析後寫入 trades"""
-import streamlit as st
-import pandas as pd
+"""交易匯入：券商 CSV/Excel 交易紀錄 ＋ Excel 沖銷庫存資料（上下排列）"""
 import re
 import io
-from datetime import datetime
-import sys
 import os
+import tempfile
+from datetime import datetime
+from collections import defaultdict
 
+import streamlit as st
+import pandas as pd
+from sqlalchemy.exc import OperationalError, IntegrityError
+
+import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
@@ -17,28 +21,27 @@ try:
 except Exception:
     pass
 from db.database import get_session
-from db.models import Trade, StockMaster
-from sqlalchemy.exc import OperationalError
+from db.models import Trade, StockMaster, CustomMatchRule
 
 st.set_page_config(page_title="交易匯入", layout="wide")
 st.title("交易匯入")
+st.caption("本頁提供兩種匯入方式：**一、券商 CSV/Excel 交易紀錄**；**二、Excel 沖銷庫存資料**（已出售＋庫存，每分頁一家公司）。")
 
-# 欄位候選名稱（依券商常見用語）
+# ========== 一、券商 CSV / Excel 交易紀錄 ==========
+st.subheader("一、券商 CSV / Excel 交易紀錄")
 COL_ACCOUNT = ["帳戶", "戶名", "買賣人", "帳號"]
 COL_STOCK_NAME = ["股名", "股票名稱", "名稱", "股票", "公司"]
 COL_DATE = ["日期", "交易日期", "成交日", "買賣日"]
 COL_QUANTITY = ["成交股數", "股數", "數量"]
-COL_NET_AMOUNT = ["淨收付金額", "淨收付", "買賣", "方向"]  # 內含「買進」「賣出」或數字
-COL_SIDE = ["買賣", "方向", "多空"]  # 若為獨立欄位且僅含買進/賣出則優先使用
+COL_NET_AMOUNT = ["淨收付金額", "淨收付", "買賣", "方向"]
+COL_SIDE = ["買賣", "方向", "多空"]
 COL_PRICE = ["成交價", "價格", "單價", "股價"]
-COL_AMOUNT = ["成交金額", "金額"]
 COL_FEE = ["手續費", "佣金", "手續費率"]
 COL_TAX = ["交易稅", "證交稅", "稅"]
 COL_NOTE = ["備註", "備註欄", "說明"]
 
 
 def _find_column(df, candidates):
-    """依候選名稱找到對應欄位（完全一致或包含）"""
     cols = [str(c).strip() for c in df.columns]
     for cand in candidates:
         for col in cols:
@@ -48,7 +51,6 @@ def _find_column(df, candidates):
 
 
 def _parse_number(s):
-    """從字串解析數字，支援千分位逗號"""
     if s is None or (isinstance(s, float) and pd.isna(s)):
         return 0
     s = str(s).strip().replace(",", "")
@@ -57,22 +59,19 @@ def _parse_number(s):
 
 
 def _parse_date(s):
-    """解析日期：YYYY/MM/DD、YYYY-MM-DD、民國等"""
     if s is None or (isinstance(s, float) and pd.isna(s)):
         return None
     s = str(s).strip()[:20]
-    # YYYY/MM/DD
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 3:
             try:
                 y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
-                if y < 200:  # 民國年
+                if y < 200:
                     y += 1911
                 return datetime(y, m, d).date()
             except (ValueError, TypeError):
                 pass
-    # YYYY-MM-DD
     if "-" in s:
         parts = s.replace("/", "-").split("-")
         if len(parts) >= 3:
@@ -96,27 +95,23 @@ def _parse_date(s):
 
 
 def _infer_side(cell):
-    """從「淨收付金額」等欄位推斷買賣：含「買」→ BUY，含「賣」→ SELL"""
     if cell is None or (isinstance(cell, float) and pd.isna(cell)):
-        return "BUY"  # 預設
+        return "BUY"
     s = str(cell).strip()
     if "賣" in s:
         return "SELL"
     if "買" in s:
         return "BUY"
-    # 若為數字：負數常為買進、正數為賣出（券商淨收付）
     n = _parse_number(s)
     return "SELL" if n >= 0 else "BUY"
 
 
 def build_name_to_stock_id(session):
-    """建立 股名 → stock_id 對照（stock_master 的 name 對應 stock_id）"""
     masters = session.query(StockMaster).all()
     name2id = {}
     for m in masters:
         if m.name:
             name2id[m.name.strip()] = m.stock_id
-            # 去掉常見後綴方便對應
             for suffix in ["股", "電子", "科技", "金控", "證券"]:
                 short = m.name.strip().replace(suffix, "").strip()
                 if short and short not in name2id:
@@ -125,10 +120,6 @@ def build_name_to_stock_id(session):
 
 
 def parse_upload_to_rows(df, name2id):
-    """
-    將上傳的 DataFrame 解析為可寫入 Trade 的 dict 列表。
-    回傳 (rows, errors)：rows 為成功解析的 list of dict，errors 為 list of (row_index, message)。
-    """
     rows = []
     errors = []
     col_account = _find_column(df, COL_ACCOUNT)
@@ -136,12 +127,11 @@ def parse_upload_to_rows(df, name2id):
     col_date = _find_column(df, COL_DATE)
     col_qty = _find_column(df, COL_QUANTITY)
     col_net = _find_column(df, COL_NET_AMOUNT)
-    col_side = _find_column(df, COL_SIDE)  # 獨立買賣欄位
+    col_side = _find_column(df, COL_SIDE)
     col_price = _find_column(df, COL_PRICE)
     col_fee = _find_column(df, COL_FEE)
     col_tax = _find_column(df, COL_TAX)
     col_note = _find_column(df, COL_NOTE)
-
     if not col_stock:
         return [], [(0, "找不到「股名」或「股票名稱」欄位")]
     if not col_date:
@@ -150,40 +140,33 @@ def parse_upload_to_rows(df, name2id):
         return [], [(0, "找不到「成交股數」欄位")]
     if not col_price:
         return [], [(0, "找不到「成交價」欄位")]
-
     for idx, row in df.iterrows():
         stock_name = str(row.get(col_stock, "")).strip() if col_stock else ""
         if not stock_name or stock_name == "nan":
-            errors.append((idx + 2, "股名為空"))  # +2 約為 Excel 列號
+            errors.append((idx + 2, "股名為空"))
             continue
         stock_id = name2id.get(stock_name)
         if not stock_id:
-            # 嘗試只取前幾字或部分匹配
             for k, sid in name2id.items():
                 if k in stock_name or stock_name in k:
                     stock_id = sid
                     break
         if not stock_id:
-            errors.append((idx + 2, f"找不到股票代號：{stock_name}（請先至主檔/設定同步股票列表或匯入 stock_master）"))
+            errors.append((idx + 2, f"找不到股票代號：{stock_name}"))
             continue
-
         trade_date = _parse_date(row.get(col_date))
         if not trade_date:
             errors.append((idx + 2, f"日期無法解析：{row.get(col_date)}"))
             continue
-
         quantity = int(_parse_number(row.get(col_qty, 0)))
         if quantity <= 0:
             errors.append((idx + 2, "成交股數應大於 0"))
             continue
-
         price = _parse_number(row.get(col_price, 0))
         if price <= 0:
             errors.append((idx + 2, "成交價應大於 0"))
             continue
-
         side = _infer_side(row.get(col_net)) if col_net else "BUY"
-        # 若有獨立「買賣」欄且內容為買進/賣出，優先使用
         if col_side:
             raw_side = str(row.get(col_side, "")).strip()
             if "賣" in raw_side:
@@ -193,14 +176,11 @@ def parse_upload_to_rows(df, name2id):
         user = str(row.get(col_account, "")).strip() if col_account else "匯入"
         if not user or user == "nan":
             user = "匯入"
-        fee = row.get(col_fee)
-        fee_val = _parse_number(fee) if fee is not None else None
-        tax = row.get(col_tax)
-        tax_val = _parse_number(tax) if tax is not None else None
+        fee_val = _parse_number(row.get(col_fee)) if col_fee and row.get(col_fee) is not None else None
+        tax_val = _parse_number(row.get(col_tax)) if col_tax and row.get(col_tax) is not None else None
         note = str(row.get(col_note, "")).strip() if col_note else None
         if note == "nan" or note == "":
             note = None
-
         rows.append({
             "user": user[:50],
             "stock_id": stock_id,
@@ -216,113 +196,398 @@ def parse_upload_to_rows(df, name2id):
     return rows, errors
 
 
-# ---------- UI ----------
-st.caption("支援券商交易紀錄匯出之 CSV 或 Excel（.xlsx）。欄位需包含：帳戶、股名、日期、成交股數、淨收付金額（或買賣）、成交價；可選手續費、交易稅、備註。買/賣會依「淨收付金額」內的「買進」「賣出」或正負數自動判斷。")
-
 uploaded = st.file_uploader("上傳 CSV 或 Excel", type=["csv", "xlsx"], key="trade_import_file")
 if not uploaded:
     st.info("請上傳檔案。若為券商匯出之 Excel，請先另存為 .xlsx 或 .csv（UTF-8）。")
     st.markdown("**預期欄位範例**：帳戶、股名、日期、成交股數、淨收付金額、成交價、手續費、交易稅、備註。")
-    st.stop()
-
-# 讀檔
-try:
-    if uploaded.name.lower().endswith(".xlsx"):
-        df_raw = pd.read_excel(uploaded, engine="openpyxl")
-    else:
-        df_raw = pd.read_csv(uploaded, encoding="utf-8-sig")
-except Exception as e:
-    try:
-        df_raw = pd.read_csv(uploaded, encoding="big5")
-    except Exception:
-        st.error(f"無法讀取檔案：{e}")
-        st.stop()
-    # if was xlsx we already failed
-    if uploaded.name.lower().endswith(".xlsx"):
-        st.error(f"無法讀取 Excel：{e}")
-        st.stop()
-
-if df_raw.empty:
-    st.warning("檔案為空")
-    st.stop()
-
-# 取得股名→代號對照
-sess = get_session()
-name2id = build_name_to_stock_id(sess)
-sess.close()
-
-parsed, parse_errors = parse_upload_to_rows(df_raw, name2id)
-
-st.subheader("預覽與欄位對應")
-st.caption("下表為系統解析出的欄位對應；下方為即將匯入的筆數與錯誤列。")
-st.dataframe(df_raw.head(20), use_container_width=True, hide_index=True)
-
-if parse_errors:
-    st.warning(f"共 {len(parse_errors)} 筆無法匯入（列號／原因）：")
-    err_df = pd.DataFrame([{"列": e[0], "原因": e[1]} for e in parse_errors[:50]])
-    st.dataframe(err_df, use_container_width=True, hide_index=True)
-    if len(parse_errors) > 50:
-        st.caption(f"… 尚有 {len(parse_errors) - 50} 筆錯誤")
-
-if not parsed:
-    st.error("沒有可匯入的筆數，請檢查欄位與股名是否已在 stock_master 中。")
-    st.stop()
-
-st.success(f"可匯入 **{len(parsed)}** 筆交易。")
-PREVIEW_ROWS = 100
-preview_df = pd.DataFrame([
-    {
-        "買賣人": r["user"],
-        "股票": r["stock_id"],
-        "日期": str(r["trade_date"]),
-        "買/賣": r["side"],
-        "當沖": r.get("is_daytrade", False),
-        "價格": r["price"],
-        "股數": r["quantity"],
-        "手續費": r.get("fee"),
-        "稅": r.get("tax"),
-    }
-    for r in parsed[:PREVIEW_ROWS]
-])
-st.dataframe(preview_df, use_container_width=True, hide_index=True, height=min(400, 50 + min(len(preview_df), 15) * 38))
-if len(parsed) > PREVIEW_ROWS:
-    st.caption(f"僅顯示前 {PREVIEW_ROWS} 筆，共 {len(parsed)} 筆。")
 else:
-    st.caption(f"共 {len(parsed)} 筆。")
-
-# 唯讀環境可下載解析結果 CSV，於本機匯入或備存
-dl_df = pd.DataFrame(parsed)
-dl_df["trade_date"] = dl_df["trade_date"].astype(str)
-buf = io.BytesIO()
-dl_df.to_csv(buf, index=False, encoding="utf-8-sig")
-buf.seek(0)
-st.download_button("下載解析結果 CSV（唯讀環境可於本機匯入）", data=buf.getvalue(), file_name="trades_parsed.csv", mime="text/csv", key="dl_parsed_trades")
-
-if st.button("確認匯入", type="primary", key="do_import"):
-    sess = get_session()
     try:
-        for r in parsed:
-            sess.add(Trade(
-                user=r["user"],
-                stock_id=r["stock_id"],
-                trade_date=r["trade_date"],
-                side=r["side"],
-                price=r["price"],
-                quantity=r["quantity"],
-                is_daytrade=r.get("is_daytrade", False),
-                fee=r.get("fee"),
-                tax=r.get("tax"),
-                note=r.get("note"),
-            ))
-        sess.commit()
-        st.success(f"已成功匯入 {len(parsed)} 筆交易。可至「交易輸入」「日成交彙總」「個股明細」「投資績效」檢視。")
-    except OperationalError as e:
-        sess.rollback()
-        st.error("無法寫入資料庫（目前環境為唯讀，例如 Streamlit Cloud）。請在本機執行以匯入交易。")
-        st.caption("**若在雲端執行**：可先使用上方「下載解析結果 CSV」儲存後，於本機開啟此 App 再上傳該 CSV 匯入；或於 **Secrets** 設定 `DATABASE_URL` 連線至可寫入的雲端資料庫（如 PostgreSQL）。")
-        st.caption(f"技術細節：{e}")
+        if uploaded.name.lower().endswith(".xlsx"):
+            df_raw = pd.read_excel(uploaded, engine="openpyxl")
+        else:
+            df_raw = pd.read_csv(uploaded, encoding="utf-8-sig")
     except Exception as e:
-        sess.rollback()
-        st.error(f"匯入失敗：{e}")
-    finally:
+        try:
+            df_raw = pd.read_csv(uploaded, encoding="big5")
+        except Exception:
+            st.error(f"無法讀取檔案：{e}")
+            df_raw = None
+        if df_raw is None and uploaded.name.lower().endswith(".xlsx"):
+            st.error(f"無法讀取 Excel：{e}")
+            df_raw = None
+    if df_raw is not None and not df_raw.empty:
+        sess = get_session()
+        name2id = build_name_to_stock_id(sess)
         sess.close()
+        parsed, parse_errors = parse_upload_to_rows(df_raw, name2id)
+        st.caption("下表為系統解析出的欄位對應；下方為即將匯入的筆數與錯誤列。")
+        st.dataframe(df_raw.head(20), use_container_width=True, hide_index=True)
+        if parse_errors:
+            st.warning(f"共 {len(parse_errors)} 筆無法匯入（列號／原因）：")
+            err_df = pd.DataFrame([{"列": e[0], "原因": e[1]} for e in parse_errors[:50]])
+            st.dataframe(err_df, use_container_width=True, hide_index=True)
+            if len(parse_errors) > 50:
+                st.caption(f"… 尚有 {len(parse_errors) - 50} 筆錯誤")
+        if parsed:
+            st.success(f"可匯入 **{len(parsed)}** 筆交易。")
+            PREVIEW_ROWS = 100
+            preview_df = pd.DataFrame([
+                {"買賣人": r["user"], "股票": r["stock_id"], "日期": str(r["trade_date"]), "買/賣": r["side"], "當沖": r.get("is_daytrade", False), "價格": r["price"], "股數": r["quantity"], "手續費": r.get("fee"), "稅": r.get("tax")}
+                for r in parsed[:PREVIEW_ROWS]
+            ])
+            st.dataframe(preview_df, use_container_width=True, hide_index=True, height=min(400, 50 + min(len(preview_df), 15) * 38))
+            if len(parsed) > PREVIEW_ROWS:
+                st.caption(f"僅顯示前 {PREVIEW_ROWS} 筆，共 {len(parsed)} 筆。")
+            else:
+                st.caption(f"共 {len(parsed)} 筆。")
+            dl_df = pd.DataFrame(parsed)
+            dl_df["trade_date"] = dl_df["trade_date"].astype(str)
+            buf = io.BytesIO()
+            dl_df.to_csv(buf, index=False, encoding="utf-8-sig")
+            buf.seek(0)
+            st.download_button("下載解析結果 CSV（唯讀環境可於本機匯入）", data=buf.getvalue(), file_name="trades_parsed.csv", mime="text/csv", key="dl_parsed_trades")
+            if st.button("確認匯入", type="primary", key="do_import"):
+                sess = get_session()
+                try:
+                    for r in parsed:
+                        sess.add(Trade(
+                            user=r["user"], stock_id=r["stock_id"], trade_date=r["trade_date"], side=r["side"],
+                            price=r["price"], quantity=r["quantity"], is_daytrade=r.get("is_daytrade", False),
+                            fee=r.get("fee"), tax=r.get("tax"), note=r.get("note"),
+                        ))
+                    sess.commit()
+                    st.success(f"已成功匯入 {len(parsed)} 筆交易。可至「交易輸入」「日成交彙總」「個股明細」「投資績效」檢視。")
+                except OperationalError as e:
+                    sess.rollback()
+                    st.error("無法寫入資料庫（目前環境為唯讀）。請在本機執行以匯入交易。")
+                    st.caption("**若在雲端執行**：可先使用上方「下載解析結果 CSV」儲存後，於本機開啟此 App 再上傳該 CSV 匯入；或於 **Secrets** 設定 `DATABASE_URL`。")
+                except Exception as e:
+                    sess.rollback()
+                    st.error(f"匯入失敗：{e}")
+                finally:
+                    sess.close()
+        else:
+            st.error("沒有可匯入的筆數，請檢查欄位與股名是否已在 stock_master 中。")
+    elif df_raw is not None and df_raw.empty:
+        st.warning("檔案為空")
+
+st.markdown("---")
+
+# ========== 二、Excel 沖銷庫存資料匯入 ==========
+st.subheader("二、Excel 沖銷庫存資料匯入")
+st.caption("匯入含 **已出售**（自訂沖銷配對、當沖紀錄）與 **庫存股票** 的 Excel：**每個分頁代表一家公司**。匯入後會建立交易並寫入自定沖銷規則。")
+
+if st.session_state.get("excel_import_success_msg"):
+    st.success(st.session_state["excel_import_success_msg"])
+
+
+def _parse_roc_date(s):
+    if s is None or (isinstance(s, float) and pd.isna(s)):
+        return None
+    s = str(s).strip()
+    if not s or s.startswith("#"):
+        return None
+    parts = re.split(r"[/\-]", s)
+    if len(parts) >= 3:
+        try:
+            y = int(re.search(r"\d+", parts[0]).group())
+            m = int(re.search(r"\d+", parts[1]).group())
+            d = int(re.search(r"\d+", parts[2]).group())
+            if y < 200:
+                y += 1911
+            return datetime(y, m, d).date()
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return None
+
+
+def _parse_num(s):
+    if s is None or (isinstance(s, float) and pd.isna(s)):
+        return None
+    s = str(s).strip()
+    if not s or s.startswith("#"):
+        return None
+    s = s.replace(",", "")
+    m = re.search(r"-?[\d.]+", s)
+    return float(m.group()) if m else None
+
+
+def _stock_id_from_sheet_name(name):
+    if not name:
+        return None
+    m = re.match(r"^(\d{4})", str(name).strip())
+    return m.group(1) if m else None
+
+
+def _stock_id_from_company_cell(cell):
+    if cell is None or (isinstance(cell, float) and pd.isna(cell)):
+        return None
+    m = re.match(r"^(\d{4})", str(cell).strip())
+    return m.group(1) if m else None
+
+
+def _read_sheet_rows(path, sheet_name):
+    df = pd.read_excel(path, sheet_name=sheet_name, header=None, engine="openpyxl")
+    return df.values.tolist()
+
+
+def _find_header_row(rows, required_cols, from_row=0):
+    for ri in range(from_row, len(rows)):
+        row = rows[ri]
+        if not row:
+            continue
+        cells = [str(c).strip() if c is not None and not (isinstance(c, float) and pd.isna(c)) else "" for c in row]
+        found = {}
+        for col_name in required_cols:
+            for ci, c in enumerate(cells):
+                if col_name in c or c == col_name:
+                    found[col_name] = ci
+                    break
+        if len(found) >= len(required_cols):
+            return ri, found
+    return None, {}
+
+
+def _parse_sold_section(rows, stock_id, user, from_row=0):
+    required = ["買賣日", "股數", "股價", "出售日", "賣價"]
+    header_row_idx, col_map = _find_header_row(rows, required, from_row)
+    if header_row_idx is None or not col_map:
+        return [], [], [f"找不到已出售表頭（需含：{', '.join(required)}）"]
+    header_cells = rows[header_row_idx]
+    for label in ["手續費", "證交稅"]:
+        for ci, c in enumerate(header_cells):
+            if c is not None and label in str(c):
+                if label == "手續費":
+                    if "手續費" not in col_map:
+                        col_map["手續費"] = ci
+                    else:
+                        col_map["手續費賣"] = ci
+                elif label not in col_map:
+                    col_map[label] = ci
+                break
+    trades = []
+    rules = []
+    errors = []
+    i_buy_date = col_map["買賣日"]
+    i_qty = col_map["股數"]
+    i_price = col_map["股價"]
+    i_sell_date = col_map["出售日"]
+    i_sell_price = col_map["賣價"]
+    i_fee_buy = col_map.get("手續費")
+    i_fee_sell = col_map.get("手續費賣")
+    i_tax = col_map.get("證交稅")
+    for ri in range(header_row_idx + 1, len(rows)):
+        row = rows[ri]
+        if not row:
+            continue
+        ncol = len(row)
+        if ncol <= max(i_buy_date, i_sell_date, i_qty, i_price, i_sell_price):
+            continue
+        buy_date_val = row[i_buy_date] if i_buy_date < ncol else None
+        sell_date_val = row[i_sell_date] if i_sell_date < ncol else None
+        if buy_date_val is None and sell_date_val is None:
+            continue
+        buy_date = _parse_roc_date(buy_date_val)
+        sell_date = _parse_roc_date(sell_date_val)
+        if not buy_date or not sell_date:
+            continue
+        qty = _parse_num(row[i_qty] if i_qty < ncol else None)
+        price_buy = _parse_num(row[i_price] if i_price < ncol else None)
+        price_sell = _parse_num(row[i_sell_price] if i_sell_price < ncol else None)
+        if qty is None or qty <= 0 or price_buy is None or price_buy <= 0 or price_sell is None or price_sell <= 0:
+            continue
+        qty = int(qty)
+        if "小計" in str(row[1] if ncol > 1 else ""):
+            break
+        fee_buy = _parse_num(row[i_fee_buy]) if i_fee_buy is not None and i_fee_buy < ncol else None
+        fee_sell = _parse_num(row[i_fee_sell]) if i_fee_sell is not None and i_fee_sell < ncol else (_parse_num(row[i_fee_buy + 4]) if i_fee_buy is not None and i_fee_buy + 4 < ncol else None)
+        tax_sell = _parse_num(row[i_tax]) if i_tax is not None and i_tax < ncol else None
+        is_daytrade = buy_date == sell_date
+        trades.append({"user": user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price_buy, 2), "quantity": qty, "is_daytrade": is_daytrade, "fee": round(fee_buy, 2) if fee_buy is not None else None, "tax": None, "note": "Excel沖銷庫存-已出售"})
+        trades.append({"user": user, "stock_id": stock_id, "trade_date": sell_date, "side": "SELL", "price": round(price_sell, 2), "quantity": qty, "is_daytrade": is_daytrade, "fee": round(fee_sell, 2) if fee_sell is not None else None, "tax": round(tax_sell, 2) if tax_sell is not None else None, "note": "Excel沖銷庫存-已出售"})
+        rules.append({"qty": qty})
+    return trades, rules, errors
+
+
+def _parse_inventory_section(rows, stock_id, user, from_row=0):
+    required = ["買賣日", "股數", "股價"]
+    header_row_idx, col_map = _find_header_row(rows, required, from_row)
+    if header_row_idx is None or not col_map:
+        return [], []
+    trades = []
+    i_buy_date = col_map["買賣日"]
+    i_qty = col_map["股數"]
+    i_price = col_map["股價"]
+    i_fee = col_map.get("手續費")
+    for ri in range(header_row_idx + 1, len(rows)):
+        row = rows[ri]
+        if not row or len(row) <= max(i_buy_date, i_qty, i_price):
+            continue
+        buy_date = _parse_roc_date(row[i_buy_date] if i_buy_date < len(row) else None)
+        if not buy_date:
+            continue
+        qty = _parse_num(row[i_qty] if i_qty < len(row) else None)
+        price = _parse_num(row[i_price] if i_price < len(row) else None)
+        if qty is None or qty <= 0 or price is None or price <= 0:
+            continue
+        qty = int(qty)
+        fee = _parse_num(row[i_fee]) if i_fee is not None and i_fee < len(row) else None
+        trades.append({"user": user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price, 2), "quantity": qty, "is_daytrade": False, "fee": round(fee, 2) if fee is not None else None, "tax": None, "note": "Excel沖銷庫存-庫存"})
+    return trades, []
+
+
+def _locate_sections(rows):
+    result = {"已出售": None, "庫存股票": None}
+    for ri, row in enumerate(rows):
+        if not row:
+            continue
+        for cell in row:
+            if cell is None:
+                continue
+            s = str(cell).strip()
+            if "已出售" in s or "已出貨" in s:
+                result["已出售"] = ri + 1
+            if "庫存股票" in s or (s == "庫存" and result["庫存股票"] is None):
+                result["庫存股票"] = ri + 1
+    return result
+
+
+def parse_partner_excel(path, sheet_name, user="匯入"):
+    rows = _read_sheet_rows(path, sheet_name)
+    stock_id = _stock_id_from_sheet_name(sheet_name)
+    if not stock_id:
+        for row in rows:
+            for cell in row:
+                sid = _stock_id_from_company_cell(cell)
+                if sid:
+                    stock_id = sid
+                    break
+            if stock_id:
+                break
+    if not stock_id:
+        return [], [], [f"分頁「{sheet_name}」無法取得股票代號"]
+    sections = _locate_sections(rows)
+    all_trades = []
+    all_rules = []
+    all_errors = []
+    if sections["已出售"] is not None:
+        t, r, e = _parse_sold_section(rows, stock_id, user, sections["已出售"])
+        all_trades.extend(t)
+        all_rules.extend(r)
+        all_errors.extend(e)
+    if sections["庫存股票"] is not None:
+        t, e = _parse_inventory_section(rows, stock_id, user, sections["庫存股票"])
+        all_trades.extend(t)
+        all_errors.extend(e)
+    return all_trades, all_rules, all_errors
+
+
+user_default = st.text_input("買賣人／帳戶名稱", value="匯入", key="partner_import_user")
+uploaded2 = st.file_uploader("上傳 Excel（.xlsx）", type=["xlsx"], key="partner_excel")
+if not uploaded2:
+    st.info("請上傳 .xlsx 檔案。每個分頁代表一家公司，需含「已出售」與／或「庫存股票」區塊。")
+    st.markdown("**預期結構**：分頁名稱或表內「公司」欄為股票代號（如 3189景碩）；已出售區塊需有 買賣日、股數、股價、出售日、賣價；庫存區塊需有 買賣日、股數、股價。")
+else:
+    _upload_key = (uploaded2.name, uploaded2.size)
+    if _upload_key != st.session_state.get("excel_import_last_file"):
+        st.session_state.pop("excel_import_success_msg", None)
+    st.session_state["excel_import_last_file"] = _upload_key
+    path = None
+    try:
+        xl = pd.ExcelFile(uploaded2, engine="openpyxl")
+        sheet_names = xl.sheet_names
+    except Exception as e:
+        st.error(f"無法讀取 Excel：{e}")
+        sheet_names = []
+    if not sheet_names:
+        st.warning("此檔案沒有任何分頁")
+    else:
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            tmp.write(uploaded2.getvalue())
+            path = tmp.name
+        try:
+            selected_sheets = st.multiselect("選擇要匯入的分頁（預設全選）", sheet_names, default=sheet_names, key="partner_sheets")
+            if not selected_sheets:
+                st.warning("請至少選擇一個分頁")
+            else:
+                all_trades = []
+                all_rules = []
+                all_errors = []
+                by_sheet = []
+                for sn in selected_sheets:
+                    t, r, e = parse_partner_excel(path, sn, user_default)
+                    all_trades.extend(t)
+                    all_rules.extend(r)
+                    all_errors.extend(e)
+                    by_sheet.append((sn, len(t), len(r), e))
+                if all_errors:
+                    st.warning("解析過程有下列問題：")
+                    for err in all_errors[:20]:
+                        st.caption(f"• {err}")
+                    if len(all_errors) > 20:
+                        st.caption(f"… 共 {len(all_errors)} 則")
+                st.caption("各分頁解析筆數（交易數、配對數）：")
+                for sn, n_t, n_r, _ in by_sheet:
+                    st.caption(f"• **{sn}**：{n_t} 筆交易、{n_r} 筆沖銷配對")
+                if not all_trades:
+                    st.warning("沒有可匯入的交易。請確認 Excel 內「已出售」「庫存股票」區塊與欄位名稱。")
+                else:
+                    preview_rows = []
+                    for tr in all_trades[:50]:
+                        preview_rows.append({"買賣人": tr["user"], "股票": tr["stock_id"], "日期": str(tr["trade_date"]), "買/賣": tr["side"], "價格": tr["price"], "股數": tr["quantity"], "當沖": tr.get("is_daytrade", False), "手續費": tr.get("fee"), "稅": tr.get("tax")})
+                    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+                    if len(all_trades) > 50:
+                        st.caption(f"僅顯示前 50 筆，共 {len(all_trades)} 筆交易、{len(all_rules)} 筆沖銷配對。")
+                    sess = get_session()
+                    try:
+                        existing_ids = {m.stock_id for m in sess.query(StockMaster.stock_id).all()}
+                    finally:
+                        sess.close()
+                    missing_stocks = list(set(t["stock_id"] for t in all_trades) - existing_ids)
+                    if missing_stocks:
+                        st.warning(f"以下股票代號不在主檔中：{', '.join(sorted(missing_stocks))}。建議先至「主檔/設定」同步股票清單。")
+                    dl_trades = pd.DataFrame(all_trades)
+                    dl_trades["trade_date"] = dl_trades["trade_date"].astype(str)
+                    buf_dl = io.BytesIO()
+                    dl_trades.to_csv(buf_dl, index=False, encoding="utf-8-sig")
+                    buf_dl.seek(0)
+                    st.download_button("下載解析結果 CSV（唯讀環境可於本機再次上傳匯入）", data=buf_dl.getvalue(), file_name="excel_沖銷庫存_解析結果.csv", mime="text/csv", key="dl_partner_parsed")
+                    if st.button("確認匯入", type="primary", key="partner_do_import"):
+                        sess = get_session()
+                        try:
+                            created_buy = []
+                            created_sell = []
+                            for tr in all_trades:
+                                t = Trade(user=tr["user"], stock_id=tr["stock_id"], trade_date=tr["trade_date"], side=tr["side"], price=tr["price"], quantity=tr["quantity"], is_daytrade=tr.get("is_daytrade", False), fee=tr.get("fee"), tax=tr.get("tax"), note=tr.get("note"))
+                                sess.add(t)
+                                sess.flush()
+                                if tr["side"] == "BUY":
+                                    created_buy.append(t.id)
+                                else:
+                                    created_sell.append(t.id)
+                            for i, r in enumerate(all_rules):
+                                if i < len(created_buy) and i < len(created_sell):
+                                    sess.add(CustomMatchRule(sell_trade_id=created_sell[i], buy_trade_id=created_buy[i], matched_qty=r["qty"]))
+                            sess.commit()
+                            st.session_state["excel_import_success_msg"] = f"已匯入 {len(all_trades)} 筆交易、{len(all_rules)} 筆自定沖銷規則。可至「交易輸入」「自定沖銷設定」「Portfolio」檢視。"
+                            st.session_state["excel_import_last_file"] = (uploaded2.name, uploaded2.size)
+                            st.rerun()
+                        except OperationalError as e:
+                            sess.rollback()
+                            st.error("無法寫入資料庫（目前環境可能唯讀）。請在本機執行或設定 DATABASE_URL。")
+                            st.caption("**若在雲端執行**：請在本機開啟此 App，於本頁「二、Excel 沖銷庫存資料匯入」上傳同一份 Excel 即可寫入；或於 **Secrets** 設定 `DATABASE_URL`。")
+                        except IntegrityError as e:
+                            sess.rollback()
+                            st.error("寫入時發生主鍵或外鍵錯誤，請確認資料。")
+                            st.caption(str(e))
+                        except Exception as e:
+                            sess.rollback()
+                            st.error(f"匯入失敗：{e}")
+                        finally:
+                            sess.close()
+        finally:
+            if path and os.path.isfile(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
