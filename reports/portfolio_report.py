@@ -4,7 +4,7 @@ Portfolio 持倉與損益報表
 
 持倉成本計算邏輯（單一股票）：
 1. 合併該檔所有買賣人的買進/賣出，依 trade_id 去重（同一筆交易只計一次）。
-2. all_buys / all_sells 依 (date, trade_id) 排序，使 FIFO/LIFO 等沖銷依「交易日期」一致。
+2. all_buys / all_sells 依 (date, trade_id) 排序，供沖銷與剩餘持倉一致。
 3. position_qty = total_buy_qty - total_sell_qty。
 4. total_buy_amount = sum(買進股數×單價)，total_buy_fee_raw = sum(買進手續費)。
 5. compute_matches(all_buys, all_sells, policy) 得沖銷列表；(buy_id, sell_id, matched_qty, buy_price, ...)。
@@ -37,7 +37,7 @@ def get_realized_pnl_by_stock(trades, start_date: date, end_date: date, policy: 
     realized = defaultdict(float)
     for sid, sells in sells_by_stock.items():
         buys = buys_by_stock.get(sid, [])
-        matches = compute_matches(buys, sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+        matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
         for m in matches:
             realized[sid] += net_pnl_for_match(m, trade_by_id)
     return realized
@@ -72,7 +72,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     realized = defaultdict(float)
     trade_by_id = {t.id: t for t in trades}
     for sid, sells in sells_range.items():
-        matches = compute_matches(buys_range.get(sid, []), sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+        matches = compute_matches(buys_range.get(sid, []), sells, policy, custom_rules=custom_rules)
         for m in matches:
             realized[sid] += net_pnl_for_match(m, trade_by_id)
 
@@ -95,7 +95,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
                 if s.trade_id not in seen_sell_ids:
                     seen_sell_ids.add(s.trade_id)
                     all_sells.append(s)
-        # 沖銷依「交易日期、ID」順序，故合併後必須排序，否則 FIFO/LIFO 會隨 user 迭代順序變動
+        # 合併後排序，供自定沖銷與剩餘持倉計算一致
         all_buys.sort(key=lambda b: (b.date, b.trade_id))
         all_sells.sort(key=lambda s: (s.date, s.trade_id))
         total_buy_qty = sum(b.qty for b in all_buys)
@@ -104,7 +104,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         total_buy_amount = sum(b.qty * b.price for b in all_buys)
         total_buy_fee_raw = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in all_buys)
         total_buy_cost_before_match = total_buy_amount + total_buy_fee_raw
-        matches = compute_matches(all_buys, all_sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+        matches = compute_matches(all_buys, all_sells, policy, custom_rules=custom_rules)
         matched_cost[sid] = sum(m[3] * m[2] for m in matches)
         matched_buy_fee = sum(
             float(getattr(trade_by_id.get(m[0]), "fee", None) or 0) * (m[2] / (trade_by_id.get(m[0]).quantity or 1))
@@ -125,12 +125,20 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         sum_remaining_from_lots = sum(r["remaining_cost"] for r in remaining_lots_detail)
         sum_remaining_qty_from_lots = sum(r["remaining_qty"] for r in remaining_lots_detail)
         remaining_buy_fee = total_buy_fee_raw - matched_buy_fee
+        max_buy_price = max((b.price for b in all_buys), default=0)
         # 剩餘持倉成本唯一定義：未沖銷買進之 (股數×單價) + 未沖銷部分之買進手續費
         remaining_cost = sum_remaining_from_lots + remaining_buy_fee
         q = position_qty[sid]
         if sum_remaining_qty_from_lots != q:
             raise ValueError(
                 f"{sid}: 剩餘股數不一致 sum_remaining_qty_from_lots={sum_remaining_qty_from_lots} != position_qty={q}"
+            )
+        avg_cost = remaining_cost / q if q else 0
+        # 數學上「剩餘均價」不可能高於任一本檔買進單價；若發生則必為程式或資料錯誤
+        if q and max_buy_price and avg_cost > max_buy_price + 1.0:
+            raise ValueError(
+                f"{sid}: 持倉均價({avg_cost:.2f}) > 本檔最高買價({max_buy_price})，違反數學約束。"
+                f" sum_remaining_from_lots={sum_remaining_from_lots:.0f} remaining_buy_fee={remaining_buy_fee:.0f} q={q}"
             )
         total_buy_cost[sid] = remaining_cost
         buys_detail = []
@@ -214,7 +222,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         total_buy_cost_local = sum(b.qty * b.price for b in buy_lots) + sum(
             float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in buy_lots
         )
-        matches = compute_matches(buy_lots, sell_lots, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+        matches = compute_matches(buy_lots, sell_lots, policy, custom_rules=custom_rules)
         matched_cost_local = sum(m[3] * m[2] for m in matches)
         matched_buy_fee_local = sum(
             float(getattr(trade_by_id.get(m[0]), "fee", None) or 0) * (m[2] / (getattr(trade_by_id.get(m[0]), "quantity", None) or 1))
@@ -227,7 +235,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         unrealized = (last_price - avg_cost) * qty
         in_range_buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and t.side == "BUY"]
         in_range_sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and t.side == "SELL"]
-        real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(in_range_buys, in_range_sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None))
+        real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(in_range_buys, in_range_sells, policy, custom_rules=custom_rules))
         user_rows.append({"買賣人": user, "股票代號": sid, "市值": round(mv, 2), "總損益": round(unrealized + real, 2)})
     df_user = pd.DataFrame(user_rows).groupby("買賣人", as_index=False).agg({"市值": "sum", "總損益": "sum"}) if user_rows else pd.DataFrame()
     return df, df_industry, df_user, debug_cost

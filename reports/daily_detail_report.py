@@ -9,13 +9,10 @@ from db.models import Trade
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 
 
-def build_daily_detail_df(trades, masters, policy: str = "FIFO", filter_date=None, custom_rules: Optional[List[Tuple[int, int, int]]] = None):
+def build_daily_detail_df(trades, masters, policy: str = "CUSTOM", filter_date=None, custom_rules: Optional[List[Tuple[int, int, int]]] = None):
     """
     建構日成交明細表，一筆交易一行。
-    masters: dict stock_id -> StockMaster
-    policy: 損益沖銷方式（FIFO / LIFO 等），用於計算賣出的損益
-    filter_date: 可選，只回傳該日期的交易；若不設則回傳全部
-    回傳 DataFrame
+    policy 僅支援自定沖銷；custom_rules 必傳。
     """
     if not trades:
         return pd.DataFrame()
@@ -34,7 +31,7 @@ def build_daily_detail_df(trades, masters, policy: str = "FIFO", filter_date=Non
     pnl_by_sell_id = defaultdict(float)
     for sid, sells in sells_by_stock.items():
         buys = buys_by_stock.get(sid, [])
-        matches = compute_matches(buys, sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+        matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
         for m in matches:
             _buy_id, sell_id, _qty, _bp, _sp, _ = m
             pnl_by_sell_id[sell_id] += net_pnl_for_match(m, trade_by_id)

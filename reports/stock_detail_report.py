@@ -20,7 +20,7 @@ def build_stock_sold_df(stock_id: str, trades, masters, policy: str, custom_rule
     if not buys or not sells:
         return pd.DataFrame(), 0.0
 
-    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
     trade_by_id = {t.id: t for t in trades}
     m = masters.get(str(stock_id))
     company = f"{stock_id} {getattr(m, 'name', None) or ''}".strip()
@@ -73,7 +73,7 @@ def build_stock_inventory_df(stock_id: str, trades, masters, policy: str, custom
     if not buys:
         return pd.DataFrame(), {"庫存股數": 0, "原始成本": 0, "原始均價": 0}
 
-    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
     remaining_by_buy = defaultdict(int)
     for b in buys:
         remaining_by_buy[b.trade_id] = b.qty

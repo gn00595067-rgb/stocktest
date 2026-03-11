@@ -36,13 +36,12 @@ for sid in stock_ids:
 
 policy = st.selectbox(
     "損益沖銷方式",
-    ["FIFO", "LIFO", "AVERAGE", "CUSTOM"],
-    index=3,
-    format_func=lambda x: {"FIFO": "FIFO（先買先賣）", "LIFO": "LIFO（後買先賣）", "AVERAGE": "AVERAGE（均價）", "CUSTOM": "自定沖銷"}.get(x, x),
+    ["CUSTOM"],
+    format_func=lambda x: "自定沖銷",
 )
 selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), format_func=lambda x: stock_options.get(x, x))
 
-sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(selected_id, trades, masters, policy, custom_rules=custom_rules_list if policy == "CUSTOM" else None)
+sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(selected_id, trades, masters, policy, custom_rules=custom_rules_list)
 company_label = stock_options.get(selected_id, selected_id)
 
 # ---------- 原始交易紀錄（除錯／與 Excel 比對） ----------

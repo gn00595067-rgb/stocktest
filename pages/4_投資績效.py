@@ -57,12 +57,8 @@ if quick != "自訂":
 with col_p:
     policy = st.selectbox(
         "沖銷方式",
-        ["FIFO", "LIFO", "AVERAGE", "MINCOST", "MAXCOST", "CLOSEST", "CUSTOM"],
-        index=6,
-        format_func=lambda x: {
-            "FIFO": "FIFO", "LIFO": "LIFO", "AVERAGE": "均價",
-            "MINCOST": "MINCOST", "MAXCOST": "MAXCOST", "CLOSEST": "CLOSEST", "CUSTOM": "自定沖銷",
-        }.get(x, x),
+        ["CUSTOM"],
+        format_func=lambda x: "自定沖銷",
     )
 with col_m:
     display_mode = st.selectbox(
@@ -74,9 +70,7 @@ with col_m:
 sess = get_session()
 all_trades = sess.query(Trade).all()
 masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-custom_rules = None
-if policy == "CUSTOM":
-    custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
 
 # 區間內交易
@@ -104,7 +98,7 @@ matches_with_sell_date = []
 for sid, sells in sells_by_stock.items():
     buys = [Lot(b.trade_id, b.qty, b.price, b.date) for b in buys_by_stock.get(sid, [])]
     sell_lots = [Lot(s.trade_id, s.qty, s.price, s.date) for s in sells]
-    for m in compute_matches(buys, sell_lots, policy, custom_rules=custom_rules if policy == "CUSTOM" else None):
+    for m in compute_matches(buys, sell_lots, policy, custom_rules=custom_rules):
         net_pnl = net_pnl_for_match(m, trade_by_id)
         realized_by_stock[sid] += net_pnl
         match_pnls.append(net_pnl)
@@ -130,7 +124,7 @@ for sid in set(buys_all_by_stock.keys()) | set(sells_all_by_stock.keys()):
     total_buy_cost = sum(b.qty * b.price for b in buys)
     total_buy_fee = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in buys)
     total_buy_cost_with_fee = total_buy_cost + total_buy_fee
-    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
+    matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
     matched_cost = sum(m[2] * m[3] for m in matches)
     matched_buy_fee = 0.0
     for m in matches:
@@ -340,7 +334,7 @@ n_buys_range = sum(len(b) for b in buys_by_stock.values())
 n_sells_range = sum(len(s) for s in sells_by_stock.values())
 n_stocks_realized = len(realized_by_stock)
 n_stocks_position = len(position)
-policy_label = {"FIFO": "FIFO", "LIFO": "LIFO", "AVERAGE": "均價", "MINCOST": "MINCOST", "MAXCOST": "MAXCOST", "CLOSEST": "CLOSEST", "CUSTOM": "自定沖銷"}.get(policy, policy)
+policy_label = "自定沖銷"
 n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
 n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
 

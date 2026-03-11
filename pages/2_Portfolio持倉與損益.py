@@ -452,33 +452,17 @@ with st.container():
     with col_f3:
         policy = st.selectbox(
             "損益沖銷方式",
-            ["FIFO", "LIFO", "MINCOST", "MAXCOST", "AVERAGE", "CLOSEST", "CUSTOM"],
-            index=6,
-            format_func=lambda x: {
-                "FIFO": "一般買賣（FIFO）",
-                "LIFO": "LIFO（後買先賣）",
-                "MINCOST": "MINCOST（樂觀）",
-                "MAXCOST": "MAXCOST（保守）",
-                "AVERAGE": "AVERAGE（均價）",
-                "CLOSEST": "CLOSEST（最接近兩平）",
-                "CUSTOM": "自定沖銷",
-            }.get(x, x),
+            ["CUSTOM"],
+            format_func=lambda x: "自定沖銷",
             key="portfolio_policy",
         )
-    st.caption(
-        "**樂觀（MINCOST）**：賣出時先沖銷「成本最低」的買單 → 已實現損益較高。"
-        " **保守（MAXCOST）**：賣出時先沖銷「成本最高」的買單 → 已實現損益較低。"
-        " 本檔報酬率 ＝ 總損益 ÷ 持倉成本；持倉成本會隨沖銷方式改變（剩餘庫存成本不同），"
-        " 因此報酬率可能出現「保守＞樂觀」屬正常。"
-    )
+    st.caption("持倉與損益皆依 **自定沖銷** 規則計算。請至「自定沖銷設定」頁設定賣出與買進的配對。")
 
 sess = get_session()
 trades = sess.query(Trade).filter(Trade.trade_date >= start_date, Trade.trade_date <= end_date).all()
 all_trades = sess.query(Trade).all()
 masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-custom_rules = None
-if policy == "CUSTOM":
-    custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
 
 df, df_industry, df_user, debug_cost = build_portfolio_df(
@@ -601,7 +585,7 @@ with st.expander("🔍 若某檔「均價」異常如何排查", expanded=False)
 # ----- 4. 個股走勢與沖銷（依上方沖銷方式計算報酬與數據） -----
 st.markdown("---")
 st.markdown("#### 📈 個股走勢與沖銷")
-st.caption("下方報酬與數據皆依目前「損益沖銷方式」計算；切換上方沖銷方式後會重新計算。圖上紅/綠標記為買賣時點與股數。")
+st.caption("下方報酬與數據皆依 **自定沖銷** 計算。圖上紅/綠標記為買賣時點與股數。")
 
 stock_options = df["股票代號"].tolist()
 name_map = {m.stock_id: (m.name or m.stock_id) for m in masters.values()}
@@ -627,8 +611,7 @@ if selected_id:
         r = row.iloc[0]
         cost = float(r["市值"]) - float(r["未實現損益"])
         ret_pct = (float(r["總損益"]) / cost * 100) if cost and cost != 0 else 0.0
-        policy_label = {"FIFO": "一般買賣（FIFO）", "LIFO": "LIFO", "MINCOST": "MINCOST", "MAXCOST": "MAXCOST", "AVERAGE": "AVERAGE", "CLOSEST": "CLOSEST", "CUSTOM": "自定沖銷"}.get(policy, policy)
-        st.markdown(f"**本檔依「{policy_label}」沖銷之數據**")
+st.markdown(f"**本檔依「自定沖銷」之數據**")
         mv_val = float(r["市值"])
         real_val = float(r["已實現損益"])
         unreal_val = float(r["未實現損益"])

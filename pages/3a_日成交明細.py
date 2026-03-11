@@ -21,17 +21,14 @@ query_date = st.date_input("查詢日期", value=date.today())
 show_all = st.checkbox("顯示全部日期（不限當日）", value=False)
 policy = st.selectbox(
     "損益沖銷方式（影響賣出損益計算）",
-    ["FIFO", "LIFO", "AVERAGE", "CUSTOM"],
-    index=3,
-    format_func=lambda x: {"FIFO": "FIFO（先買先賣）", "LIFO": "LIFO（後買先賣）", "AVERAGE": "AVERAGE（均價）", "CUSTOM": "自定沖銷"}.get(x, x),
+    ["CUSTOM"],
+    format_func=lambda x: "自定沖銷",
 )
 
 sess = get_session()
 all_trades = sess.query(Trade).all()
 masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-custom_rules = None
-if policy == "CUSTOM":
-    custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
 
 if not all_trades:
