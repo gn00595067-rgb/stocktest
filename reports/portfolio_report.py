@@ -105,11 +105,19 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             cost = b.qty * b.price + fee_val
             buys_detail.append({"trade_id": b.trade_id, "date": b.date, "qty": b.qty, "price": b.price, "fee": fee_val, "cost": cost})
         matches_detail = [{"buy_id": m[0], "sell_id": m[1], "matched_qty": m[2], "buy_price": m[3], "matched_cost": m[3] * m[2]} for m in matches]
+        buy_info_by_id = {b.trade_id: (b.date, b.price) for b in all_buys}
         remaining_lots_detail = []
-        for b in all_buys:
-            rem = remaining_qty_by_buy.get(b.trade_id, 0)
-            if rem > 0:
-                remaining_lots_detail.append({"buy_id": b.trade_id, "date": b.date, "remaining_qty": rem, "price": b.price, "remaining_cost": rem * b.price})
+        for tid, rem in remaining_qty_by_buy.items():
+            if rem <= 0:
+                continue
+            info = buy_info_by_id.get(tid)
+            if info:
+                dte, pr = info
+                remaining_lots_detail.append({"buy_id": tid, "date": dte, "remaining_qty": rem, "price": pr, "remaining_cost": rem * pr})
+        total_buy_fee_raw = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in all_buys)
+        remaining_buy_fee = total_buy_fee_raw - matched_buy_fee
+        sum_remaining_from_lots = sum(r["remaining_cost"] for r in remaining_lots_detail)
+        sum_remaining_qty_from_lots = sum(r["remaining_qty"] for r in remaining_lots_detail)
         total_buy_cost[sid] = remaining_cost
         q = position_qty[sid]
         max_buy_price = max((b["price"] for b in buys_detail), default=0)
@@ -118,9 +126,13 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             "matched_cost": matched_cost[sid],
             "matched_buy_fee": matched_buy_fee,
             "remaining_cost": remaining_cost,
+            "remaining_buy_fee": remaining_buy_fee,
             "position_qty": q,
             "avg_cost": (remaining_cost / q if q else 0),
             "max_buy_price": max_buy_price,
+            "sum_remaining_from_lots": sum_remaining_from_lots,
+            "sum_remaining_qty_from_lots": sum_remaining_qty_from_lots,
+            "avg_cost_from_lots": (sum_remaining_from_lots / sum_remaining_qty_from_lots if sum_remaining_qty_from_lots else 0),
             "buys_detail": buys_detail,
             "matches_detail": matches_detail,
             "remaining_lots_detail": remaining_lots_detail,
