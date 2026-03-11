@@ -544,6 +544,38 @@ with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘
             st.caption("若上表出現單價異常（如 788），代表該筆買進資料有誤或沖銷配對未涵蓋該筆。")
         else:
             st.caption("無剩餘持倉（已全數沖銷）")
+        # 一鍵複製／下載除錯文字
+        st.markdown("**📋 除錯用一鍵複製**")
+        lines = [f"股票：{sid} {(getattr(masters.get(sid), 'name', None) or '')}".strip()]
+        if max_buy and avg_c > max_buy * 1.01:
+            lines.append(f"⚠️ 異常：本檔買進最高單價為 {max_buy}，但剩餘持倉均價為 {avg_c:.2f}。均價不應高於任何一筆買進單價，可能是同一筆交易被重複計入成本（例如重複匯入或同一交易出現在多個買賣人）。已改為依交易 ID 去重計算；若仍異常請檢查資料。")
+        lines.append("")
+        lines.append("① 每筆買進（全部）")
+        if d.get("buys_detail"):
+            lines.append("交易ID\t日期\t股數\t單價\t手續費\t成本")
+            for r in d["buys_detail"]:
+                lines.append(f"{r['trade_id']}\t{r['date']}\t{r['qty']}\t{r['price']}\t{r['fee']}\t{round(r['cost'], 0)}")
+        else:
+            lines.append("無買進紀錄")
+        lines.append("")
+        lines.append("② 沖銷配對（已沖銷掉的買進）")
+        if d.get("matches_detail"):
+            lines.append("買進ID\t賣出ID\t沖銷股數\t買進單價\t沖銷成本")
+            for r in d["matches_detail"]:
+                lines.append(f"{r['buy_id']}\t{r['sell_id']}\t{r['matched_qty']}\t{r['buy_price']}\t{round(r['matched_cost'], 0)}")
+        else:
+            lines.append("無沖銷")
+        lines.append("")
+        lines.append("③ 剩餘持倉（未沖銷的買進，這些構成目前均價）")
+        if d.get("remaining_lots_detail"):
+            lines.append("買進ID\t日期\t剩餘股數\t單價\t剩餘成本")
+            for r in d["remaining_lots_detail"]:
+                lines.append(f"{r['buy_id']}\t{r['date']}\t{r['remaining_qty']}\t{r['price']}\t{round(r['remaining_cost'], 0)}")
+        else:
+            lines.append("無剩餘持倉（已全數沖銷）")
+        debug_text = "\n".join(lines)
+        st.code(debug_text, language=None)
+        st.download_button("下載除錯文字 (.txt)", data=debug_text, file_name=f"cost_debug_{sid}.txt", mime="text/plain", key=f"download_debug_cost_{sid}")
     else:
         st.caption("尚無持倉。")
 with st.expander("🔍 若某檔「均價」異常如何排查", expanded=False):
