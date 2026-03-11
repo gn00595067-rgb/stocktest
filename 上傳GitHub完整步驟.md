@@ -61,7 +61,7 @@
 7. 確認 **stocktest** 資料夾裡現在有：  
    - 檔案：`app.py`、`requirements.txt`、`README.md`、`.env.example`、可能有 `stock_analysis.db`  
    - **資料夾**：`pages`、`db`、`services`、`reports`、`tests`  
-   - 點進 `pages` 要能看到 `2_交易輸入.py`、`1_庫存損益.py` 等  
+   - 點進 `pages` 要能看到 `0_投資績效.py`、`1_庫存損益.py`、`2_個股明細.py`、`3_交易輸入.py` 等  
 
 ---
 

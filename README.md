@@ -38,12 +38,14 @@ streamlit run app.py
 ```
 stockanalysis/
 ├── app.py              # Streamlit 主入口
-├── pages/              # 多分頁
-│   ├── 1_交易輸入.py
+├── pages/              # 多分頁（側欄順序依檔名）
+│   ├── 0_投資績效.py
 │   ├── 1_庫存損益.py
-│   ├── 3_日成交彙總.py
-│   ├── 4_投資績效.py
-│   └── 5_主檔設定.py
+│   ├── 2_個股明細.py
+│   ├── 3_交易輸入.py
+│   ├── 4_交易匯入.py
+│   ├── 5_自定沖銷設定.py
+│   └── 6_主檔設定.py
 ├── services/           # 即時報價、損益演算法
 ├── db/                 # SQLAlchemy 模型、連線、種子
 ├── reports/            # 持倉報表、日彙總
