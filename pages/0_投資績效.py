@@ -497,18 +497,20 @@ st.caption("此圖依 **所選日期區間** 與 **顯示模式**（合計／已
 df_chart = df.sort_values(pnl_col, ascending=False).copy()
 df_chart["label_short"] = df_chart["label"].str[:14]
 df_chart["pnl_fmt"] = df_chart[pnl_col].map(fmt_money_compact)
+df_chart["x_pnl"] = df_chart[pnl_col]  # 固定欄名供 Altair 條件使用
+df_chart["is_pos"] = (df_chart[pnl_col] >= 0).astype(int)
 y_scale = alt.Scale(paddingInner=0.25)
 bar = alt.Chart(df_chart).mark_bar().encode(
     y=alt.Y("label_short:N", sort="-x", title="", scale=y_scale),
-    x=alt.X(f"{pnl_col}:Q", title="損益"),
-    color=alt.condition(alt.datum[pnl_col] >= 0, alt.value("#991b1b"), alt.value("#166534")),
+    x=alt.X("x_pnl:Q", title="損益"),
+    color=alt.condition(alt.datum.is_pos == 1, alt.value("#991b1b"), alt.value("#166534")),
 )
 text = alt.Chart(df_chart).mark_text().encode(
     y=alt.Y("label_short:N", sort="-x", title="", scale=y_scale),
-    x=alt.X(f"{pnl_col}:Q", title=""),
+    x=alt.X("x_pnl:Q", title=""),
     text=alt.Text("pnl_fmt:N"),
-    align=alt.condition(alt.datum[pnl_col] >= 0, alt.value("left"), alt.value("right")),
-    dx=alt.condition(alt.datum[pnl_col] >= 0, alt.value(8), alt.value(-8)),
+    align=alt.condition(alt.datum.is_pos == 1, alt.value("left"), alt.value("right")),
+    dx=alt.condition(alt.datum.is_pos == 1, alt.value(8), alt.value(-8)),
 )
 st.altair_chart(bar + text, use_container_width=True)
 
@@ -592,19 +594,22 @@ df_ind = df.groupby("industry", as_index=False)[["已實現", "未實現", "合�
 df_ind["顯示損益"] = df_ind[pnl_col]
 if not df_ind.empty:
     df_ind["顯示損益_fmt"] = df_ind["顯示損益"].map(fmt_money_compact)
+    df_ind["ind_pos"] = (df_ind["顯示損益"] >= 0).astype(int)
     chart_ind = (
         alt.Chart(df_ind)
         .mark_bar(size=28)
         .encode(
             x=alt.X("industry:N", sort="-y", title=""),
             y=alt.Y("顯示損益:Q", title="損益"),
-            color=alt.condition(alt.datum.顯示損益 > 0, alt.value("#991b1b"), alt.value("#166534")),
+            color=alt.condition(alt.datum.ind_pos == 1, alt.value("#991b1b"), alt.value("#166534")),
         )
     )
-    text_ind = alt.Chart(df_ind).mark_text(align=alt.condition(alt.datum.顯示損益 >= 0, alt.value("left"), alt.value("right")), dx=alt.condition(alt.datum.顯示損益 >= 0, alt.value(8), alt.value(-8))).encode(
+    text_ind = alt.Chart(df_ind).mark_text().encode(
         x=alt.X("industry:N", sort="-y", title=""),
         y=alt.Y("顯示損益:Q", title=""),
         text=alt.Text("顯示損益_fmt:N"),
+        align=alt.condition(alt.datum.ind_pos == 1, alt.value("left"), alt.value("right")),
+        dx=alt.condition(alt.datum.ind_pos == 1, alt.value(8), alt.value(-8)),
     )
     st.altair_chart(chart_ind + text_ind, use_container_width=True)
 else:
