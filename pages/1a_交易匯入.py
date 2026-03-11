@@ -340,7 +340,13 @@ def _find_header_row(rows, required_cols, from_row=0):
         found = {}
         for col_name in required_cols:
             for ci, c in enumerate(cells):
-                if col_name in c or c == col_name:
+                if c == col_name:
+                    found[col_name] = ci
+                    break
+                if col_name in c:
+                    # 避免「股價」對到「賣價」（股價 是 賣價 的子字串）
+                    if col_name == "股價" and "賣" in c:
+                        continue
                     found[col_name] = ci
                     break
         if len(found) >= len(required_cols):
@@ -422,6 +428,9 @@ def _parse_inventory_section(rows, stock_id, user, from_row=0):
     for ri in range(header_row_idx + 1, len(rows)):
         row = rows[ri]
         if not row or len(row) <= max(i_buy_date, i_qty, i_price):
+            continue
+        # 跳過小計列，避免把合計當成一筆買進
+        if any("小計" in str(c) for c in row if c is not None):
             continue
         buy_date = _parse_roc_date(row[i_buy_date] if i_buy_date < len(row) else None)
         if not buy_date:
@@ -532,6 +541,12 @@ else:
                 if not all_trades:
                     st.warning("沒有可匯入的交易。請確認 Excel 內「已出售」「庫存股票」區塊與欄位名稱。")
                 else:
+                    # 偵測買進股價異常高（可能曾把「賣價」欄當成「股價」讀入）
+                    high_price_buys = [(t["stock_id"], t["trade_date"], t["price"], t["quantity"]) for t in all_trades if t.get("side") == "BUY" and float(t.get("price") or 0) > 600]
+                    if high_price_buys:
+                        st.warning("⚠️ 偵測到 **買進股價 > 600** 的筆數（若該檔歷史股價未超過 600，可能是表頭「股價」對到「賣價」欄導致）。請確認預覽表內價格是否合理後再匯入。")
+                        for sid, d, p, q in high_price_buys[:10]:
+                            st.caption(f"• 股票 {sid} 日期 {d} 買進 股價={p} 股數={q}")
                     preview_rows = []
                     for tr in all_trades[:50]:
                         preview_rows.append({"買賣人": tr["user"], "股票": tr["stock_id"], "日期": str(tr["trade_date"]), "買/賣": tr["side"], "價格": tr["price"], "股數": tr["quantity"], "當沖": tr.get("is_daytrade", False), "手續費": tr.get("fee"), "稅": tr.get("tax")})
