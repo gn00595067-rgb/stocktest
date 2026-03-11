@@ -505,12 +505,10 @@ bar = alt.Chart(df_chart).mark_bar().encode(
     x=alt.X("x_pnl:Q", title="損益"),
     color=alt.condition(alt.datum.is_pos == 1, alt.value("#991b1b"), alt.value("#166534")),
 )
-text = alt.Chart(df_chart).mark_text().encode(
+text = alt.Chart(df_chart).mark_text(align="left", dx=8).encode(
     y=alt.Y("label_short:N", sort="-x", title="", scale=y_scale),
     x=alt.X("x_pnl:Q", title=""),
     text=alt.Text("pnl_fmt:N"),
-    align=alt.condition(alt.datum.is_pos == 1, alt.value("left"), alt.value("right")),
-    dx=alt.condition(alt.datum.is_pos == 1, alt.value(8), alt.value(-8)),
 )
 st.altair_chart(bar + text, use_container_width=True)
 
@@ -604,12 +602,10 @@ if not df_ind.empty:
             color=alt.condition(alt.datum.ind_pos == 1, alt.value("#991b1b"), alt.value("#166534")),
         )
     )
-    text_ind = alt.Chart(df_ind).mark_text().encode(
+    text_ind = alt.Chart(df_ind).mark_text(align="left", dx=8).encode(
         x=alt.X("industry:N", sort="-y", title=""),
         y=alt.Y("顯示損益:Q", title=""),
         text=alt.Text("顯示損益_fmt:N"),
-        align=alt.condition(alt.datum.ind_pos == 1, alt.value("left"), alt.value("right")),
-        dx=alt.condition(alt.datum.ind_pos == 1, alt.value(8), alt.value(-8)),
     )
     st.altair_chart(chart_ind + text_ind, use_container_width=True)
 else:
