@@ -90,29 +90,47 @@ with col_m:
     )
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
-# ---------- 與 庫存損益 一致的 KPI 卡片樣式 ----------
+# ---------- 關鍵績效 KPI 樣式（美學設計） ----------
 def _inject_kpi_style():
     st.markdown("""
     <style>
+    .kpi-section { margin-bottom: 0.5rem; }
+    .kpi-row-label {
+        font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; color: #64748b;
+        margin-bottom: 0.5rem; margin-top: 0.75rem; text-transform: uppercase;
+    }
+    .kpi-row-label:first-of-type { margin-top: 0.2rem; }
     .portfolio-kpi-card {
-        background: linear-gradient(145deg, #fff 0%, #f8f9fa 100%);
-        border: 1px solid #e9ecef;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 0.75rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-        min-height: 7.5rem;
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 1.25rem 1.35rem;
+        margin-bottom: 0.85rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        min-height: 8rem;
         display: flex;
         flex-direction: column;
         justify-content: flex-start;
+        transition: box-shadow 0.2s ease, border-color 0.2s ease;
     }
-    .portfolio-kpi-label { font-size: 0.8rem; color: #6c757d; margin-bottom: 0.25rem; }
-    .portfolio-kpi-value { font-size: 1.35rem; font-weight: 700; }
-    .portfolio-kpi-value--positive { color: #c62828; }
-    .portfolio-kpi-value--negative { color: #2e7d32; }
-    .portfolio-kpi-sub { font-size: 0.8rem; color: #94a3b8; margin-top: 0.35rem; }
-    .portfolio-kpi-sublabel { font-size: 0.95rem; font-weight: 600; color: #37474f; margin-bottom: 0.2rem; }
-    .portfolio-kpi-card .portfolio-kpi-value + .portfolio-kpi-value { margin-top: 0.35rem; }
+    .portfolio-kpi-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.06); border-color: #cbd5e1; }
+    .portfolio-kpi-label {
+        font-size: 0.7rem; font-weight: 600; letter-spacing: 0.06em; color: #64748b;
+        margin-bottom: 0.45rem; text-transform: uppercase;
+    }
+    .portfolio-kpi-value {
+        font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.35;
+    }
+    .portfolio-kpi-value--positive { color: #b91c1c; }
+    .portfolio-kpi-value--negative { color: #15803d; }
+    .portfolio-kpi-sub {
+        font-size: 0.75rem; color: #94a3b8; margin-top: 0.3rem; letter-spacing: 0.01em;
+    }
+    .portfolio-kpi-sublabel {
+        font-size: 0.9rem; font-weight: 600; color: #334155; margin-bottom: 0.25rem;
+    }
+    .portfolio-kpi-card .portfolio-kpi-value + .portfolio-kpi-value { margin-top: 0.25rem; }
+    .kpi-spacer { min-height: 8rem; margin-bottom: 0.85rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -275,12 +293,12 @@ def _pnl_color(val):
         return ""
 
 
-# ---------- KPI 字卡（與 庫存損益 同風格，統一 4 欄排列、同高同距） ----------
+# ---------- KPI 字卡（美學設計：分組標題、統一卡片、間距與層次） ----------
 _inject_kpi_style()
-st.subheader("關鍵績效")
+st.markdown("#### 關鍵績效")
 
-# 統一每列 4 欄，卡片同寬、同高（CSS min-height）、間距一致
-# 第一列：總損益、已實現、未實現、勝率
+# 第一列：損益概覽
+st.markdown('<p class="kpi-row-label">損益概覽</p>', unsafe_allow_html=True)
 row1_1, row1_2, row1_3, row1_4 = st.columns(4)
 with row1_1:
     cls = _pnl_color(total_pnl)
@@ -311,7 +329,8 @@ with row1_4:
         <div class="portfolio-kpi-sub">獲利 {win_stocks} 支 · 虧損 {loss_stocks} 支</div>
     </div>""", unsafe_allow_html=True)
 
-# 第二列：最佳個股、空、最差個股、空（維持 4 欄對齊）
+# 第二列：個股表現
+st.markdown('<p class="kpi-row-label">個股表現</p>', unsafe_allow_html=True)
 row2_1, row2_2, row2_3, row2_4 = st.columns(4)
 with row2_1:
     best_label = str(best_row["label"]) if best_row is not None else "—"
@@ -324,7 +343,7 @@ with row2_1:
         <div class="portfolio-kpi-value {cls}">{_fmt_big(best_val)}</div>
     </div>""", unsafe_allow_html=True)
 with row2_2:
-    st.markdown("""<div style="min-height: 7.5rem; margin-bottom: 0.75rem;"></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="kpi-spacer"></div>""", unsafe_allow_html=True)
 with row2_3:
     worst_label = str(worst_row["label"]) if worst_row is not None else "—"
     worst_val = worst_row[pnl_col] if worst_row is not None else 0
@@ -336,9 +355,10 @@ with row2_3:
         <div class="portfolio-kpi-value {cls}">{_fmt_big(worst_val)}</div>
     </div>""", unsafe_allow_html=True)
 with row2_4:
-    st.markdown("""<div style="min-height: 7.5rem; margin-bottom: 0.75rem;"></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="kpi-spacer"></div>""", unsafe_allow_html=True)
 
-# 第三列：盈虧比、最大回撤、最大單筆、空（維持 4 欄對齊）
+# 第三列：風險與單筆
+st.markdown('<p class="kpi-row-label">風險與單筆</p>', unsafe_allow_html=True)
 row3_1, row3_2, row3_3, row3_4 = st.columns(4)
 with row3_1:
     st.markdown(f"""
@@ -361,7 +381,7 @@ with row3_3:
         <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {_fmt_big(min_single)}</div>
     </div>""", unsafe_allow_html=True)
 with row3_4:
-    st.markdown("""<div style="min-height: 7.5rem; margin-bottom: 0.75rem;"></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="kpi-spacer"></div>""", unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
