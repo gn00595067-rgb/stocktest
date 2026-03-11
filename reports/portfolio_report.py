@@ -87,6 +87,21 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             for m in matches if trade_by_id.get(m[0]) and getattr(trade_by_id.get(m[0]), "quantity", 0)
         )
         remaining_cost = total_buy_cost[sid] - matched_cost[sid] - matched_buy_fee
+        # 剩餘股數 per 買進單：用於顯示「哪幾筆買進」構成剩餘持倉
+        remaining_qty_by_buy = {b.trade_id: b.qty for b in all_buys}
+        for m in matches:
+            remaining_qty_by_buy[m[0]] = remaining_qty_by_buy.get(m[0], 0) - m[2]
+        buys_detail = []
+        for b in all_buys:
+            fee_val = float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0)
+            cost = b.qty * b.price + fee_val
+            buys_detail.append({"trade_id": b.trade_id, "date": b.date, "qty": b.qty, "price": b.price, "fee": fee_val, "cost": cost})
+        matches_detail = [{"buy_id": m[0], "sell_id": m[1], "matched_qty": m[2], "buy_price": m[3], "matched_cost": m[3] * m[2]} for m in matches]
+        remaining_lots_detail = []
+        for b in all_buys:
+            rem = remaining_qty_by_buy.get(b.trade_id, 0)
+            if rem > 0:
+                remaining_lots_detail.append({"buy_id": b.trade_id, "date": b.date, "remaining_qty": rem, "price": b.price, "remaining_cost": rem * b.price})
         total_buy_cost[sid] = remaining_cost
         q = position_qty[sid]
         debug_cost[sid] = {
@@ -96,6 +111,9 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             "remaining_cost": remaining_cost,
             "position_qty": q,
             "avg_cost": (remaining_cost / q if q else 0),
+            "buys_detail": buys_detail,
+            "matches_detail": matches_detail,
+            "remaining_lots_detail": remaining_lots_detail,
         }
 
     # 每檔股票只向 API 取價一次，避免持倉多檔時爆量（FinMind 每小時約 600 次上限）

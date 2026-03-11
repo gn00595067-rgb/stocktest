@@ -516,6 +516,32 @@ with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價
         st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, hide_index=True)
     else:
         st.caption("尚無持倉。")
+with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘）", expanded=False):
+    st.caption("可選一檔股票，查看 **每筆買進**、**沖銷配對**、**剩餘未沖銷的買進**。若均價異常，請看「剩餘持倉」表：是否有單筆買進單價異常高（例如 788）。")
+    if debug_cost:
+        opts = sorted(debug_cost.keys())
+        labels = [f"{sid} {(getattr(masters.get(sid), 'name', None) or '')}".strip() for sid in opts]
+        choice_idx = st.selectbox("選擇股票", range(len(opts)), format_func=lambda i: labels[i], key="debug_cost_stock")
+        sid = opts[choice_idx]
+        d = debug_cost[sid]
+        st.markdown("**① 每筆買進（全部）**")
+        if d.get("buys_detail"):
+            st.dataframe(pd.DataFrame(d["buys_detail"]).rename(columns={"trade_id": "交易ID", "date": "日期", "qty": "股數", "price": "單價", "fee": "手續費", "cost": "成本(股數×單價+手續費)"}), use_container_width=True, hide_index=True)
+        else:
+            st.caption("無買進紀錄")
+        st.markdown("**② 沖銷配對（已沖銷掉的買進）**")
+        if d.get("matches_detail"):
+            st.dataframe(pd.DataFrame(d["matches_detail"]).rename(columns={"buy_id": "買進ID", "sell_id": "賣出ID", "matched_qty": "沖銷股數", "buy_price": "買進單價", "matched_cost": "沖銷成本"}), use_container_width=True, hide_index=True)
+        else:
+            st.caption("無沖銷")
+        st.markdown("**③ 剩餘持倉（未沖銷的買進，這些構成目前均價）**")
+        if d.get("remaining_lots_detail"):
+            st.dataframe(pd.DataFrame(d["remaining_lots_detail"]).rename(columns={"buy_id": "買進ID", "date": "日期", "remaining_qty": "剩餘股數", "price": "單價", "remaining_cost": "剩餘成本"}), use_container_width=True, hide_index=True)
+            st.caption("若上表出現單價異常（如 788），代表該筆買進資料有誤或沖銷配對未涵蓋該筆。")
+        else:
+            st.caption("無剩餘持倉（已全數沖銷）")
+    else:
+        st.caption("尚無持倉。")
 with st.expander("🔍 若某檔「均價」異常如何排查", expanded=False):
     st.markdown("""
     **均價怎麼來的**  
