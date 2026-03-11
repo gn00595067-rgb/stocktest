@@ -142,8 +142,11 @@ for t in all_trades:
 
 position = defaultdict(lambda: {"qty": 0, "cost": 0.0})
 for sid in set(buys_all_by_stock.keys()) | set(sells_all_by_stock.keys()):
-    buys = buys_all_by_stock.get(sid, [])
-    sells = sells_all_by_stock.get(sid, [])
+    # 每檔傳入複本，避免 compute_matches 內部改動影響其他檔；僅用自定沖銷
+    buys = [Lot(b.trade_id, b.qty, b.price, b.date) for b in buys_all_by_stock.get(sid, [])]
+    sells = [Lot(s.trade_id, s.qty, s.price, s.date) for s in sells_all_by_stock.get(sid, [])]
+    total_buy_qty = sum(b.qty for b in buys)
+    total_sell_qty = sum(s.qty for s in sells)
     total_buy_cost = sum(b.qty * b.price for b in buys)
     total_buy_fee = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in buys)
     total_buy_cost_with_fee = total_buy_cost + total_buy_fee
@@ -155,7 +158,7 @@ for sid in set(buys_all_by_stock.keys()) | set(sells_all_by_stock.keys()):
         if buy_t and getattr(buy_t, "quantity", 0):
             matched_buy_fee += float(getattr(buy_t, "fee", None) or 0) * (m[2] / buy_t.quantity)
     remaining_cost = total_buy_cost_with_fee - matched_cost - matched_buy_fee
-    position_qty = sum(b.qty for b in buys) - sum(s.qty for s in sells)
+    position_qty = total_buy_qty - total_sell_qty
     if position_qty > 0:
         position[sid]["qty"] = position_qty
         position[sid]["cost"] = remaining_cost

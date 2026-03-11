@@ -208,7 +208,7 @@ def build_stock_price_chart(
     price_df: 日期, 股價
     trades_df: 日期, 買賣, 股數, 價格 (每筆交易一列)
     latest_price: 目前價，畫虛線
-    stock_return_pct: 若提供，圖表標題顯示「本檔報酬（依沖銷）」此數值，會隨沖銷方式變動；否則顯示區間股價漲跌幅。
+    stock_return_pct: 若提供，圖表標題顯示「本檔報酬（依沖銷）」此數值（僅自定沖銷）；否則顯示區間股價漲跌幅。
     """
     if price_df.empty:
         return None
@@ -310,7 +310,7 @@ def build_stock_price_chart(
         layers.append(points_sell)
 
     chart = alt.layer(*layers).resolve_scale(y="shared")
-    # 標題：優先顯示依沖銷方式計算之本檔報酬（會隨 FIFO/LIFO 等變動）
+    # 標題：顯示依自定沖銷計算之本檔報酬
     if stock_return_pct is not None:
         title_suffix = f" 本檔報酬（依沖銷） {stock_return_pct:+.2f}%"
         pct_for_color = stock_return_pct

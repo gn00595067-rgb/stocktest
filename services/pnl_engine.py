@@ -76,7 +76,8 @@ def compute_matches(
     custom_rules: Optional[List[Tuple[int, int, int]]] = None,
 ) -> List[Tuple[int, int, int, float, float, float]]:
     """
-    依自定沖銷規則配對。custom_rules = [(sell_trade_id, buy_trade_id, matched_qty), ...]。
+    僅依自定沖銷規則配對（policy 參數保留相容用，未使用）。
+    custom_rules = [(sell_trade_id, buy_trade_id, matched_qty), ...]。
     回傳 [(buy_trade_id, sell_trade_id, matched_qty, buy_price, sell_price, pnl), ...]
     """
     buys = [Lot(trade_id=b.trade_id, qty=b.qty, price=b.price, date=b.date) for b in buys]

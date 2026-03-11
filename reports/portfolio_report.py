@@ -2,6 +2,8 @@
 """
 Portfolio 持倉與損益報表
 
+持倉與已實現損益 **僅依自定沖銷**（custom_rules）計算，無 FIFO/LIFO 等其他方式。
+
 持倉成本計算邏輯（單一股票）：
 1. 合併該檔所有買賣人的買進/賣出，依 trade_id 去重（同一筆交易只計一次）。
 2. all_buys / all_sells 依 (date, trade_id) 排序，供沖銷與剩餘持倉一致。
