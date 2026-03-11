@@ -20,7 +20,7 @@ from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.price_service import get_quote_cached
-from reports.portfolio_report import compute_position_and_cost_by_stock
+from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
 st.title("損益總覽與投資績效")
