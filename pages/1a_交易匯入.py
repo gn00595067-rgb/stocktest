@@ -256,7 +256,7 @@ else:
                             fee=r.get("fee"), tax=r.get("tax"), note=r.get("note"),
                         ))
                     sess.commit()
-                    st.success(f"已成功匯入 {len(parsed)} 筆交易。可至「交易輸入」「日成交彙總」「個股明細」「投資績效」檢視。")
+                    st.success(f"已成功匯入 {len(parsed)} 筆交易。可至「交易輸入」「個股明細」「投資績效」檢視。")
                 except OperationalError as e:
                     sess.rollback()
                     st.error("無法寫入資料庫（目前環境為唯讀）。請在本機執行以匯入交易。")

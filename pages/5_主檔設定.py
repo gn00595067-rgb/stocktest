@@ -161,7 +161,7 @@ if st.button("載入種子資料（2330/2317/3706 等）"):
 
 # ---------- 開發用：一鍵產生模擬交易（正式版可整段移除） ----------
 with st.expander("🔧 開發用：一鍵產生模擬交易（正式版可移除此區塊）", expanded=False):
-    st.caption("一次產生多筆模擬交易，方便預覽「交易輸入」「Portfolio」「日成交彙總」「日成交明細」「個股明細」「投資績效」等介面。")
+    st.caption("一次產生多筆模擬交易，方便預覽「交易輸入」「Portfolio」「日成交明細」「個股明細」「投資績效」等介面。")
     num_trades = st.number_input("模擬筆數", min_value=50, max_value=2000, value=300, step=50, key="mock_num")
     col_a, col_b = st.columns(2)
     with col_a:
@@ -175,7 +175,7 @@ with st.expander("🔧 開發用：一鍵產生模擬交易（正式版可移除
         start = mock_start or (end - timedelta(days=90))
         try:
             n = generate_mock_trades(num_trades=int(num_trades), start_date=start, end_date=end)
-            st.success(f"已寫入 {n} 筆模擬交易，可到「交易輸入」「Portfolio」「日成交彙總」「日成交明細」「個股明細」「投資績效」檢視效果。")
+            st.success(f"已寫入 {n} 筆模擬交易，可到「交易輸入」「Portfolio」「日成交明細」「個股明細」「投資績效」檢視效果。")
         except OperationalError as e:
             st.error(
                 "無法寫入資料庫。若您是在 **Streamlit Cloud** 上執行，雲端檔案系統為唯讀，無法建立或更新本機 SQLite。"
