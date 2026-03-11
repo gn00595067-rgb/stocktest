@@ -1,5 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Portfolio 持倉與損益報表"""
+"""
+Portfolio 持倉與損益報表
+
+持倉成本計算邏輯（單一股票）：
+1. 合併該檔所有買賣人的買進/賣出，依 trade_id 去重（同一筆交易只計一次）。
+2. all_buys / all_sells 依 (date, trade_id) 排序，使 FIFO/LIFO 等沖銷依「交易日期」一致。
+3. position_qty = total_buy_qty - total_sell_qty。
+4. total_buy_amount = sum(買進股數×單價)，total_buy_fee_raw = sum(買進手續費)。
+5. compute_matches(all_buys, all_sells, policy) 得沖銷列表；(buy_id, sell_id, matched_qty, buy_price, ...)。
+6. matched_cost = sum(matched_qty × buy_price)；matched_buy_fee = 已沖銷部分之買進手續費。
+7. remaining_qty_by_buy = 每筆買進剩餘股數（原股數 − 該筆被沖銷股數）。
+8. 剩餘持倉成本唯一定義：remaining_cost = sum(剩餘股數×單價) + 剩餘買進手續費 = sum_remaining_from_lots + remaining_buy_fee。
+9. 均價 = remaining_cost / position_qty。且 sum(剩餘股數) 必須等於 position_qty（不一致則 raise ValueError）。
+"""
 from datetime import date
 from collections import defaultdict
 from typing import Optional, List, Tuple
@@ -67,7 +80,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     position_qty = defaultdict(int)
     total_buy_cost = defaultdict(float)
     matched_cost = defaultdict(float)
-    debug_cost = {}  # sid -> {total_buy_cost, matched_cost, matched_buy_fee, remaining_cost, avg_cost} 供除錯
+    debug_cost = {}
     for sid in set(list(buys_by_stock_user) + list(sells_by_stock_user)):
         all_buys = []
         all_sells = []
@@ -82,29 +95,24 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
                 if s.trade_id not in seen_sell_ids:
                     seen_sell_ids.add(s.trade_id)
                     all_sells.append(s)
+        # 沖銷依「交易日期、ID」順序，故合併後必須排序，否則 FIFO/LIFO 會隨 user 迭代順序變動
+        all_buys.sort(key=lambda b: (b.date, b.trade_id))
+        all_sells.sort(key=lambda s: (s.date, s.trade_id))
         total_buy_qty = sum(b.qty for b in all_buys)
         total_sell_qty = sum(s.qty for s in all_sells)
         position_qty[sid] = total_buy_qty - total_sell_qty
-        total_buy_cost[sid] = sum(b.qty * b.price for b in all_buys) + sum(
-            float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in all_buys
-        )
+        total_buy_amount = sum(b.qty * b.price for b in all_buys)
+        total_buy_fee_raw = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in all_buys)
+        total_buy_cost_before_match = total_buy_amount + total_buy_fee_raw
         matches = compute_matches(all_buys, all_sells, policy, custom_rules=custom_rules if policy == "CUSTOM" else None)
         matched_cost[sid] = sum(m[3] * m[2] for m in matches)
         matched_buy_fee = sum(
             float(getattr(trade_by_id.get(m[0]), "fee", None) or 0) * (m[2] / (trade_by_id.get(m[0]).quantity or 1))
             for m in matches if trade_by_id.get(m[0]) and getattr(trade_by_id.get(m[0]), "quantity", 0)
         )
-        remaining_cost = total_buy_cost[sid] - matched_cost[sid] - matched_buy_fee
-        # 剩餘股數 per 買進單：用於顯示「哪幾筆買進」構成剩餘持倉
         remaining_qty_by_buy = {b.trade_id: b.qty for b in all_buys}
         for m in matches:
             remaining_qty_by_buy[m[0]] = remaining_qty_by_buy.get(m[0], 0) - m[2]
-        buys_detail = []
-        for b in all_buys:
-            fee_val = float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0)
-            cost = b.qty * b.price + fee_val
-            buys_detail.append({"trade_id": b.trade_id, "date": b.date, "qty": b.qty, "price": b.price, "fee": fee_val, "cost": cost})
-        matches_detail = [{"buy_id": m[0], "sell_id": m[1], "matched_qty": m[2], "buy_price": m[3], "matched_cost": m[3] * m[2]} for m in matches]
         buy_info_by_id = {b.trade_id: (b.date, b.price) for b in all_buys}
         remaining_lots_detail = []
         for tid, rem in remaining_qty_by_buy.items():
@@ -114,15 +122,26 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             if info:
                 dte, pr = info
                 remaining_lots_detail.append({"buy_id": tid, "date": dte, "remaining_qty": rem, "price": pr, "remaining_cost": rem * pr})
-        total_buy_fee_raw = sum(float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0) for b in all_buys)
-        remaining_buy_fee = total_buy_fee_raw - matched_buy_fee
         sum_remaining_from_lots = sum(r["remaining_cost"] for r in remaining_lots_detail)
         sum_remaining_qty_from_lots = sum(r["remaining_qty"] for r in remaining_lots_detail)
-        total_buy_cost[sid] = remaining_cost
+        remaining_buy_fee = total_buy_fee_raw - matched_buy_fee
+        # 剩餘持倉成本唯一定義：未沖銷買進之 (股數×單價) + 未沖銷部分之買進手續費
+        remaining_cost = sum_remaining_from_lots + remaining_buy_fee
         q = position_qty[sid]
+        if sum_remaining_qty_from_lots != q:
+            raise ValueError(
+                f"{sid}: 剩餘股數不一致 sum_remaining_qty_from_lots={sum_remaining_qty_from_lots} != position_qty={q}"
+            )
+        total_buy_cost[sid] = remaining_cost
+        buys_detail = []
+        for b in all_buys:
+            fee_val = float(getattr(trade_by_id.get(b.trade_id), "fee", None) or 0)
+            cost = b.qty * b.price + fee_val
+            buys_detail.append({"trade_id": b.trade_id, "date": b.date, "qty": b.qty, "price": b.price, "fee": fee_val, "cost": cost})
+        matches_detail = [{"buy_id": m[0], "sell_id": m[1], "matched_qty": m[2], "buy_price": m[3], "matched_cost": m[3] * m[2]} for m in matches]
         max_buy_price = max((b["price"] for b in buys_detail), default=0)
         debug_cost[sid] = {
-            "total_buy_cost_raw": total_buy_cost[sid] + matched_cost[sid] + matched_buy_fee,
+            "total_buy_cost_raw": total_buy_cost_before_match,
             "matched_cost": matched_cost[sid],
             "matched_buy_fee": matched_buy_fee,
             "remaining_cost": remaining_cost,

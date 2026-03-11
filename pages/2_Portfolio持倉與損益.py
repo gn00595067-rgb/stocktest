@@ -526,8 +526,6 @@ with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘
         d = debug_cost[sid]
         max_buy = d.get("max_buy_price") or 0
         avg_c = d.get("avg_cost") or 0
-        if max_buy and avg_c > max_buy * 1.01:
-            st.warning(f"⚠️ **異常**：本檔買進最高單價為 **{max_buy}**，但剩餘持倉均價為 **{avg_c:.2f}**。均價不應高於任何一筆買進單價，可能是同一筆交易被重複計入成本（例如重複匯入或同一交易出現在多個買賣人）。已改為依交易 ID 去重計算；若仍異常請檢查資料。")
         sum_rem = d.get("sum_remaining_from_lots")
         sum_qty_lots = d.get("sum_remaining_qty_from_lots")
         avg_from_lots = d.get("avg_cost_from_lots")
@@ -535,9 +533,7 @@ with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘
         rem_cost = d.get("remaining_cost") or 0
         remaining_fee = d.get("remaining_buy_fee") or 0
         if sum_rem is not None and sum_qty_lots is not None and avg_from_lots is not None:
-            st.caption(f"**依③表加總**（未沖銷買進之 股數×單價）：剩餘成本 = {sum_rem:,.0f}，股數 = {sum_qty_lots:,}，均價（不含手續費）= **{avg_from_lots:.2f}**。程式顯示之剩餘成本 = {rem_cost:,.0f}（含剩餘手續費 {remaining_fee:,.0f}），股數 = {pos_qty:,}，均價 = {avg_c:.2f}。")
-            if abs(sum_qty_lots - pos_qty) > 0 or abs((sum_rem + remaining_fee) - rem_cost) > 1:
-                st.warning("⚠️ ③表加總與程式顯示之股數／剩餘成本不一致，請回報此狀況以便除錯。")
+            st.caption(f"**依③表加總**（未沖銷買進 股數×單價）：剩餘成本 = {sum_rem:,.0f}，股數 = {sum_qty_lots:,}，均價（不含手續費）= **{avg_from_lots:.2f}**。程式顯示剩餘成本 = {rem_cost:,.0f}（含剩餘手續費 {remaining_fee:,.0f}），股數 = {pos_qty:,}，均價 = {avg_c:.2f}。")
         st.markdown("**① 每筆買進（全部）**")
         if d.get("buys_detail"):
             st.dataframe(pd.DataFrame(d["buys_detail"]).rename(columns={"trade_id": "交易ID", "date": "日期", "qty": "股數", "price": "單價", "fee": "手續費", "cost": "成本(股數×單價+手續費)"}), use_container_width=True, hide_index=True)
