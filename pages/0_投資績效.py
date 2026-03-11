@@ -90,41 +90,25 @@ with col_m:
     )
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
-# ---------- KPI 樣式（集中、一致命名、專業儀表板風格） ----------
+# ---------- KPI 樣式（與庫存損益字卡一致） ----------
 def _inject_kpi_style():
     st.markdown("""
     <style>
-    .pnl-kpi-grid { margin-bottom: 0.5rem; }
-    .pnl-kpi-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 16px;
+    .portfolio-kpi-card {
+        background: linear-gradient(145deg, #fff 0%, #f8f9fa 100%);
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
         padding: 1rem 1.25rem;
-        margin-bottom: 0.75rem;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-        min-height: 5.5rem;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-start;
-        transition: box-shadow 0.15s ease, border-color 0.15s ease;
+        margin-bottom: 0.5rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
-    .pnl-kpi-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); border-color: #cbd5e1; }
-    .pnl-kpi-label {
-        font-size: 12px; font-weight: 500; color: #64748b;
-        margin-bottom: 0.35rem;
-    }
-    .pnl-kpi-value {
-        font-size: 32px; font-weight: 700;
-        font-variant-numeric: tabular-nums;
-        letter-spacing: -0.02em;
-        line-height: 1.1;
-        text-align: right;
-    }
-    .pnl-positive { color: #991b1b; }
-    .pnl-negative { color: #166534; }
-    .pnl-kpi-meta { font-size: 12px; color: #94a3b8; margin-top: 0.25rem; text-align: right; }
-    .pnl-kpi-name { font-size: 13px; color: #475569; margin-bottom: 0.2rem; }
-    .pnl-kpi-card .pnl-kpi-value + .pnl-kpi-value { margin-top: 0.2rem; }
+    .portfolio-kpi-label { font-size: 0.8rem; color: #6c757d; margin-bottom: 0.25rem; }
+    .portfolio-kpi-value { font-size: 1.35rem; font-weight: 700; }
+    .portfolio-kpi-value--positive { color: #c62828; }
+    .portfolio-kpi-value--negative { color: #2e7d32; }
+    .portfolio-kpi-meta { font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem; }
+    .portfolio-kpi-name { font-size: 0.9rem; color: #475569; margin-bottom: 0.2rem; }
+    .portfolio-kpi-card .portfolio-kpi-value + .portfolio-kpi-value { margin-top: 0.2rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -297,11 +281,11 @@ def fmt_pct(val):
 
 
 def pnl_class(val):
-    """正值回傳 pnl-positive，負值 pnl-negative（台股：紅/綠）"""
+    """正值回傳 portfolio-kpi-value--positive，負值 portfolio-kpi-value--negative（與庫存損益字卡一致）"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     try:
-        return "pnl-positive" if float(val) >= 0 else "pnl-negative"
+        return "portfolio-kpi-value--positive" if float(val) >= 0 else "portfolio-kpi-value--negative"
     except Exception:
         return ""
 
@@ -321,28 +305,28 @@ avg_single_realized = (realized_sum / len(match_pnls)) if match_pnls else None
 r1_1, r1_2, r1_3, r1_4 = st.columns(4)
 with r1_1:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">總損益</div>
-        <div class="pnl-kpi-value {pnl_class(total_pnl)}">{fmt_money_compact(total_pnl)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">總損益</div>
+        <div class="portfolio-kpi-value {pnl_class(total_pnl)}">{fmt_money_compact(total_pnl)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_2:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">已實現</div>
-        <div class="pnl-kpi-value {pnl_class(realized_sum)}">{fmt_money_compact(realized_sum)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">已實現</div>
+        <div class="portfolio-kpi-value {pnl_class(realized_sum)}">{fmt_money_compact(realized_sum)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_3:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">未實現</div>
-        <div class="pnl-kpi-value {pnl_class(unrealized_sum)}">{fmt_money_compact(unrealized_sum)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">未實現</div>
+        <div class="portfolio-kpi-value {pnl_class(unrealized_sum)}">{fmt_money_compact(unrealized_sum)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_4:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">勝率（股票）</div>
-        <div class="pnl-kpi-value">{fmt_pct(win_rate_pct)}</div>
-        <div class="pnl-kpi-meta">獲利 {win_stocks} 支｜虧損 {loss_stocks} 支</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">勝率（股票）</div>
+        <div class="portfolio-kpi-value">{fmt_pct(win_rate_pct)}</div>
+        <div class="portfolio-kpi-meta">獲利 {win_stocks} 支｜虧損 {loss_stocks} 支</div>
     </div>""", unsafe_allow_html=True)
 
 # 第 2 排：表現
@@ -353,32 +337,32 @@ worst_val = worst_row[pnl_col] if worst_row is not None else 0
 r2_1, r2_2, r2_3, r2_4 = st.columns(4)
 with r2_1:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">最佳個股</div>
-        <div class="pnl-kpi-name">{best_label}</div>
-        <div class="pnl-kpi-value {pnl_class(best_val)}">{fmt_money_compact(best_val)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最佳個股</div>
+        <div class="portfolio-kpi-name">{best_label}</div>
+        <div class="portfolio-kpi-value {pnl_class(best_val)}">{fmt_money_compact(best_val)}</div>
     </div>""", unsafe_allow_html=True)
 with r2_2:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">最差個股</div>
-        <div class="pnl-kpi-name">{worst_label}</div>
-        <div class="pnl-kpi-value {pnl_class(worst_val)}">{fmt_money_compact(worst_val)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最差個股</div>
+        <div class="portfolio-kpi-name">{worst_label}</div>
+        <div class="portfolio-kpi-value {pnl_class(worst_val)}">{fmt_money_compact(worst_val)}</div>
     </div>""", unsafe_allow_html=True)
 with r2_3:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">獲利／虧損股票數</div>
-        <div class="pnl-kpi-value">{win_stocks} ／ {loss_stocks}</div>
-        <div class="pnl-kpi-meta">共 {total_count} 檔</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">獲利／虧損股票數</div>
+        <div class="portfolio-kpi-value">{win_stocks} ／ {loss_stocks}</div>
+        <div class="portfolio-kpi-meta">共 {total_count} 檔</div>
     </div>""", unsafe_allow_html=True)
 with r2_4:
     avg_str = fmt_money_compact(avg_single_realized) if avg_single_realized is not None else "—"
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">平均單筆已實現損益</div>
-        <div class="pnl-kpi-value {pnl_class(avg_single_realized)}">{avg_str}</div>
-        <div class="pnl-kpi-meta">{len(match_pnls)} 筆配對</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">平均單筆已實現損益</div>
+        <div class="portfolio-kpi-value {pnl_class(avg_single_realized)}">{avg_str}</div>
+        <div class="portfolio-kpi-meta">{len(match_pnls)} 筆配對</div>
     </div>""", unsafe_allow_html=True)
 
 # 第 3 排：風險
@@ -386,28 +370,28 @@ pf_str = f"{profit_factor:.2f}" if (profit_factor == profit_factor) else "—"
 r3_1, r3_2, r3_3, r3_4 = st.columns(4)
 with r3_1:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">盈虧比</div>
-        <div class="pnl-kpi-value">{pf_str}</div>
-        <div class="pnl-kpi-meta">獲利 ÷ 虧損</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">盈虧比</div>
+        <div class="portfolio-kpi-value">{pf_str}</div>
+        <div class="portfolio-kpi-meta">獲利 ÷ 虧損</div>
     </div>""", unsafe_allow_html=True)
 with r3_2:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">最大回撤</div>
-        <div class="pnl-kpi-value">{fmt_money_compact(max_dd)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最大回撤</div>
+        <div class="portfolio-kpi-value">{fmt_money_compact(max_dd)}</div>
     </div>""", unsafe_allow_html=True)
 with r3_3:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">最大單筆獲利</div>
-        <div class="pnl-kpi-value pnl-positive">盈 {fmt_money_compact(max_single)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最大單筆獲利</div>
+        <div class="portfolio-kpi-value portfolio-kpi-value--positive">盈 {fmt_money_compact(max_single)}</div>
     </div>""", unsafe_allow_html=True)
 with r3_4:
     st.markdown(f"""
-    <div class="pnl-kpi-card">
-        <div class="pnl-kpi-label">最大單筆虧損</div>
-        <div class="pnl-kpi-value pnl-negative">虧 {fmt_money_compact(min_single)}</div>
+    <div class="portfolio-kpi-card">
+        <div class="portfolio-kpi-label">最大單筆虧損</div>
+        <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {fmt_money_compact(min_single)}</div>
     </div>""", unsafe_allow_html=True)
 
 st.markdown("---")
