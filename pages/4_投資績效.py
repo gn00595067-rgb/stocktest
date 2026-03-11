@@ -151,17 +151,28 @@ for sid in set(buys_all_by_stock.keys()) | set(sells_all_by_stock.keys()):
 unrealized_total = 0.0
 industry_exposure = defaultdict(float)
 industry_pnl = defaultdict(float)
+quote_source_by_sid = {}
+last_price_by_sid = {}
+unrealized_by_stock = defaultdict(float)
 for sid, p in position.items():
     qty = max(0, p["qty"])
     if qty <= 0:
         continue
     avg = p["cost"] / qty if qty else 0
     q = get_quote_cached(sid)
-    last = q["price"] if q else avg
-    unrealized_total += (last - avg) * qty
+    if q and q.get("price") is not None:
+        last = float(q["price"])
+        quote_source_by_sid[sid] = "API現價"
+    else:
+        last = avg
+        quote_source_by_sid[sid] = "持倉均價(無報價)"
+    last_price_by_sid[sid] = last
+    u = (last - avg) * qty
+    unrealized_total += u
+    unrealized_by_stock[sid] = u
     ind = (masters.get(sid).industry_name if masters.get(sid) else None) or "其他"
     industry_exposure[ind] += qty * last
-    industry_pnl[ind] += (last - avg) * qty
+    industry_pnl[ind] += u
 
 total_pnl = realized_total + unrealized_total
 win_count = sum(1 for p in match_pnls if p > 0)
@@ -267,6 +278,68 @@ with r2_3:
         <div style="font-size: 1.2rem; font-weight: 700; color: #c00;">{_fmt_big(max_single)}</div>
         <div style="font-size: 1.2rem; font-weight: 700; color: #0d7a0d;">{_fmt_big(min_single)}</div>
     </div>""", unsafe_allow_html=True)
+
+st.markdown("---")
+st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+
+# ---------- 計算邏輯說明面板（與損益總覽一致） ----------
+n_buys_range = sum(len(b) for b in buys_by_stock.values())
+n_sells_range = sum(len(s) for s in sells_by_stock.values())
+n_stocks_position = len(position)
+policy_label = {"FIFO": "FIFO", "LIFO": "LIFO", "AVERAGE": "均價", "MINCOST": "MINCOST", "MAXCOST": "MAXCOST", "CLOSEST": "CLOSEST", "CUSTOM": "自定沖銷"}.get(policy, policy)
+n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
+n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
+
+with st.expander("📐 計算邏輯說明", expanded=False):
+    st.markdown("### 本頁 KPI 計算方式")
+    st.markdown("""
+    | 指標 | 計算邏輯 |
+    |------|----------|
+    | **已實現損益** | 區間內所有「賣出」依所選沖銷方式與買進配對，每筆配對的 **淨損益** 加總。淨損益 ＝ 價差損益 － 買進手續費（按沖銷股數比例）－ 賣出手續費 － 證交稅。 |
+    | **未實現損益** | 用 **全部交易** 計算目前持倉，持倉成本含買進手續費；未實現 ＝ (現價 － 持倉均價) × 持倉股數。現價來自報價 API，無報價時以持倉均價代替。 |
+    | **總損益** | 已實現 ＋ 未實現。 |
+    | **勝率** | 獲利筆數（淨損益＞0 的配對數）÷ 總配對筆數 × 100%。 |
+    | **盈虧比** | 總獲利 ÷ 總虧損（虧損取絕對值）；無虧損時以總獲利表示。 |
+    | **最大回撤** | 依「賣出日」累加已實現損益形成累積曲線，從累積高點回落的最大幅度。 |
+    | **最大單筆盈/虧** | 單筆配對淨損益的最大值（盈）與最小值（虧）。 |
+    """)
+    st.markdown("---")
+    st.markdown("### 本次計算的動態數據")
+    logic_df = pd.DataFrame([
+        {"項目": "區間", "數值": f"{start_date} ～ {end_date}"},
+        {"項目": "沖銷方式", "數值": policy_label},
+        {"項目": "區間內買進筆數", "數值": n_buys_range},
+        {"項目": "區間內賣出筆數", "數值": n_sells_range},
+        {"項目": "目前有持倉的股票數", "數值": n_stocks_position},
+        {"項目": "總損益", "數值": _fmt_big(total_pnl)},
+        {"項目": "已實現加總", "數值": _fmt_big(realized_total)},
+        {"項目": "未實現加總", "數值": _fmt_big(unrealized_total)},
+        {"項目": "未實現現價來源", "數值": f"API現價 {n_quote_api} 檔、持倉均價(無報價) {n_quote_fallback} 檔"},
+    ])
+    st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
+
+    st.markdown("---")
+    st.markdown("### 未實現損益的現價來源")
+    st.caption("可由此表確認每檔持倉在計算未實現時是用 **API 現價** 還是 **持倉均價（無報價時）**。")
+    if quote_source_by_sid:
+        source_rows = []
+        for sid in sorted(quote_source_by_sid.keys()):
+            p = position.get(sid, {})
+            qty = p.get("qty", 0)
+            cost = p.get("cost", 0)
+            avg_cost = (cost / qty) if qty else 0
+            label = (masters.get(sid).name if masters.get(sid) else "") or sid
+            source_rows.append({
+                "股票": f"{sid} {label}".strip() if label else sid,
+                "現價來源": quote_source_by_sid[sid],
+                "計算用現價": round(last_price_by_sid.get(sid, 0), 2),
+                "持倉均價": round(avg_cost, 2),
+                "持倉股數": qty,
+                "未實現": round(unrealized_by_stock.get(sid, 0), 2),
+            })
+        st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("目前無持倉，無未實現現價來源資料。")
 
 # 產業持股分布：表格 + 圓餅圖（佔比）
 st.subheader("產業持股分布")
