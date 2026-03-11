@@ -129,10 +129,12 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         # 剩餘持倉成本唯一定義：未沖銷買進之 (股數×單價) + 未沖銷部分之買進手續費
         remaining_cost = sum_remaining_from_lots + remaining_buy_fee
         q = position_qty[sid]
+        # 自定沖銷時，規則可能未涵蓋全部賣出或有多餘配對，導致 sum_remaining_qty_from_lots != position_qty；不 raise，以 position_qty 為準並在 debug 中標示
         if sum_remaining_qty_from_lots != q:
-            raise ValueError(
-                f"{sid}: 剩餘股數不一致 sum_remaining_qty_from_lots={sum_remaining_qty_from_lots} != position_qty={q}"
-            )
+            if q and sum_remaining_qty_from_lots > 0 and sum_remaining_qty_from_lots >= q:
+                remaining_cost = (sum_remaining_from_lots / sum_remaining_qty_from_lots) * q + remaining_buy_fee
+            elif not q:
+                remaining_cost = 0.0
         avg_cost = remaining_cost / q if q else 0
         # 數學上「剩餘均價」不可能高於任一本檔買進單價；若發生則必為程式或資料錯誤
         if q and max_buy_price and avg_cost > max_buy_price + 1.0:
@@ -163,6 +165,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             "buys_detail": buys_detail,
             "matches_detail": matches_detail,
             "remaining_lots_detail": remaining_lots_detail,
+            "qty_mismatch": sum_remaining_qty_from_lots != q,
         }
 
     # 每檔股票只向 API 取價一次，避免持倉多檔時爆量（FinMind 每小時約 600 次上限）

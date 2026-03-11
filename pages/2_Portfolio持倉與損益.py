@@ -484,6 +484,8 @@ st.dataframe(style_portfolio_dataframe(df), use_container_width=True, hide_index
 with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價）", expanded=False):
     st.caption("以下為 **程式內部** 依「全部買進成本 − 已沖銷成本 − 已沖銷之買進手續費」算出剩餘持倉成本，再 ÷ 股數 = 均價。可對照檢查是哪一項導致均價異常。")
     if debug_cost:
+        if any(d.get("qty_mismatch") for d in debug_cost.values()):
+            st.warning("部分股票之自定沖銷規則與實際買賣數量不一致（已沖銷總股數 ≠ 賣出總股數），持倉與均價已依實際股數推算。請至「自定沖銷設定」檢查並補齊或修正配對。")
         debug_rows = []
         for sid in sorted(debug_cost.keys()):
             d = debug_cost[sid]
