@@ -323,6 +323,8 @@ def get_finmind_debug(stock_id: str = "2330") -> dict:
                 v4_msg = r.text or f"狀態碼 {r.status_code}"
             # 402 時查詢 API 使用量，協助判斷是「次數上限」還是「方案權限」
             usage_msg = ""
+            used = None
+            limit = None
             if r.status_code == 402:
                 try:
                     ui = requests.get(
@@ -342,6 +344,23 @@ def get_finmind_debug(stock_id: str = "2330") -> dict:
                         usage_msg = f"user_info 狀態碼 {ui.status_code}，無法取得使用量。"
                 except Exception as e:
                     usage_msg = f"查詢使用量失敗：{e}"
+            # 依 API 回傳與使用量判斷可能情況
+            situation = ""
+            v4_lower = (v4_msg or "").lower()
+            if "upper limit" in v4_lower or "reach the upper limit" in v4_lower or "請求" in (v4_msg or "") and "上限" in (v4_msg or ""):
+                if used is not None and limit is not None:
+                    if used >= limit:
+                        situation = "**判斷：每小時請求次數已達上限** — 請等下一小時後再試，或減少開關「持倉與損益」「投資績效」等頁面。"
+                    elif limit >= 500 and used < 50:
+                        situation = "**判斷：可能是「每分鐘」或短時間內請求次數上限** — 顯示的「使用次數」為 user_info 回傳值，若遠低於每小時上限仍出現 402，多半是短區間限流。建議 1～2 分鐘後再試。"
+                    else:
+                        situation = "**判斷：請求次數接近或觸及上限** — 建議稍後再試或減少報價相關操作。"
+                else:
+                    situation = "**判斷：API 回傳為請求次數達上限** — 建議幾分鐘後再試；若持續發生，請至 https://finmindtrade.com/ 查看用量與方案。"
+            elif "付費" in (v4_msg or "") or "sponsor" in v4_lower or "plan" in v4_lower or "subscription" in v4_lower:
+                situation = "**判斷：該 API 可能需要付費方案** — 請至 https://finmindtrade.com/ 查看方案說明。"
+            elif r.status_code == 402:
+                situation = "**判斷：無法從回傳內容判斷具體原因** — 請見下方詳細訊息，或至 https://finmindtrade.com/ 查看用量與方案。"
             url3 = "https://api.finmindtrade.com/api/v3/data"
             params3 = {"dataset": "TaiwanStockPrice", "stock_id": stock_id, "date": start, "end_date": today, "token": token}
             r3 = requests.get(url3, params=params3, timeout=10)
@@ -364,6 +383,7 @@ def get_finmind_debug(stock_id: str = "2330") -> dict:
                 "token_set": True,
                 "error": f"v4={r.status_code}，v3={r3.status_code}",
                 "message": full_msg or "402 表示請求次數達上限或該 API 需付費方案，請至 https://finmindtrade.com/ 查看方案與用量。",
+                "situation": situation,
             }
             _debug_cache[stock_id] = (result, time.time())
             return result

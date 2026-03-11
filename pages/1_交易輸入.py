@@ -157,6 +157,8 @@ with col_right:
                     st.caption("若你已在 Cloud Secrets 設定，請確認：1) 變數名為 FINMIND_TOKEN  2) 存檔後等約 1 分鐘  3) 重新整理頁面或重新部署 App")
                 else:
                     st.warning("**Token 已讀到，但 API 回傳錯誤** — " + (debug.get("error") or ""))
+                    if debug.get("situation"):
+                        st.markdown(debug.get("situation"))
                     st.caption(debug.get("message") or "")
                 st.caption("**易耗用 API 的功能**：FinMind 每小時約 600 次上限。下列行為會對「每檔股票」各打約 2～3 次：**投資績效**、**持倉與損益**（開啟或重新整理時）、**主檔設定「同步股票列表」**、**交易輸入**選不同股票或按「更新即時現價」。持倉檔數多時請減少頻繁切頁或重新整理。")
         st.caption(f"名稱：{master.name if master else '-'}")
