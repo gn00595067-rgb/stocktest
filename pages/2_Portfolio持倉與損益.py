@@ -605,13 +605,13 @@ selected_id = st.selectbox(
 )
 
 if selected_id:
-    # 本檔依目前沖銷方式計算之數據（來自持倉表，會隨沖銷方式變動）
+    # 本檔依目前沖銷方式計算之數據（來自持倉表）
     row = df[df["股票代號"] == selected_id]
     if not row.empty:
         r = row.iloc[0]
         cost = float(r["市值"]) - float(r["未實現損益"])
         ret_pct = (float(r["總損益"]) / cost * 100) if cost and cost != 0 else 0.0
-st.markdown(f"**本檔依「自定沖銷」之數據**")
+        st.markdown(f"**本檔依「自定沖銷」之數據**")
         mv_val = float(r["市值"])
         real_val = float(r["已實現損益"])
         unreal_val = float(r["未實現損益"])
