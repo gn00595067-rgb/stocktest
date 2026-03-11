@@ -141,13 +141,21 @@ for sid in set(buys_all_by_stock.keys()) | set(sells_all_by_stock.keys()):
         position[sid]["cost"] = remaining_cost
 
 unrealized_by_stock = defaultdict(float)
+quote_source_by_sid = {}  # sid -> "API現價" | "持倉均價(無報價)"
+last_price_by_sid = {}    # sid -> 計算未實現時用的現價
 for sid, p in position.items():
     qty = max(0, p["qty"])
     if qty <= 0:
         continue
     avg = p["cost"] / qty if qty else 0
     q = get_quote_cached(sid)
-    last = q["price"] if q else avg
+    if q and q.get("price") is not None:
+        last = float(q["price"])
+        quote_source_by_sid[sid] = "API現價"
+    else:
+        last = avg
+        quote_source_by_sid[sid] = "持倉均價(無報價)"
+    last_price_by_sid[sid] = last
     unrealized_by_stock[sid] = (last - avg) * qty
 
 # ---------- 合併：有已實現或未實現的股票 ----------
@@ -324,6 +332,8 @@ n_sells_range = sum(len(s) for s in sells_by_stock.values())
 n_stocks_realized = len(realized_by_stock)
 n_stocks_position = len(position)
 policy_label = {"FIFO": "FIFO", "LIFO": "LIFO", "AVERAGE": "均價", "MINCOST": "MINCOST", "MAXCOST": "MAXCOST", "CLOSEST": "CLOSEST", "CUSTOM": "自定沖銷"}.get(policy, policy)
+n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
+n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
 
 with st.expander("📐 計算邏輯說明", expanded=False):
     st.markdown("### 本頁 KPI 計算方式")
@@ -349,8 +359,32 @@ with st.expander("📐 計算邏輯說明", expanded=False):
         {"項目": "總損益（本頁）", "數值": f"{_fmt_big(total_pnl)} （{pnl_col}）"},
         {"項目": "已實現加總", "數值": _fmt_big(realized_sum)},
         {"項目": "未實現加總", "數值": _fmt_big(unrealized_sum)},
+        {"項目": "未實現現價來源", "數值": f"API現價 {n_quote_api} 檔、持倉均價(無報價) {n_quote_fallback} 檔"},
     ])
     st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
+
+    st.markdown("---")
+    st.markdown("### 未實現損益的現價來源")
+    st.caption("可由此表確認每檔持倉在計算未實現時是用 **API 現價** 還是 **持倉均價（無報價時）**。")
+    if quote_source_by_sid:
+        source_rows = []
+        for sid in sorted(quote_source_by_sid.keys()):
+            p = position.get(sid, {})
+            qty = p.get("qty", 0)
+            cost = p.get("cost", 0)
+            avg_cost = (cost / qty) if qty else 0
+            label = (masters.get(sid).name if masters.get(sid) else "") or sid
+            source_rows.append({
+                "股票": f"{sid} {label}".strip() if label else sid,
+                "現價來源": quote_source_by_sid[sid],
+                "計算用現價": round(last_price_by_sid.get(sid, 0), 2),
+                "持倉均價": round(avg_cost, 2),
+                "持倉股數": qty,
+                "未實現": round(unrealized_by_stock.get(sid, 0), 2),
+            })
+        st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
+    else:
+        st.caption("目前無持倉，無未實現現價來源資料。")
 
 # ---------- 主圖：橫向條圖（各股貢獻，從大到小） ----------
 st.subheader("各股損益（由大至小）")
