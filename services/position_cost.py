@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 持倉股數與剩餘成本計算（僅自定沖銷）。
-與 Portfolio 持倉與損益同一套邏輯，供投資績效頁共用，避免均價不一致。
+與 庫存損益 同一套邏輯，供投資績效頁共用，避免均價不一致。
 """
 from collections import defaultdict
 from typing import Optional, List, Tuple

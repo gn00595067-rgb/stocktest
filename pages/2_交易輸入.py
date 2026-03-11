@@ -160,7 +160,7 @@ with col_right:
                     if debug.get("situation"):
                         st.markdown(debug.get("situation"))
                     st.caption(debug.get("message") or "")
-                st.caption("**易耗用 API 的功能**：FinMind 每小時約 600 次上限。下列行為會對「每檔股票」各打約 2～3 次：**投資績效**、**持倉與損益**（開啟或重新整理時）、**主檔設定「同步股票列表」**、**交易輸入**選不同股票或按「更新即時現價」。持倉檔數多時請減少頻繁切頁或重新整理。")
+                st.caption("**易耗用 API 的功能**：FinMind 每小時約 600 次上限。下列行為會對「每檔股票」各打約 2～3 次：**投資績效**、**庫存損益**（開啟或重新整理時）、**主檔設定「同步股票列表」**、**交易輸入**選不同股票或按「更新即時現價」。持倉檔數多時請減少頻繁切頁或重新整理。")
         st.caption(f"名稱：{master.name if master else '-'}")
         st.caption(f"產業：{master.industry_name if master else '-'}")
 

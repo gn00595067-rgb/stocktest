@@ -584,7 +584,7 @@ else:
                                 if i < len(created_buy) and i < len(created_sell):
                                     sess.add(CustomMatchRule(sell_trade_id=created_sell[i], buy_trade_id=created_buy[i], matched_qty=r["qty"]))
                             sess.commit()
-                            st.session_state["excel_import_success_msg"] = f"已匯入 {len(all_trades)} 筆交易、{len(all_rules)} 筆自定沖銷規則。可至「交易輸入」「自定沖銷設定」「Portfolio」檢視。"
+                            st.session_state["excel_import_success_msg"] = f"已匯入 {len(all_trades)} 筆交易、{len(all_rules)} 筆自定沖銷規則。可至「交易輸入」「自定沖銷設定」「庫存損益」檢視。"
                             st.session_state["excel_import_last_file"] = (uploaded2.name, uploaded2.size)
                             st.rerun()
                         except OperationalError as e:

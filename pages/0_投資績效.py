@@ -90,7 +90,7 @@ with col_m:
     )
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
-# ---------- 與 Portfolio 一致的 KPI 卡片樣式 ----------
+# ---------- 與 庫存損益 一致的 KPI 卡片樣式 ----------
 def _inject_kpi_style():
     st.markdown("""
     <style>
@@ -150,7 +150,7 @@ for sid, sells in sells_by_stock.items():
         if sell_t:
             matches_with_sell_date.append((str(sell_t.trade_date), net_pnl))
 
-# 持倉與未實現：與 Portfolio 持倉與損益「同一套」持倉均價計算，避免兩頁均價不一致
+# 持倉與未實現：與 庫存損益「同一套」持倉均價計算，避免兩頁均價不一致
 position = defaultdict(lambda: {"qty": 0, "cost": 0.0})
 for sid, data in compute_position_and_cost_by_stock(all_trades, custom_rules=custom_rules).items():
     position[sid]["qty"] = data["qty"]
@@ -261,7 +261,7 @@ def _fmt_pct(x):
 
 
 def _pnl_color(val):
-    """依正負回傳 CSS class（台股：正紅、負綠），與 Portfolio 一致"""
+    """依正負回傳 CSS class（台股：正紅、負綠），與 庫存損益 一致"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     try:
@@ -271,7 +271,7 @@ def _pnl_color(val):
         return ""
 
 
-# ---------- KPI 字卡（與 Portfolio 持倉與損益同風格） ----------
+# ---------- KPI 字卡（與 庫存損益 同風格） ----------
 _inject_kpi_style()
 st.subheader("關鍵績效")
 
@@ -368,7 +368,7 @@ with st.expander("📐 計算邏輯說明", expanded=False):
     st.markdown("### 「全部」區間定義（兩頁一致才可比較）")
     st.markdown("""
     - **本頁**：快速區間選「全部」時，使用 **2000-01-01 ～ 今天**，且 **已實現** 的買賣來自「全部交易」（無日期篩選）。
-    - **持倉與損益頁**：點「全部」按鈕時，開始日期 = **2000-01-01**、結束 = 今天；**已實現** = 該區間內賣出與區間內買進依自定沖銷配對後的淨損益。
+    - **庫存損益頁**：點「全部」按鈕時，開始日期 = **2000-01-01**、結束 = 今天；**已實現** = 該區間內賣出與區間內買進依自定沖銷配對後的淨損益。
     - 兩頁都選「全部」時，區間一致，同一檔股票的 **已實現、未實現、合計** 應相同。若曾不一致，多為持倉頁「全部」先前為 2020-01-01 起算，已改為 2000-01-01 以與本頁對齊。
     """)
     st.markdown("### 本頁 KPI 計算方式")
@@ -386,13 +386,13 @@ with st.expander("📐 計算邏輯說明", expanded=False):
     """)
     st.markdown("### 程式計算流程摘要（除錯用）")
     st.markdown("""
-    | 項目 | 損益總覽與投資績效 | 持倉與損益 |
+    | 項目 | 損益總覽與投資績效 | 庫存損益 |
     |------|-------------------|------------|
     | 已實現 | 區間內交易 → 依 stock_id 分組買/賣 → 每檔 `compute_matches(buys, sells, custom_rules)` → 每筆配對 `net_pnl_for_match` 加總。**「全部」時**：區間 = 全部交易（無日期過濾）。 | `in_range = trades` 落在 start_date～end_date → 同上 per stock。**「全部」時**：start=2000-01-01、end=今天，故 in_range = 全部交易。 |
     | 未實現 | **全部交易** → 每檔持倉成本與股數 → (現價 − 均價) × 股數；現價 = API 或持倉均價。 | 同上：持倉與成本用 **全部** 交易，未實現 = (現價 − 均價) × 股數。 |
     | 沖銷 | 自定沖銷：`custom_rules` (sell_id, buy_id, qty)，`_custom_match` 依規則配對，`min(rule_qty, sl.qty, bl.qty)` 且會扣減 lot 剩餘。 | 同一套 `compute_matches` / `custom_rules`。 |
     """)
-    st.markdown("**若「各股損益」圖表與「持倉與損益」頁同一檔股票數字不同**：兩頁的 **已實現** 都是「該頁所選日期區間內」的已實現損益。請確認兩頁皆選「全部」（本頁快速區間選「全部」、持倉頁點「全部」按鈕），則區間皆為 2000-01-01 至今，數字應一致。")
+    st.markdown("**若「各股損益」圖表與「庫存損益」頁同一檔股票數字不同**：兩頁的 **已實現** 都是「該頁所選日期區間內」的已實現損益。請確認兩頁皆選「全部」（本頁快速區間選「全部」、庫存損益頁點「全部」按鈕），則區間皆為 2000-01-01 至今，數字應一致。")
     st.markdown("---")
     st.markdown("### 本次計算的動態數據")
     logic_df = pd.DataFrame([
@@ -435,7 +435,7 @@ with st.expander("📐 計算邏輯說明", expanded=False):
 
 # ---------- 各股損益（由大至小） ----------
 st.subheader("各股損益（由大至小）")
-st.caption("此圖依 **所選日期區間** 與 **顯示模式**（合計／已實現／未實現）計算。若與「持倉與損益」頁同一檔股票的數字不同，通常是 **兩頁所選的日期區間不一樣**：本頁為區間內已實現 ＋ 目前未實現；持倉頁的已實現也是依該頁選的區間計算。")
+st.caption("此圖依 **所選日期區間** 與 **顯示模式**（合計／已實現／未實現）計算。若與「庫存損益」頁同一檔股票的數字不同，通常是 **兩頁所選的日期區間不一樣**：本頁為區間內已實現 ＋ 目前未實現；庫存損益頁的已實現也是依該頁選的區間計算。")
 df_chart = df.sort_values(pnl_col, ascending=False).copy()
 df_chart["label_short"] = df_chart["label"].str[:14]
 y_scale = alt.Scale(paddingInner=0.25)

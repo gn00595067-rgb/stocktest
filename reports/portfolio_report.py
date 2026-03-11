@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Portfolio 持倉與損益報表
+庫存損益報表
 
 持倉與已實現損益 **僅依自定沖銷**（custom_rules）計算，無 FIFO/LIFO 等其他方式。
 

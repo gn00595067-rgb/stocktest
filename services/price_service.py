@@ -350,7 +350,7 @@ def get_finmind_debug(stock_id: str = "2330") -> dict:
             if "upper limit" in v4_lower or "reach the upper limit" in v4_lower or "請求" in (v4_msg or "") and "上限" in (v4_msg or ""):
                 if used is not None and limit is not None:
                     if used >= limit:
-                        situation = "**判斷：每小時請求次數已達上限** — 請等下一小時後再試，或減少開關「持倉與損益」「投資績效」等頁面。"
+                        situation = "**判斷：每小時請求次數已達上限** — 請等下一小時後再試，或減少開關「庫存損益」「投資績效」等頁面。"
                     elif limit >= 500 and used < 50:
                         situation = "**判斷：可能是「每分鐘」或短時間內請求次數上限** — 顯示的「使用次數」為 user_info 回傳值，若遠低於每小時上限仍出現 402，多半是短區間限流。建議 1～2 分鐘後再試。"
                     else:
