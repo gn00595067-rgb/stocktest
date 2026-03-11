@@ -90,47 +90,41 @@ with col_m:
     )
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
-# ---------- 關鍵績效 KPI 樣式（美學設計） ----------
+# ---------- KPI 樣式（集中、一致命名、專業儀表板風格） ----------
 def _inject_kpi_style():
     st.markdown("""
     <style>
-    .kpi-section { margin-bottom: 0.5rem; }
-    .kpi-row-label {
-        font-size: 0.7rem; font-weight: 600; letter-spacing: 0.08em; color: #64748b;
-        margin-bottom: 0.5rem; margin-top: 0.75rem; text-transform: uppercase;
-    }
-    .kpi-row-label:first-of-type { margin-top: 0.2rem; }
-    .portfolio-kpi-card {
+    .pnl-kpi-grid { margin-bottom: 0.5rem; }
+    .pnl-kpi-card {
         background: #ffffff;
         border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 1.25rem 1.35rem;
-        margin-bottom: 0.85rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-        min-height: 8rem;
+        border-radius: 16px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 0.75rem;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        min-height: 5.5rem;
         display: flex;
         flex-direction: column;
         justify-content: flex-start;
-        transition: box-shadow 0.2s ease, border-color 0.2s ease;
+        transition: box-shadow 0.15s ease, border-color 0.15s ease;
     }
-    .portfolio-kpi-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.06); border-color: #cbd5e1; }
-    .portfolio-kpi-label {
-        font-size: 0.7rem; font-weight: 600; letter-spacing: 0.06em; color: #64748b;
-        margin-bottom: 0.45rem; text-transform: uppercase;
+    .pnl-kpi-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); border-color: #cbd5e1; }
+    .pnl-kpi-label {
+        font-size: 12px; font-weight: 500; color: #64748b;
+        margin-bottom: 0.35rem;
     }
-    .portfolio-kpi-value {
-        font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.35;
+    .pnl-kpi-value {
+        font-size: 32px; font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        text-align: right;
     }
-    .portfolio-kpi-value--positive { color: #b91c1c; }
-    .portfolio-kpi-value--negative { color: #15803d; }
-    .portfolio-kpi-sub {
-        font-size: 0.75rem; color: #94a3b8; margin-top: 0.3rem; letter-spacing: 0.01em;
-    }
-    .portfolio-kpi-sublabel {
-        font-size: 0.9rem; font-weight: 600; color: #334155; margin-bottom: 0.25rem;
-    }
-    .portfolio-kpi-card .portfolio-kpi-value + .portfolio-kpi-value { margin-top: 0.25rem; }
-    .kpi-spacer { min-height: 8rem; margin-bottom: 0.85rem; }
+    .pnl-positive { color: #991b1b; }
+    .pnl-negative { color: #166534; }
+    .pnl-kpi-meta { font-size: 12px; color: #94a3b8; margin-top: 0.25rem; text-align: right; }
+    .pnl-kpi-name { font-size: 13px; color: #475569; margin-bottom: 0.2rem; }
+    .pnl-kpi-card .pnl-kpi-value + .pnl-kpi-value { margin-top: 0.2rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -261,127 +255,160 @@ for row in cum_series:
     if dd > max_dd:
         max_dd = dd
 
+# ---------- 統一數字格式化（tabular-nums、金額/百分比/正負一致） ----------
+def safe_text(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    return str(val).strip()
 
-def _fmt_big(val):
+
+def fmt_money_compact(val):
+    """金額簡寫：<1萬千分位、≥1萬用萬(1位)、≥1億用億(2位)，帶正負號"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return "—"
     v = float(val)
-    if abs(v) >= 1e8:
-        return f"{v/1e8:.2f}億"
-    if abs(v) >= 1e4:
-        return f"{v/1e4:.2f}萬"
-    return f"{v:,.0f}"
+    sign = "+" if v >= 0 else "-"
+    v = abs(v)
+    if v >= 1e8:
+        return f"{sign}{v/1e8:.2f}億"
+    if v >= 1e4:
+        return f"{sign}{v/1e4:.1f}萬"
+    return f"{sign}{int(v):,}" if v == int(v) else f"{sign}{v:,.0f}"
 
 
-def _fmt_pct(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
+def fmt_money_full(val):
+    """金額完整千分位，帶正負號"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    v = float(val)
+    sign = "+" if v >= 0 else "-"
+    v = abs(v)
+    return f"{sign}{int(v):,}" if v == int(v) else f"{sign}{v:,.0f}"
+
+
+def fmt_pct(val):
+    """百分比保留 1 位小數"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
         return "—"
     try:
-        return f"{float(x):.2f}%"
+        return f"{float(val):.1f}%"
     except Exception:
-        return str(x)
+        return safe_text(val)
 
 
-def _pnl_color(val):
-    """依正負回傳 CSS class（台股：正紅、負綠），與 庫存損益 一致"""
+def pnl_class(val):
+    """正值回傳 pnl-positive，負值 pnl-negative（台股：紅/綠）"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
     try:
-        v = float(val)
-        return "portfolio-kpi-value--positive" if v >= 0 else "portfolio-kpi-value--negative"
+        return "pnl-positive" if float(val) >= 0 else "pnl-negative"
     except Exception:
         return ""
 
 
-# ---------- KPI 字卡（美學設計：分組標題、統一卡片、間距與層次） ----------
+# 向後相容別名（其餘程式碼可漸進改用新名）
+_fmt_big = fmt_money_compact
+_fmt_pct = fmt_pct
+_pnl_color = pnl_class
+
+
+# ---------- KPI 區塊：三排 × 四張，每張有內容（無空白格） ----------
 _inject_kpi_style()
 st.markdown("#### 關鍵績效")
+avg_single_realized = (realized_sum / len(match_pnls)) if match_pnls else None
 
-# 第一列：損益概覽
-st.markdown('<p class="kpi-row-label">損益概覽</p>', unsafe_allow_html=True)
-row1_1, row1_2, row1_3, row1_4 = st.columns(4)
-with row1_1:
-    cls = _pnl_color(total_pnl)
+# 第 1 排：總覽
+r1_1, r1_2, r1_3, r1_4 = st.columns(4)
+with r1_1:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">總損益</div>
-        <div class="portfolio-kpi-value {cls}">{_fmt_big(total_pnl)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">總損益</div>
+        <div class="pnl-kpi-value {pnl_class(total_pnl)}">{fmt_money_compact(total_pnl)}</div>
     </div>""", unsafe_allow_html=True)
-with row1_2:
-    cls = _pnl_color(realized_sum)
+with r1_2:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">已實現</div>
-        <div class="portfolio-kpi-value {cls}">{_fmt_big(realized_sum)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">已實現</div>
+        <div class="pnl-kpi-value {pnl_class(realized_sum)}">{fmt_money_compact(realized_sum)}</div>
     </div>""", unsafe_allow_html=True)
-with row1_3:
-    cls = _pnl_color(unrealized_sum)
+with r1_3:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">未實現</div>
-        <div class="portfolio-kpi-value {cls}">{_fmt_big(unrealized_sum)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">未實現</div>
+        <div class="pnl-kpi-value {pnl_class(unrealized_sum)}">{fmt_money_compact(unrealized_sum)}</div>
     </div>""", unsafe_allow_html=True)
-with row1_4:
+with r1_4:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">勝率（股票）</div>
-        <div class="portfolio-kpi-value">{win_rate_pct:.1f}%</div>
-        <div class="portfolio-kpi-sub">獲利 {win_stocks} 支 · 虧損 {loss_stocks} 支</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">勝率（股票）</div>
+        <div class="pnl-kpi-value">{fmt_pct(win_rate_pct)}</div>
+        <div class="pnl-kpi-meta">獲利 {win_stocks} 支｜虧損 {loss_stocks} 支</div>
     </div>""", unsafe_allow_html=True)
 
-# 第二列：個股表現
-st.markdown('<p class="kpi-row-label">個股表現</p>', unsafe_allow_html=True)
-row2_1, row2_2, row2_3, row2_4 = st.columns(4)
-with row2_1:
-    best_label = str(best_row["label"]) if best_row is not None else "—"
-    best_val = best_row[pnl_col] if best_row is not None else 0
-    cls = _pnl_color(best_val)
+# 第 2 排：表現
+best_label = safe_text(best_row["label"]) if best_row is not None else "—"
+best_val = best_row[pnl_col] if best_row is not None else 0
+worst_label = safe_text(worst_row["label"]) if worst_row is not None else "—"
+worst_val = worst_row[pnl_col] if worst_row is not None else 0
+r2_1, r2_2, r2_3, r2_4 = st.columns(4)
+with r2_1:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最佳個股</div>
-        <div class="portfolio-kpi-sublabel">{best_label}</div>
-        <div class="portfolio-kpi-value {cls}">{_fmt_big(best_val)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">最佳個股</div>
+        <div class="pnl-kpi-name">{best_label}</div>
+        <div class="pnl-kpi-value {pnl_class(best_val)}">{fmt_money_compact(best_val)}</div>
     </div>""", unsafe_allow_html=True)
-with row2_2:
-    st.markdown("""<div class="kpi-spacer"></div>""", unsafe_allow_html=True)
-with row2_3:
-    worst_label = str(worst_row["label"]) if worst_row is not None else "—"
-    worst_val = worst_row[pnl_col] if worst_row is not None else 0
-    cls = _pnl_color(worst_val)
+with r2_2:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最差個股</div>
-        <div class="portfolio-kpi-sublabel">{worst_label}</div>
-        <div class="portfolio-kpi-value {cls}">{_fmt_big(worst_val)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">最差個股</div>
+        <div class="pnl-kpi-name">{worst_label}</div>
+        <div class="pnl-kpi-value {pnl_class(worst_val)}">{fmt_money_compact(worst_val)}</div>
     </div>""", unsafe_allow_html=True)
-with row2_4:
-    st.markdown("""<div class="kpi-spacer"></div>""", unsafe_allow_html=True)
+with r2_3:
+    st.markdown(f"""
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">獲利／虧損股票數</div>
+        <div class="pnl-kpi-value">{win_stocks} ／ {loss_stocks}</div>
+        <div class="pnl-kpi-meta">共 {total_count} 檔</div>
+    </div>""", unsafe_allow_html=True)
+with r2_4:
+    avg_str = fmt_money_compact(avg_single_realized) if avg_single_realized is not None else "—"
+    st.markdown(f"""
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">平均單筆已實現損益</div>
+        <div class="pnl-kpi-value {pnl_class(avg_single_realized)}">{avg_str}</div>
+        <div class="pnl-kpi-meta">{len(match_pnls)} 筆配對</div>
+    </div>""", unsafe_allow_html=True)
 
-# 第三列：風險與單筆
-st.markdown('<p class="kpi-row-label">風險與單筆</p>', unsafe_allow_html=True)
-row3_1, row3_2, row3_3, row3_4 = st.columns(4)
-with row3_1:
+# 第 3 排：風險
+pf_str = f"{profit_factor:.2f}" if (profit_factor == profit_factor) else "—"
+r3_1, r3_2, r3_3, r3_4 = st.columns(4)
+with r3_1:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">盈虧比</div>
-        <div class="portfolio-kpi-value">{profit_factor:.2f}</div>
-        <div class="portfolio-kpi-sub">獲利 ÷ 虧損</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">盈虧比</div>
+        <div class="pnl-kpi-value">{pf_str}</div>
+        <div class="pnl-kpi-meta">獲利 ÷ 虧損</div>
     </div>""", unsafe_allow_html=True)
-with row3_2:
+with r3_2:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最大回撤</div>
-        <div class="portfolio-kpi-value">{_fmt_big(max_dd)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">最大回撤</div>
+        <div class="pnl-kpi-value">{fmt_money_compact(max_dd)}</div>
     </div>""", unsafe_allow_html=True)
-with row3_3:
+with r3_3:
     st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最大單筆</div>
-        <div class="portfolio-kpi-value portfolio-kpi-value--positive">盈 {_fmt_big(max_single)}</div>
-        <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {_fmt_big(min_single)}</div>
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">最大單筆獲利</div>
+        <div class="pnl-kpi-value pnl-positive">盈 {fmt_money_compact(max_single)}</div>
     </div>""", unsafe_allow_html=True)
-with row3_4:
-    st.markdown("""<div class="kpi-spacer"></div>""", unsafe_allow_html=True)
+with r3_4:
+    st.markdown(f"""
+    <div class="pnl-kpi-card">
+        <div class="pnl-kpi-label">最大單筆虧損</div>
+        <div class="pnl-kpi-value pnl-negative">虧 {fmt_money_compact(min_single)}</div>
+    </div>""", unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
@@ -469,16 +496,19 @@ st.subheader("各股損益（由大至小）")
 st.caption("此圖依 **所選日期區間** 與 **顯示模式**（合計／已實現／未實現）計算。若與「庫存損益」頁同一檔股票的數字不同，通常是 **兩頁所選的日期區間不一樣**：本頁為區間內已實現 ＋ 目前未實現；庫存損益頁的已實現也是依該頁選的區間計算。")
 df_chart = df.sort_values(pnl_col, ascending=False).copy()
 df_chart["label_short"] = df_chart["label"].str[:14]
+df_chart["pnl_fmt"] = df_chart[pnl_col].map(fmt_money_compact)
 y_scale = alt.Scale(paddingInner=0.25)
 bar = alt.Chart(df_chart).mark_bar().encode(
     y=alt.Y("label_short:N", sort="-x", title="", scale=y_scale),
     x=alt.X(f"{pnl_col}:Q", title="損益"),
-    color=alt.condition(alt.datum[pnl_col] >= 0, alt.value("#c00"), alt.value("#0d7a0d")),
+    color=alt.condition(alt.datum[pnl_col] >= 0, alt.value("#991b1b"), alt.value("#166534")),
 )
-text = alt.Chart(df_chart).mark_text(dx=8, align="left").encode(
+text = alt.Chart(df_chart).mark_text(font_variant_numeric="tabular-nums").encode(
     y=alt.Y("label_short:N", sort="-x", title="", scale=y_scale),
     x=alt.X(f"{pnl_col}:Q", title=""),
-    text=alt.Text(f"{pnl_col}:Q", format=",.0f"),
+    text=alt.Text("pnl_fmt:N"),
+    align=alt.condition(alt.datum[pnl_col] >= 0, alt.value("left"), alt.value("right")),
+    dx=alt.condition(alt.datum[pnl_col] >= 0, alt.value(8), alt.value(-8)),
 )
 st.altair_chart(bar + text, use_container_width=True)
 
@@ -492,7 +522,11 @@ with col_top5_win:
         top5_win = top5_win.copy()
         wins_sum = df[df[pnl_col] > 0][pnl_col].sum()
         top5_win["占比%"] = (top5_win[pnl_col] / wins_sum * 100) if wins_sum > 0 else 0
-        st.dataframe(top5_win[["label", pnl_col, "占比%"]].rename(columns={"label": "股票", pnl_col: "損益"}).style.format({"損益": "{:,.0f}", "占比%": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        disp_win = top5_win[["label", pnl_col, "占比%"]].rename(columns={"label": "股票", pnl_col: "損益"})
+        st.dataframe(
+            disp_win.style.format({"損益": lambda v: fmt_money_compact(v), "占比%": "{:.1f}%"}).set_properties(subset=["損益", "占比%"], **{"text-align": "right"}),
+            use_container_width=True, hide_index=True
+        )
     else:
         st.caption("無獲利個股")
 with col_top5_loss:
@@ -501,7 +535,11 @@ with col_top5_loss:
         top5_loss = top5_loss.copy()
         loss_total = df[df[pnl_col] < 0][pnl_col].sum()
         top5_loss["占比%"] = (top5_loss[pnl_col] / loss_total * 100) if loss_total != 0 else 0
-        st.dataframe(top5_loss[["label", pnl_col, "占比%"]].rename(columns={"label": "股票", pnl_col: "損益"}).style.format({"損益": "{:,.0f}", "占比%": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        disp_loss = top5_loss[["label", pnl_col, "占比%"]].rename(columns={"label": "股票", pnl_col: "損益"})
+        st.dataframe(
+            disp_loss.style.format({"損益": lambda v: fmt_money_compact(v), "占比%": "{:.1f}%"}).set_properties(subset=["損益", "占比%"], **{"text-align": "right"}),
+            use_container_width=True, hide_index=True
+        )
     else:
         st.caption("無虧損個股")
 
@@ -513,15 +551,24 @@ if industry_exposure:
         {"產業": k, "市值": v, "佔比%": round(v / total_mv * 100, 1) if total_mv else 0}
         for k, v in sorted(industry_exposure.items(), key=lambda x: -x[1])
     ])
-    st.dataframe(df_exp.style.format({"市值": "{:,.0f}".format}), use_container_width=True, hide_index=True)
+    df_exp["市值顯示"] = df_exp["市值"].map(fmt_money_compact)
+    st.dataframe(
+        df_exp[["產業", "市值顯示", "佔比%"]].rename(columns={"市值顯示": "市值"}).style.format({"佔比%": "{:.1f}%"}).set_properties(subset=["市值", "佔比%"], **{"text-align": "right"}),
+        use_container_width=True, hide_index=True
+    )
     df_pie = df_exp.copy()
+    df_pie["市值_fmt"] = df_pie["市值"].map(fmt_money_compact)
     pie_chart = (
         alt.Chart(df_pie)
         .mark_arc(innerRadius=0, stroke="white", strokeWidth=1.5)
         .encode(
             theta=alt.Theta("市值:Q"),
             color=alt.Color("產業:N", legend=alt.Legend(title="產業", orient="right"), scale=alt.Scale(range=["#4a90d9", "#e85d75", "#50c878", "#9b59b6", "#f39c12"])),
-            tooltip=[alt.Tooltip("產業:N", title="產業"), alt.Tooltip("佔比%:Q", title="佔比 (%)", format=".1f"), alt.Tooltip("市值:Q", title="市值", format=",.0f")],
+            tooltip=[
+                alt.Tooltip("產業:N", title="產業"),
+                alt.Tooltip("佔比%:Q", title="佔比 (%)", format=".1f"),
+                alt.Tooltip("市值_fmt:N", title="市值"),
+            ],
         )
         .configure_view(strokeWidth=0)
         .configure_axis(disable=True)
@@ -544,22 +591,35 @@ st.subheader("產業損益")
 df_ind = df.groupby("industry", as_index=False)[["已實現", "未實現", "合計"]].sum()
 df_ind["顯示損益"] = df_ind[pnl_col]
 if not df_ind.empty:
+    df_ind["顯示損益_fmt"] = df_ind["顯示損益"].map(fmt_money_compact)
     chart_ind = (
         alt.Chart(df_ind)
         .mark_bar(size=28)
         .encode(
             x=alt.X("industry:N", sort="-y", title=""),
             y=alt.Y("顯示損益:Q", title="損益"),
-            color=alt.condition(alt.datum.顯示損益 > 0, alt.value("#c00"), alt.value("#0d7a0d")),
+            color=alt.condition(alt.datum.顯示損益 > 0, alt.value("#991b1b"), alt.value("#166534")),
         )
     )
-    st.altair_chart(chart_ind, use_container_width=True)
+    text_ind = alt.Chart(df_ind).mark_text(font_variant_numeric="tabular-nums", align=alt.condition(alt.datum.顯示損益 >= 0, alt.value("left"), alt.value("right")), dx=alt.condition(alt.datum.顯示損益 >= 0, alt.value(8), alt.value(-8))).encode(
+        x=alt.X("industry:N", sort="-y", title=""),
+        y=alt.Y("顯示損益:Q", title=""),
+        text=alt.Text("顯示損益_fmt:N"),
+    )
+    st.altair_chart(chart_ind + text_ind, use_container_width=True)
 else:
     st.caption("無產業資料")
 
 # ---------- 完整明細表 ----------
 with st.expander("完整明細表（可排序、匯出 CSV）", expanded=False):
     display_df = df[["stock_id", "name", "industry", "已實現", "未實現", "合計"]].copy()
-    display_df = display_df.rename(columns={"stock_id": "代號", "name": "名稱", "industry": "產業"})
-    st.dataframe(display_df.sort_values("合計", ascending=False).style.format({"已實現": "{:,.2f}", "未實現": "{:,.2f}", "合計": "{:,.2f}"}), use_container_width=True, hide_index=True)
-    st.download_button("匯出 CSV", data=display_df.to_csv(index=False).encode("utf-8-sig"), file_name="pnl_overview.csv", mime="text/csv")
+    display_df = display_df.sort_values("合計", ascending=False).rename(columns={"stock_id": "代號", "name": "名稱", "industry": "產業"})
+    display_df["已實現"] = display_df["已實現"].map(fmt_money_compact)
+    display_df["未實現"] = display_df["未實現"].map(fmt_money_compact)
+    display_df["合計"] = display_df["合計"].map(fmt_money_compact)
+    st.dataframe(
+        display_df.style.set_properties(subset=["已實現", "未實現", "合計"], **{"text-align": "right"}),
+        use_container_width=True, hide_index=True
+    )
+    export_df = df[["stock_id", "name", "industry", "已實現", "未實現", "合計"]].rename(columns={"stock_id": "代號", "name": "名稱", "industry": "產業"})
+    st.download_button("匯出 CSV", data=export_df.to_csv(index=False).encode("utf-8-sig"), file_name="pnl_overview.csv", mime="text/csv")
