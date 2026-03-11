@@ -45,6 +45,34 @@ selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), f
 sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(selected_id, trades, masters, policy, custom_rules=custom_rules_list if policy == "CUSTOM" else None)
 company_label = stock_options.get(selected_id, selected_id)
 
+# ---------- 原始交易紀錄（除錯／與 Excel 比對） ----------
+stock_trades = [t for t in trades if t.stock_id == selected_id]
+with st.expander("📋 此股票全部交易原始資料（與 Excel 比對用）", expanded=False):
+    st.caption("下表為系統內此股票的所有買進／賣出筆數。若與您手邊 Excel 筆數或單筆「股價」不一致，可能是重複匯入、漏匯或匯入時欄位解析錯誤。均價異常時請檢查是否有單筆價格異常（例如 >500 或接近 788）。")
+    if not stock_trades:
+        st.caption("尚無交易。")
+    else:
+        raw_rows = []
+        for t in sorted(stock_trades, key=lambda x: (x.trade_date, x.id)):
+            raw_rows.append({
+                "id": t.id,
+                "日期": str(t.trade_date),
+                "買/賣": (t.side or "").upper(),
+                "股價": round(float(t.price), 2),
+                "股數": int(t.quantity),
+                "手續費": round(float(t.fee or 0), 2) if t.fee is not None else None,
+                "證交稅": round(float(t.tax or 0), 2) if t.tax is not None else None,
+                "備註": (t.note or "")[:30],
+            })
+        raw_df = pd.DataFrame(raw_rows)
+        st.dataframe(raw_df, use_container_width=True, hide_index=True)
+        buy_total_qty = sum(r["股數"] for r in raw_rows if r["買/賣"] == "BUY")
+        sell_total_qty = sum(r["股數"] for r in raw_rows if r["買/賣"] == "SELL")
+        buy_total_amt = sum(r["股價"] * r["股數"] for r in raw_rows if r["買/賣"] == "BUY")
+        st.caption(f"買進筆數：{sum(1 for r in raw_rows if r['買/賣']=='BUY')} 筆，合計股數 {buy_total_qty:,}，合計價金 {buy_total_amt:,.0f}。賣出筆數：{sum(1 for r in raw_rows if r['買/賣']=='SELL')} 筆，合計股數 {sell_total_qty:,}。")
+        max_buy_price = max((r["股價"] for r in raw_rows if r["買/賣"] == "BUY"), default=0)
+        if max_buy_price > 500:
+            st.warning(f"⚠️ 買進單筆最高股價為 **{max_buy_price:,.2f}**，若高於該股合理區間，請檢查該筆是否輸入錯誤或匯入時解析錯誤。")
 
 def _style_signed(val):
     if val is None or (isinstance(val, float) and pd.isna(val)):
