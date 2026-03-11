@@ -22,6 +22,11 @@ from db.models import Trade, StockMaster
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 
 
+def _is_buy(t) -> bool:
+    """與投資績效、daily_detail、stock_detail 一致：買/賣不區分大小寫。"""
+    return (getattr(t, "side", None) or "").strip().upper() == "BUY"
+
+
 def get_realized_pnl_by_stock(trades, start_date: date, end_date: date, policy: str, custom_rules: Optional[List[Tuple[int, int, int]]] = None):
     """依時間區間內的買賣計算已實現損益（依股票），淨損益（扣手續費與證交稅）。"""
     in_range = [t for t in trades if start_date <= t.trade_date <= end_date]
@@ -29,7 +34,7 @@ def get_realized_pnl_by_stock(trades, start_date: date, end_date: date, policy: 
     sells_by_stock = defaultdict(list)
     for t in in_range:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
-        if t.side == "BUY":
+        if _is_buy(t):
             buys_by_stock[t.stock_id].append(lot)
         else:
             sells_by_stock[t.stock_id].append(lot)
@@ -54,7 +59,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     for t in trades:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
         key = (t.stock_id, t.user)
-        if t.side == "BUY":
+        if _is_buy(t):
             buys_by_stock_user[t.stock_id][t.user].append(lot)
         else:
             sells_by_stock_user[t.stock_id][t.user].append(lot)
@@ -64,7 +69,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     sells_range = defaultdict(list)
     for t in in_range:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
-        if t.side == "BUY":
+        if _is_buy(t):
             buys_range[t.stock_id].append(lot)
         else:
             sells_range[t.stock_id].append(lot)
@@ -236,8 +241,8 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         last_price = quote["price"] if quote else avg_cost
         mv = qty * last_price
         unrealized = (last_price - avg_cost) * qty
-        in_range_buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and t.side == "BUY"]
-        in_range_sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and t.side == "SELL"]
+        in_range_buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and _is_buy(t)]
+        in_range_sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and not _is_buy(t)]
         real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(in_range_buys, in_range_sells, policy, custom_rules=custom_rules))
         user_rows.append({"買賣人": user, "股票代號": sid, "市值": round(mv, 2), "總損益": round(unrealized + real, 2)})
     df_user = pd.DataFrame(user_rows).groupby("買賣人", as_index=False).agg({"市值": "sum", "總損益": "sum"}) if user_rows else pd.DataFrame()
