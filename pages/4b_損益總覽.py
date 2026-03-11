@@ -326,7 +326,10 @@ with row2_2:
         unsafe_allow_html=True,
     )
 
-# ---------- 計算邏輯說明面板（置於 KPI 下方） ----------
+st.markdown("---")
+st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+
+# ---------- 計算邏輯說明面板（置於 KPI 下方，留間距） ----------
 n_buys_range = sum(len(b) for b in buys_by_stock.values())
 n_sells_range = sum(len(s) for s in sells_by_stock.values())
 n_stocks_realized = len(realized_by_stock)
