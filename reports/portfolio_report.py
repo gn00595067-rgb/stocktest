@@ -71,9 +71,17 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     for sid in set(list(buys_by_stock_user) + list(sells_by_stock_user)):
         all_buys = []
         all_sells = []
+        seen_buy_ids = set()
+        seen_sell_ids = set()
         for user in set(list(buys_by_stock_user.get(sid, {})) + list(sells_by_stock_user.get(sid, {}))):
-            all_buys.extend(buys_by_stock_user.get(sid, {}).get(user, []))
-            all_sells.extend(sells_by_stock_user.get(sid, {}).get(user, []))
+            for b in buys_by_stock_user.get(sid, {}).get(user, []):
+                if b.trade_id not in seen_buy_ids:
+                    seen_buy_ids.add(b.trade_id)
+                    all_buys.append(b)
+            for s in sells_by_stock_user.get(sid, {}).get(user, []):
+                if s.trade_id not in seen_sell_ids:
+                    seen_sell_ids.add(s.trade_id)
+                    all_sells.append(s)
         total_buy_qty = sum(b.qty for b in all_buys)
         total_sell_qty = sum(s.qty for s in all_sells)
         position_qty[sid] = total_buy_qty - total_sell_qty
@@ -104,6 +112,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
                 remaining_lots_detail.append({"buy_id": b.trade_id, "date": b.date, "remaining_qty": rem, "price": b.price, "remaining_cost": rem * b.price})
         total_buy_cost[sid] = remaining_cost
         q = position_qty[sid]
+        max_buy_price = max((b["price"] for b in buys_detail), default=0)
         debug_cost[sid] = {
             "total_buy_cost_raw": total_buy_cost[sid] + matched_cost[sid] + matched_buy_fee,
             "matched_cost": matched_cost[sid],
@@ -111,6 +120,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             "remaining_cost": remaining_cost,
             "position_qty": q,
             "avg_cost": (remaining_cost / q if q else 0),
+            "max_buy_price": max_buy_price,
             "buys_detail": buys_detail,
             "matches_detail": matches_detail,
             "remaining_lots_detail": remaining_lots_detail,
