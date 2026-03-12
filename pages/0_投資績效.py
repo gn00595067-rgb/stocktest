@@ -28,7 +28,7 @@ st.title("損益總覽與投資績效")
 # ---------- 篩選條件：快速區間按鈕 + 日期框（與所選區間連動）、自訂可手動改日期 ----------
 today = date.today()
 if "pl_start" not in st.session_state:
-    st.session_state["pl_start"] = date(2000, 1, 1)
+    st.session_state["pl_start"] = today - timedelta(days=180)  # 預設近半年
 if "pl_end" not in st.session_state:
     st.session_state["pl_end"] = today
 
@@ -89,6 +89,46 @@ with col_m:
         format_func=lambda x: {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(x, x),
     )
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
+
+
+def _pl_range_active_index(start_date, end_date, today):
+    """若目前區間與某快捷按鈕一致，回傳該按鈕索引 0..5（近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
+    if end_date != today:
+        return -1
+    d = (today - start_date).days
+    if start_date == date(2000, 1, 1):
+        return 5
+    if d <= 4 and start_date == today - timedelta(days=3):
+        return 0
+    if 6 <= d <= 8 and start_date == today - timedelta(weeks=1):
+        return 1
+    if 28 <= d <= 32 and start_date == today - timedelta(days=30):
+        return 2
+    if 178 <= d <= 182 and start_date == today - timedelta(days=180):
+        return 3
+    if 363 <= d <= 367 and start_date == today - timedelta(days=365):
+        return 4
+    return -1
+
+
+def _pl_inject_range_button_highlight(active_index):
+    """當區間與快捷按鈕重合時，將該按鈕以深色高亮。"""
+    if active_index < 0:
+        return
+    n = active_index + 1
+    st.markdown(f"""
+    <style>
+    [data-testid="stHorizontalBlock"] > div:nth-child({n}) button {{
+        background-color: #262730 !important;
+        color: white !important;
+        border-color: #262730;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ---------- 注入區間按鈕高亮（與目前日期區間一致時） ----------
+_pl_inject_range_button_highlight(_pl_range_active_index(start_date, end_date, today))
 
 # ---------- KPI 樣式（與庫存損益字卡一致） ----------
 def _inject_kpi_style():

@@ -63,6 +63,42 @@ def _inject_page_style():
     """, unsafe_allow_html=True)
 
 
+def _range_active_index(start_date, end_date, today):
+    """若目前區間與某快捷按鈕一致，回傳該按鈕索引 0..5（近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
+    if end_date != today:
+        return -1
+    d = (today - start_date).days
+    if start_date == date(2000, 1, 1):
+        return 5   # 全部
+    if d <= 4 and start_date == today - timedelta(days=3):
+        return 0  # 近3天
+    if 6 <= d <= 8 and start_date == today - timedelta(weeks=1):
+        return 1  # 近1週
+    if 28 <= d <= 32 and start_date == today - timedelta(days=30):
+        return 2  # 近1個月
+    if 178 <= d <= 182 and start_date == today - timedelta(days=180):
+        return 3  # 近半年
+    if 363 <= d <= 367 and start_date == today - timedelta(days=365):
+        return 4  # 近1年
+    return -1
+
+
+def _inject_range_button_highlight(active_index):
+    """當區間與快捷按鈕重合時，將該按鈕以深色高亮（第一排 6 欄為快捷按鈕）。"""
+    if active_index < 0:
+        return
+    n = active_index + 1
+    st.markdown(f"""
+    <style>
+    [data-testid="stHorizontalBlock"] > div:nth-child({n}) button {{
+        background-color: #262730 !important;
+        color: white !important;
+        border-color: #262730;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+
 def _pnl_color(val):
     """依正負回傳 CSS class（台股：正紅、負綠）"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -400,10 +436,11 @@ with st.container():
     st.markdown("#### 篩選條件")
     # 先初始化日期 key，避免 widget 同時有 default value 與 session state 的警告
     # 「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁的「全部」一致，兩頁已實現才會對齊
+    # 預設區間：近半年
     if "portfolio_start" not in st.session_state:
-        st.session_state["portfolio_start"] = date(2000, 1, 1)
+        st.session_state["portfolio_start"] = today - timedelta(days=180)
     if "portfolio_end" not in st.session_state:
-        st.session_state["portfolio_end"] = date.today()
+        st.session_state["portfolio_end"] = today
 
     # 快捷區間按鈕（一排橫向，點選後會更新下方日期；下方日期也可手動輸入）
     today = date.today()
@@ -457,6 +494,7 @@ with st.container():
             format_func=lambda x: "自定沖銷",
             key="portfolio_policy",
         )
+    _inject_range_button_highlight(_range_active_index(start_date, end_date, today))
     st.caption("持倉與損益皆依 **自定沖銷** 規則計算。請至「自定沖銷設定」頁設定賣出與買進的配對。")
     st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
 
