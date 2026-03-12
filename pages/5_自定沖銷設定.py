@@ -221,14 +221,25 @@ else:
                         if pct >= -5: return "小賠"
                         if pct >= -20: return "中賠"
                         return "大賠"
+                    # 從 session state 讀取勾選／沖銷股數，依序分配確保「勾選列沖銷股數總和」不超過賣出剩餘配額
+                    rec_state = st.session_state.get("rec_panel_state") or {}
+                    rec_state_sell = rec_state.get(sell_id) or {}
+                    remaining_sell = sell_remain
                     recs = []
                     for t, rem in buys_with_remain:
                         pnl_amt = (current_price - t.price) * rem
                         pnl_pct = ((current_price - t.price) / t.price * 100) if t.price else 0
-                        max_qty_rec = min(sell_remain, rem)
+                        prev = rec_state_sell.get(t.id) or {}
+                        checked = prev.get("勾選", False)
+                        if checked:
+                            want = int(prev.get("沖銷股數", 0) or 0)
+                            qty = min(max(0, want), rem, remaining_sell)
+                            remaining_sell -= qty
+                        else:
+                            qty = min(rem, sell_remain)
                         recs.append({
-                            "勾選": False,
-                            "沖銷股數": max_qty_rec,
+                            "勾選": checked,
+                            "沖銷股數": qty,
                             "分類": _cat(pnl_pct),
                             "買進ID": t.id,
                             "買價": t.price,
@@ -294,6 +305,20 @@ else:
                             },
                             disabled=["分類", "買進ID", "買價", "現價", "剩餘可配", "賺賠金額", "賺賠%"],
                         )
+                        # 儲存勾選與沖銷股數，下次 run 時依序分配以確保總和 <= 賣出剩餘配額
+                        if "rec_panel_state" not in st.session_state:
+                            st.session_state["rec_panel_state"] = {}
+                        if sell_id not in st.session_state["rec_panel_state"]:
+                            st.session_state["rec_panel_state"][sell_id] = {}
+                        for _, row in edited_rec.iterrows():
+                            try:
+                                bid = int(row["買進ID"])
+                            except (TypeError, ValueError):
+                                continue
+                            st.session_state["rec_panel_state"][sell_id][bid] = {
+                                "勾選": bool(row.get("勾選", False)),
+                                "沖銷股數": int(row.get("沖銷股數", 0)) if row.get("沖銷股數") is not None else 0,
+                            }
                         # 依勾選與沖銷股數計算預覽已配／剩餘配額（僅計買進ID 為整數的列）
                         def _is_int_buy_id(x):
                             try:
@@ -344,6 +369,8 @@ else:
                                         for bid, qty in to_add:
                                             sess.add(CustomMatchRule(sell_trade_id=sell_id, buy_trade_id=bid, matched_qty=qty))
                                         sess.commit()
+                                        if "rec_panel_state" in st.session_state and sell_id in st.session_state["rec_panel_state"]:
+                                            del st.session_state["rec_panel_state"][sell_id]
                                         st.success("已新增 %d 筆沖銷規則。" % len(to_add))
                                         st.rerun()
                                     except OperationalError:
