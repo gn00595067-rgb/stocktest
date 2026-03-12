@@ -221,10 +221,29 @@ else:
                         if pct >= -5: return "小賠"
                         if pct >= -20: return "中賠"
                         return "大賠"
-                    # 從 session state 讀取勾選／沖銷股數，依序分配確保「勾選列沖銷股數總和」不超過賣出剩餘配額
+                    # 動態沖銷股數：被勾選的列維持不變；剩餘配額 = 賣出剩餘 - 勾選列沖銷總和；未勾選列若 > 剩餘配額則改為剩餘配額
                     rec_state = st.session_state.get("rec_panel_state") or {}
                     rec_state_sell = rec_state.get(sell_id) or {}
-                    remaining_sell = sell_remain
+                    # 先算勾選列沖銷總和，若超過賣出剩餘則依表格順序從勾選列壓縮
+                    total_checked = 0
+                    for t, rem in buys_with_remain:
+                        prev = rec_state_sell.get(t.id) or {}
+                        if prev.get("勾選"):
+                            total_checked += int(prev.get("沖銷股數", 0) or 0)
+                    if total_checked > sell_remain:
+                        remaining = sell_remain
+                        capped_checked = {}
+                        for t, rem in buys_with_remain:
+                            prev = rec_state_sell.get(t.id) or {}
+                            if prev.get("勾選"):
+                                want = int(prev.get("沖銷股數", 0) or 0)
+                                qty = min(want, rem, remaining)
+                                capped_checked[t.id] = qty
+                                remaining -= qty
+                        remaining_sell = 0
+                    else:
+                        capped_checked = None
+                        remaining_sell = sell_remain - total_checked
                     recs = []
                     for t, rem in buys_with_remain:
                         pnl_amt = (current_price - t.price) * rem
@@ -232,11 +251,14 @@ else:
                         prev = rec_state_sell.get(t.id) or {}
                         checked = prev.get("勾選", False)
                         if checked:
-                            want = int(prev.get("沖銷股數", 0) or 0)
-                            qty = min(max(0, want), rem, remaining_sell)
-                            remaining_sell -= qty
+                            if capped_checked is not None:
+                                qty = capped_checked.get(t.id, 0)
+                            else:
+                                qty = min(int(prev.get("沖銷股數", 0) or 0), rem)
                         else:
-                            qty = min(rem, sell_remain)
+                            # 未勾選：<= 剩餘配額不變，> 的改為剩餘配額
+                            want = int(prev.get("沖銷股數", rem) or rem)
+                            qty = min(want, remaining_sell, rem)
                         recs.append({
                             "勾選": checked,
                             "沖銷股數": qty,
