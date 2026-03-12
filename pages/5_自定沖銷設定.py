@@ -317,6 +317,11 @@ else:
                         st.caption("目前篩選下無推薦筆數。")
                     else:
                         df_rec = df_rec.round({"買價": 2, "現價": 2, "賺賠金額": 0, "賺賠%": 2})
+                        # 價錢、金額欄位以千分位字串顯示（買價、現價、賺賠金額皆為唯讀）
+                        df_rec["買價"] = df_rec["買價"].apply(lambda x: f"{float(x):,.2f}" if x is not None and isinstance(x, (int, float)) else str(x) if x is not None else "")
+                        df_rec["現價"] = df_rec["現價"].apply(lambda x: f"{float(x):,.2f}" if x is not None and isinstance(x, (int, float)) else str(x) if x is not None else "")
+                        df_rec["賺賠金額"] = df_rec["賺賠金額"].apply(lambda x: f"{int(x):,}" if x is not None and isinstance(x, (int, float)) else (f"{int(float(x)):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x) if x is not None else ""))
+                        df_rec["賺賠%"] = df_rec["賺賠%"].apply(lambda x: f"{float(x):.2f}%" if x is not None and isinstance(x, (int, float)) else str(x) if x is not None else "")
                         if "中賺(平均)" in df_rec["分類"].values:
                             st.caption("※ 「中賺(平均)」為彙總列，僅供參考；請勾選上方個別買進列並設定沖銷股數後按「確定沖銷」。")
                         edited_rec = st.data_editor(
@@ -327,10 +332,6 @@ else:
                             column_config={
                                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
                                 "沖銷股數": st.column_config.NumberColumn("沖銷股數", min_value=0, max_value=sell_remain, step=1, format="%d"),
-                                "買價": st.column_config.NumberColumn("買價", format="%.2f"),
-                                "現價": st.column_config.NumberColumn("現價", format="%.2f"),
-                                "賺賠金額": st.column_config.NumberColumn("賺/賠 金額", format="%.0f"),
-                                "賺賠%": st.column_config.NumberColumn("賺/賠 %%", format="%.2f"),
                             },
                             disabled=["分類", "買進ID", "買價", "現價", "剩餘可配", "賺賠金額", "賺賠%"],
                         )
@@ -457,6 +458,11 @@ else:
             for col in ("買進股數", "已配", "剩餘可配"):
                 if col in df_buys_display.columns:
                     df_buys_display[col] = df_buys_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
+            # 價錢欄位以千分位顯示（例：1,234.56）
+            if "單價" in df_buys_display.columns:
+                df_buys_display["單價"] = df_buys_display["單價"].apply(
+                    lambda x: f"{float(x):,.2f}" if x is not None and isinstance(x, (int, float)) else str(x) if x is not None else ""
+                )
             edited_buy = st.data_editor(
                 df_buys_display,
                 use_container_width=True,
