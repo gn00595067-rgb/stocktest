@@ -165,6 +165,7 @@ else:
             with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
                 if current_price is not None:
                     st.markdown("**%s %s** · 現價 **%.2f**" % (sid, stock_name, current_price))
+                    st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%d** · 已配 **%d** · 剩餘配額 **%d**" % (sell_trade.trade_date, sell_trade.quantity, sell_used[sell_id], sell_remain))
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
                         pnl_amt = (current_price - avg_cost) * pos["qty"]
