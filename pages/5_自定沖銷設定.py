@@ -13,6 +13,8 @@ ensure_google_sheet_loaded()
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from sqlalchemy.exc import OperationalError
+from services.price_service import get_quote_cached
+from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="自定沖銷設定", layout="wide")
 st.title("自定沖銷設定")
@@ -152,6 +154,88 @@ else:
         if not same_stock_buys:
             st.caption("此賣出所屬股票沒有可配對的買進（需同股票且買進日 ≤ 賣出日）。")
         else:
+            # ---------- 輔助篩選配對面板 ----------
+            sid = sell_trade.stock_id
+            stock_name = (masters.get(sid).name if masters.get(sid) else "") or ""
+            custom_rules_tuples = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in rules]
+            quote = get_quote_cached(sid)
+            current_price = float(quote["price"]) if quote and quote.get("price") is not None else None
+            pos_by_stock = compute_position_and_cost_by_stock(trades, custom_rules=custom_rules_tuples)
+            pos = pos_by_stock.get(sid) if pos_by_stock else None
+            with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
+                if current_price is not None:
+                    st.markdown("**%s %s** · 現價 **%.2f**" % (sid, stock_name, current_price))
+                    if pos and pos["qty"] and pos["qty"] > 0:
+                        avg_cost = pos["cost"] / pos["qty"]
+                        pnl_amt = (current_price - avg_cost) * pos["qty"]
+                        pnl_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost else 0
+                        if pnl_amt >= 0:
+                            st.markdown("持倉損益：**+%.0f** 元（**+%.2f%%**）" % (pnl_amt, pnl_pct))
+                        else:
+                            st.markdown("持倉損益：**%.0f** 元（**%.2f%%**）" % (pnl_amt, pnl_pct))
+                    else:
+                        st.caption("目前無持倉（或已全部沖銷）。")
+                else:
+                    st.caption("無法取得現價（請確認 API 或網路）。")
+                buys_with_remain = [(t, max(0, t.quantity - buy_used[t.id])) for t in same_stock_buys if (t.quantity - buy_used[t.id]) > 0]
+                if not buys_with_remain or current_price is None:
+                    st.caption("無剩餘可配的買進，或無現價可試算。")
+                else:
+                    def _cat(pct):
+                        if pct > 20: return "大賺"
+                        if pct > 5: return "中賺"
+                        if pct >= 0: return "小賺"
+                        if pct >= -5: return "小賠"
+                        if pct >= -20: return "中賠"
+                        return "大賠"
+                    recs = []
+                    for t, rem in buys_with_remain:
+                        pnl_amt = (current_price - t.price) * rem
+                        pnl_pct = ((current_price - t.price) / t.price * 100) if t.price else 0
+                        recs.append({"分類": _cat(pnl_pct), "買進ID": t.id, "買價": t.price, "現價": current_price, "剩餘可配": rem, "賺賠金額": pnl_amt, "賺賠%": pnl_pct})
+                    df_rec = pd.DataFrame(recs)
+                    st.markdown("**依賺賠篩選推薦買進**")
+                    cx1, cx2, cx3, cx4, cx5, cx6 = st.columns(6)
+                    with cx1: show_大賺 = st.checkbox("大賺(>20%%)", value=True, key="rec_大賺")
+                    with cx2: show_中賺 = st.checkbox("中賺(5~20%%)", value=True, key="rec_中賺")
+                    with cx3: show_小賺 = st.checkbox("小賺(0~5%%)", value=True, key="rec_小賺")
+                    with cx4: show_大賠 = st.checkbox("大賠(<-20%%)", value=True, key="rec_大賠")
+                    with cx5: show_中賠 = st.checkbox("中賠(-20~-5%%)", value=True, key="rec_中賠")
+                    with cx6: show_小賠 = st.checkbox("小賠(-5~0%%)", value=True, key="rec_小賠")
+                    show_cats = set()
+                    if show_大賺: show_cats.add("大賺")
+                    if show_中賺: show_cats.add("中賺")
+                    if show_小賺: show_cats.add("小賺")
+                    if show_大賠: show_cats.add("大賠")
+                    if show_中賠: show_cats.add("中賠")
+                    if show_小賠: show_cats.add("小賠")
+                    df_rec = df_rec[df_rec["分類"].isin(show_cats)]
+                    if show_中賺 and "中賺" in df_rec["分類"].values:
+                        mid = df_rec[df_rec["分類"] == "中賺"]
+                        n = len(mid)
+                        if n > 0:
+                            sum_amt = mid["賺賠金額"].sum()
+                            sum_cost = (mid["買價"] * mid["剩餘可配"]).sum()
+                            total_rem = mid["剩餘可配"].sum()
+                            avg_price = sum_cost / total_rem if total_rem else 0
+                            avg_pct = (sum_amt / sum_cost * 100) if sum_cost else 0
+                            avg_row = pd.DataFrame([{"分類": "中賺(平均)", "買進ID": "共%d筆" % n, "買價": round(avg_price, 2), "現價": current_price, "剩餘可配": int(total_rem), "賺賠金額": sum_amt, "賺賠%": round(avg_pct, 2)}])
+                            df_rec = pd.concat([df_rec[df_rec["分類"] != "中賺"], avg_row], ignore_index=True)
+                    if df_rec.empty:
+                        st.caption("目前篩選下無推薦筆數。")
+                    else:
+                        df_rec = df_rec.round({"買價": 2, "現價": 2, "賺賠金額": 0, "賺賠%": 2})
+                        st.dataframe(
+                            df_rec,
+                            use_container_width=True,
+                            hide_index=True,
+                            column_config={
+                                "買價": st.column_config.NumberColumn("買價", format="%.2f"),
+                                "現價": st.column_config.NumberColumn("現價", format="%.2f"),
+                                "賺賠金額": st.column_config.NumberColumn("賺/賠 金額", format="%.0f"),
+                                "賺賠%": st.column_config.NumberColumn("賺/賠 %%", format="%.2f"),
+                            },
+                        )
             st.markdown("**2. 選擇「買進」交易（與上列賣出沖銷）**")
             rows_buy = []
             for t in same_stock_buys:
