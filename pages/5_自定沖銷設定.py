@@ -84,6 +84,8 @@ else:
     for t in sells_to_show:
         used = sell_used[t.id]
         remain = max(0, t.quantity - used)
+        if filter_has_remain and remain <= 0:
+            continue
         name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
         rows_sell.append({
             "交易ID": t.id,
@@ -155,6 +157,8 @@ else:
             for t in same_stock_buys:
                 used = buy_used[t.id]
                 remain = max(0, t.quantity - used)
+                if filter_has_remain and remain <= 0:
+                    continue
                 name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
                 rows_buy.append({
                     "交易ID": t.id,
