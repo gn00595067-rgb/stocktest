@@ -264,6 +264,26 @@ else:
                 seen_paired.add(sid)
                 name = (masters.get(sid).name if masters.get(sid) else "") or ""
                 paired_stock_options.append((f"{sid} {name}".strip(), sid))
+        # 有剩餘配額的股票：至少一筆賣出或買進的「剩餘可配」> 0
+        stocks_with_remain = set()
+        for t in trades:
+            if (t.side or "").upper() == "SELL":
+                if t.quantity - sell_used2.get(t.id, 0) > 0:
+                    stocks_with_remain.add(t.stock_id)
+            elif (t.side or "").upper() == "BUY":
+                if t.quantity - buy_used2.get(t.id, 0) > 0:
+                    stocks_with_remain.add(t.stock_id)
+        filter_has_remain = st.checkbox(
+            "僅顯示有剩餘配額的股票",
+            value=False,
+            key="paired_filter_has_remain",
+            help="勾選後，僅列出至少有一筆賣出或買進仍可再配對股數的股票。",
+        )
+        if filter_has_remain:
+            paired_stock_options = [("全部", None)] + [
+                (label, sid) for (label, sid) in paired_stock_options[1:]
+                if sid in stocks_with_remain
+            ]
         filter_paired_idx = st.selectbox(
             "選擇股票",
             range(len(paired_stock_options)),
@@ -274,6 +294,11 @@ else:
         filter_paired_id = paired_stock_options[filter_paired_idx][1]
         if filter_paired_id:
             rules_list = [r for r in rules_list if (trade_by_id.get(r.sell_trade_id) and trade_by_id.get(r.sell_trade_id).stock_id == filter_paired_id)]
+        elif filter_has_remain:
+            rules_list = [r for r in rules_list if (
+                (trade_by_id.get(r.sell_trade_id) and trade_by_id.get(r.sell_trade_id).stock_id in stocks_with_remain)
+                or (trade_by_id.get(r.buy_trade_id) and trade_by_id.get(r.buy_trade_id).stock_id in stocks_with_remain)
+            )]
         # 表頭
         h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 0.8, 0.6, 1.2, 0.6])
         with h1: st.markdown("**股票**")
