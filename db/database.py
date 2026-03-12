@@ -17,6 +17,25 @@ else:
     engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
 
 Base.metadata.create_all(engine)
+# 若 custom_match_rules 尚無 created_at 欄位則補上（既有資料庫遷移）
+try:
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        if engine.dialect.name == "sqlite":
+            r = conn.execute(text("PRAGMA table_info(custom_match_rules)"))
+            cols = [row[1] for row in r]
+            if "created_at" not in cols:
+                conn.execute(text("ALTER TABLE custom_match_rules ADD COLUMN created_at DATETIME"))
+                conn.commit()
+        else:
+            r = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'custom_match_rules' AND column_name = 'created_at'"
+            ))
+            if r.fetchone() is None:
+                conn.execute(text("ALTER TABLE custom_match_rules ADD COLUMN created_at TIMESTAMP"))
+                conn.commit()
+except Exception:
+    pass
 Session = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
 
 

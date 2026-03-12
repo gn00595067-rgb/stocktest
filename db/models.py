@@ -61,3 +61,4 @@ class CustomMatchRule(Base):
     sell_trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
     buy_trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
     matched_qty = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=True)

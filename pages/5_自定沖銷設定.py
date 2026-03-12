@@ -532,23 +532,29 @@ else:
         filter_paired_id = paired_stock_options[filter_paired_idx][1]
         if filter_paired_id:
             rules_list = [r for r in rules_list if (trade_by_id.get(r.sell_trade_id) and trade_by_id.get(r.sell_trade_id).stock_id == filter_paired_id)]
+        # 依配對時間由新到舊排序（無 created_at 的排最後）
+        from datetime import datetime as dt_min
+        rules_list = sorted(rules_list, key=lambda r: (getattr(r, "created_at") or dt_min.min), reverse=True)
         # 表頭
-        h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 0.8, 0.6, 1.2, 0.6])
+        h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 1.2, 0.6])
         with h1: st.markdown("**股票**")
         with h2: st.markdown("**賣出ID**")
         with h3: st.markdown("**賣出日**")
         with h4: st.markdown("**買進ID**")
         with h5: st.markdown("**買進日**")
-        with h6: st.markdown("**沖銷股數**")
-        with h7: st.markdown("**當沖**")
-        with h8: st.markdown("**操作**")
-        with h9: st.markdown("")
+        with h6: st.markdown("**配對時間**")
+        with h7: st.markdown("**沖銷股數**")
+        with h8: st.markdown("**當沖**")
+        with h9: st.markdown("**操作**")
+        with h10: st.markdown("")
         st.markdown("---")
         for r in rules_list:
             st_t = trade_by_id.get(r.sell_trade_id)
             buy_t = trade_by_id.get(r.buy_trade_id)
             st_date = str(st_t.trade_date) if st_t else "—"
             buy_date = str(buy_t.trade_date) if buy_t else "—"
+            created = getattr(r, "created_at", None)
+            paired_time_str = created.strftime("%Y-%m-%d %H:%M") if created else "—"
             is_dt = "是" if (st_t and getattr(st_t, "is_daytrade", False)) or (buy_t and getattr(buy_t, "is_daytrade", False)) or (st_t and buy_t and st_t.trade_date == buy_t.trade_date) else "否"
             sid = st_t.stock_id if st_t else (buy_t.stock_id if buy_t else "—")
             name = (masters.get(sid).name if masters.get(sid) else "") or ""
@@ -563,16 +569,17 @@ else:
             key_qty = f"rule_qty_{r.sell_trade_id}_{r.buy_trade_id}"
             key_mod = f"rule_mod_{r.sell_trade_id}_{r.buy_trade_id}"
             key_del = f"rule_del_{r.sell_trade_id}_{r.buy_trade_id}"
-            c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 0.8, 0.6, 1.2, 0.6])
+            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 1.2, 0.6])
             with c1: st.caption(stock_label)
             with c2: st.caption(str(r.sell_trade_id))
             with c3: st.caption(st_date)
             with c4: st.caption(str(r.buy_trade_id))
             with c5: st.caption(buy_date)
-            with c6:
+            with c6: st.caption(paired_time_str)
+            with c7:
                 new_qty = st.number_input("股數", min_value=1, max_value=max_new_qty, value=min(cur, max_new_qty), key=key_qty, label_visibility="collapsed")
-            with c7: st.caption(is_dt)
-            with c8:
+            with c8: st.caption(is_dt)
+            with c9:
                 if st.button("確認", key=key_mod, type="primary"):
                     if new_qty != cur:
                         try:
@@ -586,7 +593,7 @@ else:
                         except Exception as e:
                             sess2.rollback()
                             st.error(f"修改失敗：{e}")
-            with c9:
+            with c10:
                 if st.button("刪除", key=key_del):
                     try:
                         sess2.delete(r)
