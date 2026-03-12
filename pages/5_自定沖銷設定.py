@@ -124,6 +124,10 @@ else:
         st.session_state["add_sell_idx"] = 0
     df_sells_display = df_sells.copy()
     df_sells_display.insert(0, "勾選", [i == sell_idx for i in sell_indices])
+    # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
+    for col in ("賣出股數", "已配", "剩餘可配"):
+        if col in df_sells_display.columns:
+            df_sells_display[col] = df_sells_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
     edited_sell = st.data_editor(
         df_sells_display,
         use_container_width=True,
@@ -449,6 +453,10 @@ else:
                 df_buys_display["日期"] = df_buys_display["日期"].astype(str)
             else:
                 df_buys_display["勾選"] = df_buys_display["勾選"].astype(bool)
+            # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
+            for col in ("買進股數", "已配", "剩餘可配"):
+                if col in df_buys_display.columns:
+                    df_buys_display[col] = df_buys_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
             edited_buy = st.data_editor(
                 df_buys_display,
                 use_container_width=True,
