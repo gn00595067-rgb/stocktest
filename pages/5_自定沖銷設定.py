@@ -154,6 +154,38 @@ else:
         if not same_stock_buys:
             st.caption("此賣出所屬股票沒有可配對的買進（需同股票且買進日 ≤ 賣出日）。")
         else:
+            # 先建立買進列表與排序，供下方「選擇買進」表格與輔助面板連動使用
+            rows_buy = []
+            for t in same_stock_buys:
+                used = buy_used[t.id]
+                remain = max(0, t.quantity - used)
+                if filter_has_remain and remain <= 0:
+                    continue
+                name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
+                rows_buy.append({
+                    "交易ID": t.id,
+                    "股票": f"{t.stock_id} {name}".strip(),
+                    "日期": str(t.trade_date),
+                    "當沖": bool(getattr(t, "is_daytrade", False)),
+                    "買進股數": t.quantity,
+                    "單價": t.price,
+                    "已配": used,
+                    "剩餘可配": remain,
+                })
+            df_buys = pd.DataFrame(rows_buy)
+            if not df_buys.empty:
+                sort_buy_val = st.session_state.get("sort_buy", "依日期（新→舊）")
+                if "日期（新→舊）" in str(sort_buy_val):
+                    df_buys = df_buys.sort_values("日期", ascending=False)
+                elif "日期（舊→新）" in str(sort_buy_val):
+                    df_buys = df_buys.sort_values("日期", ascending=True)
+                elif "單價" in str(sort_buy_val):
+                    df_buys = df_buys.sort_values("單價", ascending=False)
+                else:
+                    df_buys = df_buys.sort_values("剩餘可配", ascending=False)
+            df_buys = df_buys.reset_index(drop=True)
+            buy_id_to_idx = {int(df_buys.iloc[i]["交易ID"]): i for i in range(len(df_buys))} if not df_buys.empty else {}
+
             # ---------- 輔助篩選配對面板 ----------
             sid = sell_trade.stock_id
             stock_name = (masters.get(sid).name if masters.get(sid) else "") or ""
@@ -165,7 +197,7 @@ else:
             with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
                 if current_price is not None:
                     st.markdown("**%s %s** · 現價 **%.2f**" % (sid, stock_name, current_price))
-                    st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%d** · 已配 **%d** · 剩餘配額 **%d**" % (sell_trade.trade_date, sell_trade.quantity, sell_used[sell_id], sell_remain))
+                    # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
                         pnl_amt = (current_price - avg_cost) * pos["qty"]
@@ -193,7 +225,18 @@ else:
                     for t, rem in buys_with_remain:
                         pnl_amt = (current_price - t.price) * rem
                         pnl_pct = ((current_price - t.price) / t.price * 100) if t.price else 0
-                        recs.append({"分類": _cat(pnl_pct), "買進ID": t.id, "買價": t.price, "現價": current_price, "剩餘可配": rem, "賺賠金額": pnl_amt, "賺賠%": pnl_pct})
+                        max_qty_rec = min(sell_remain, rem)
+                        recs.append({
+                            "勾選": False,
+                            "沖銷股數": max_qty_rec,
+                            "分類": _cat(pnl_pct),
+                            "買進ID": t.id,
+                            "買價": t.price,
+                            "現價": current_price,
+                            "剩餘可配": rem,
+                            "賺賠金額": pnl_amt,
+                            "賺賠%": pnl_pct,
+                        })
                     df_rec = pd.DataFrame(recs)
                     st.markdown("**依賺賠篩選推薦買進**")
                     cx1, cx2, cx3, cx4, cx5, cx6 = st.columns(6)
@@ -220,56 +263,119 @@ else:
                             total_rem = mid["剩餘可配"].sum()
                             avg_price = sum_cost / total_rem if total_rem else 0
                             avg_pct = (sum_amt / sum_cost * 100) if sum_cost else 0
-                            avg_row = pd.DataFrame([{"分類": "中賺(平均)", "買進ID": "共%d筆" % n, "買價": round(avg_price, 2), "現價": current_price, "剩餘可配": int(total_rem), "賺賠金額": sum_amt, "賺賠%": round(avg_pct, 2)}])
+                            avg_row = pd.DataFrame([{
+                                "勾選": False,
+                                "沖銷股數": 0,
+                                "分類": "中賺(平均)",
+                                "買進ID": "共%d筆" % n,
+                                "買價": round(avg_price, 2),
+                                "現價": current_price,
+                                "剩餘可配": int(total_rem),
+                                "賺賠金額": sum_amt,
+                                "賺賠%": round(avg_pct, 2),
+                            }])
                             df_rec = pd.concat([df_rec[df_rec["分類"] != "中賺"], avg_row], ignore_index=True)
                     if df_rec.empty:
                         st.caption("目前篩選下無推薦筆數。")
                     else:
                         df_rec = df_rec.round({"買價": 2, "現價": 2, "賺賠金額": 0, "賺賠%": 2})
-                        st.dataframe(
+                        edited_rec = st.data_editor(
                             df_rec,
                             use_container_width=True,
                             hide_index=True,
+                            key="rec_editor",
                             column_config={
+                                "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
+                                "沖銷股數": st.column_config.NumberColumn("沖銷股數", min_value=0, max_value=sell_remain, step=1, format="%d"),
                                 "買價": st.column_config.NumberColumn("買價", format="%.2f"),
                                 "現價": st.column_config.NumberColumn("現價", format="%.2f"),
                                 "賺賠金額": st.column_config.NumberColumn("賺/賠 金額", format="%.0f"),
                                 "賺賠%": st.column_config.NumberColumn("賺/賠 %%", format="%.2f"),
                             },
+                            disabled=["分類", "買進ID", "買價", "現價", "剩餘可配", "賺賠金額", "賺賠%"],
                         )
+                        # 依勾選與沖銷股數計算預覽已配／剩餘配額（僅計買進ID 為整數的列）
+                        def _is_int_buy_id(x):
+                            try:
+                                int(x)
+                                return True
+                            except (TypeError, ValueError):
+                                return False
+                        checked = edited_rec[edited_rec["勾選"] == True] if "勾選" in edited_rec.columns else pd.DataFrame()
+                        temp_alloc = 0
+                        if not checked.empty:
+                            for _, row in checked.iterrows():
+                                if _is_int_buy_id(row.get("買進ID")):
+                                    q = int(row.get("沖銷股數", 0)) or 0
+                                    temp_alloc += min(max(0, q), sell_remain - temp_alloc, int(row.get("剩餘可配", 0)))
+                        preview_已配 = sell_used[sell_id] + temp_alloc
+                        preview_剩餘 = sell_trade.quantity - preview_已配
+                        st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%d** · 已配 **%d** · 剩餘配額 **%d**" % (sell_trade.trade_date, sell_trade.quantity, preview_已配, max(0, preview_剩餘)))
+                        # 勾選單一筆時連動下方「選擇買進」表格
+                        if not checked.empty and buy_id_to_idx:
+                            one_checked = [r for _, r in checked.iterrows() if _is_int_buy_id(r.get("買進ID"))]
+                            if len(one_checked) == 1:
+                                bid = int(one_checked[0]["買進ID"])
+                                if bid in buy_id_to_idx:
+                                    st.session_state["add_buy_idx"] = buy_id_to_idx[bid]
+                                    st.session_state["panel_selected_buy_id"] = bid
+                        if st.button("確定沖銷", type="primary", key="confirm_offset_btn"):
+                            to_add = []
+                            for _, row in checked.iterrows():
+                                if not _is_int_buy_id(row.get("買進ID")):
+                                    continue
+                                bid = int(row["買進ID"])
+                                qty = int(row.get("沖銷股數", 0)) or 0
+                                rem_buy = int(row.get("剩餘可配", 0))
+                                if qty <= 0 or qty > rem_buy or qty > sell_remain:
+                                    continue
+                                existing = next((r for r in rules if r.sell_trade_id == sell_id and r.buy_trade_id == bid), None)
+                                if existing:
+                                    continue
+                                to_add.append((bid, qty))
+                            if not to_add:
+                                st.warning("請至少勾選一筆有效買進並設定沖銷股數（且該買進尚無規則）。")
+                            else:
+                                total_qty = sum(q for _, q in to_add)
+                                if total_qty > sell_remain:
+                                    st.warning("勾選的沖銷股數總和不得超過賣出剩餘配額 %d。" % sell_remain)
+                                else:
+                                    try:
+                                        for bid, qty in to_add:
+                                            sess.add(CustomMatchRule(sell_trade_id=sell_id, buy_trade_id=bid, matched_qty=qty))
+                                        sess.commit()
+                                        st.success("已新增 %d 筆沖銷規則。" % len(to_add))
+                                        st.rerun()
+                                    except OperationalError:
+                                        sess.rollback()
+                                        st.error("無法寫入資料庫（目前環境可能唯讀）")
+                                    except Exception as e:
+                                        sess.rollback()
+                                        st.error("新增失敗：%s" % e)
+                                    finally:
+                                        sess.close()
             st.markdown("**2. 選擇「買進」交易（與上列賣出沖銷）**")
-            rows_buy = []
-            for t in same_stock_buys:
-                used = buy_used[t.id]
-                remain = max(0, t.quantity - used)
-                if filter_has_remain and remain <= 0:
-                    continue
-                name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
-                rows_buy.append({
-                    "交易ID": t.id,
-                    "股票": f"{t.stock_id} {name}".strip(),
-                    "日期": str(t.trade_date),
-                    "當沖": bool(getattr(t, "is_daytrade", False)),
-                    "買進股數": t.quantity,
-                    "單價": t.price,
-                    "已配": used,
-                    "剩餘可配": remain,
-                })
-            df_buys = pd.DataFrame(rows_buy)
             sort_buy = st.selectbox(
                 "買進列表排序",
                 ["依日期（新→舊）", "依日期（舊→新）", "依單價", "依剩餘可配（多→少）"],
                 key="sort_buy",
             )
-            if "日期（新→舊）" in sort_buy:
-                df_buys = df_buys.sort_values("日期", ascending=False)
-            elif "日期（舊→新）" in sort_buy:
-                df_buys = df_buys.sort_values("日期", ascending=True)
-            elif "單價" in sort_buy:
-                df_buys = df_buys.sort_values("單價", ascending=False)
-            else:
-                df_buys = df_buys.sort_values("剩餘可配", ascending=False)
-            df_buys = df_buys.reset_index(drop=True)
+            if not df_buys.empty:
+                if "日期（新→舊）" in sort_buy:
+                    df_buys = df_buys.sort_values("日期", ascending=False)
+                elif "日期（舊→新）" in sort_buy:
+                    df_buys = df_buys.sort_values("日期", ascending=True)
+                elif "單價" in sort_buy:
+                    df_buys = df_buys.sort_values("單價", ascending=False)
+                else:
+                    df_buys = df_buys.sort_values("剩餘可配", ascending=False)
+                df_buys = df_buys.reset_index(drop=True)
+                # 輔助面板勾選連動：依重排後的表格更新選中列索引
+                pid = st.session_state.get("panel_selected_buy_id")
+                if pid is not None:
+                    new_idx = next((i for i in range(len(df_buys)) if int(df_buys.iloc[i]["交易ID"]) == pid), None)
+                    if new_idx is not None:
+                        st.session_state["add_buy_idx"] = new_idx
             buy_indices = list(range(len(df_buys)))
             if "add_buy_idx" not in st.session_state:
                 st.session_state["add_buy_idx"] = 0
