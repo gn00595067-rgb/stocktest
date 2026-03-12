@@ -438,14 +438,17 @@ else:
             df_buys_display = df_buys.copy()
             df_buys_display.insert(0, "勾選", [bool(i == buy_idx) for i in buy_indices])
             if not df_buys_display.empty:
-                df_buys_display["交易ID"] = df_buys_display["交易ID"].astype(int)
-                df_buys_display["買進股數"] = df_buys_display["買進股數"].astype(int)
-                df_buys_display["已配"] = df_buys_display["已配"].astype(int)
-                df_buys_display["剩餘可配"] = df_buys_display["剩餘可配"].astype(int)
-                df_buys_display["單價"] = df_buys_display["單價"].astype(float)
+                df_buys_display["勾選"] = df_buys_display["勾選"].astype(bool)
+                df_buys_display["交易ID"] = df_buys_display["交易ID"].astype("int64")
+                df_buys_display["買進股數"] = df_buys_display["買進股數"].astype("int64")
+                df_buys_display["已配"] = df_buys_display["已配"].astype("int64")
+                df_buys_display["剩餘可配"] = df_buys_display["剩餘可配"].astype("int64")
+                df_buys_display["單價"] = df_buys_display["單價"].astype("float64")
                 df_buys_display["當沖"] = df_buys_display["當沖"].astype(bool)
                 df_buys_display["股票"] = df_buys_display["股票"].astype(str)
                 df_buys_display["日期"] = df_buys_display["日期"].astype(str)
+            else:
+                df_buys_display["勾選"] = df_buys_display["勾選"].astype(bool)
             edited_buy = st.data_editor(
                 df_buys_display,
                 use_container_width=True,
