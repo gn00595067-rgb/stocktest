@@ -437,13 +437,13 @@ with st.container():
     # 先初始化日期 key，避免 widget 同時有 default value 與 session state 的警告
     # 「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁的「全部」一致，兩頁已實現才會對齊
     # 預設區間：近半年
+    today = date.today()
     if "portfolio_start" not in st.session_state:
         st.session_state["portfolio_start"] = today - timedelta(days=180)
     if "portfolio_end" not in st.session_state:
         st.session_state["portfolio_end"] = today
 
     # 快捷區間按鈕（一排橫向，點選後會更新下方日期；下方日期也可手動輸入）
-    today = date.today()
     b1, b2, b3, b4, b5, b6 = st.columns(6)
     with b1:
         btn_3d = st.button("近3天", key="btn_3d")
