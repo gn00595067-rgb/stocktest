@@ -340,15 +340,24 @@ else:
                             st.session_state["rec_panel_state"] = {}
                         if sell_id not in st.session_state["rec_panel_state"]:
                             st.session_state["rec_panel_state"][sell_id] = {}
+                        rec_changed = False
                         for _, row in edited_rec.iterrows():
                             try:
                                 bid = int(row["買進ID"])
                             except (TypeError, ValueError):
                                 continue
+                            new_勾選 = bool(row.get("勾選", False))
+                            new_沖銷股數 = int(row.get("沖銷股數", 0)) if row.get("沖銷股數") is not None else 0
+                            prev = st.session_state["rec_panel_state"][sell_id].get(bid) or {}
+                            if prev.get("勾選") != new_勾選 or prev.get("沖銷股數") != new_沖銷股數:
+                                rec_changed = True
                             st.session_state["rec_panel_state"][sell_id][bid] = {
-                                "勾選": bool(row.get("勾選", False)),
-                                "沖銷股數": int(row.get("沖銷股數", 0)) if row.get("沖銷股數") is not None else 0,
+                                "勾選": new_勾選,
+                                "沖銷股數": new_沖銷股數,
                             }
+                        # 若有勾選/沖銷股數變更，立即 rerun 讓下一輪用新狀態重畫表格，勾選才會正確顯示
+                        if rec_changed:
+                            st.rerun()
                         # 依勾選與沖銷股數計算預覽已配／剩餘配額（僅計買進ID 為整數的列）
                         def _is_int_buy_id(x):
                             try:
