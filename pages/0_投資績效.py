@@ -511,7 +511,10 @@ with st.expander("📐 計算邏輯說明", expanded=False):
                 "持倉股數": qty,
                 "未實現": round(unrealized_by_stock.get(sid, 0), 2),
             })
-        st.dataframe(pd.DataFrame(source_rows), use_container_width=True, hide_index=True)
+        _src_df = pd.DataFrame(source_rows)
+        # 金額/股數 >1000 以千分位顯示
+        _src_fmt = {"持倉股數": "{:,.0f}", "未實現": "{:,.0f}", "計算用現價": "{:,.2f}", "持倉均價": "{:,.2f}"}
+        st.dataframe(_src_df.style.format(_src_fmt, na_rep="—"), use_container_width=True, hide_index=True)
     else:
         st.caption("目前無持倉，無未實現現價來源資料。")
 
@@ -639,9 +642,10 @@ else:
 with st.expander("完整明細表（可排序、匯出 CSV）", expanded=False):
     display_df = df[["stock_id", "name", "industry", "已實現", "未實現", "合計"]].copy()
     display_df = display_df.sort_values("合計", ascending=False).rename(columns={"stock_id": "代號", "name": "名稱", "industry": "產業"})
-    display_df["已實現"] = display_df["已實現"].map(fmt_money_compact)
-    display_df["未實現"] = display_df["未實現"].map(fmt_money_compact)
-    display_df["合計"] = display_df["合計"].map(fmt_money_compact)
+    # 金額 >1000 以千分位顯示（例：1,000）
+    display_df["已實現"] = display_df["已實現"].map(fmt_money_full)
+    display_df["未實現"] = display_df["未實現"].map(fmt_money_full)
+    display_df["合計"] = display_df["合計"].map(fmt_money_full)
     st.dataframe(
         display_df.style.set_properties(subset=["已實現", "未實現", "合計"], **{"text-align": "right"}),
         use_container_width=True, hide_index=True

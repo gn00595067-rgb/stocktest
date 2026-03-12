@@ -539,7 +539,12 @@ with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價
                 "持倉股數": d["position_qty"],
                 "均價(=剩餘÷股數)": round(d["avg_cost"], 2),
             })
-        st.dataframe(pd.DataFrame(debug_rows), use_container_width=True, hide_index=True)
+        _debug_df = pd.DataFrame(debug_rows)
+        _fmt_debug = {
+            "全部買進成本(含手續費)": "{:,.0f}", "已沖銷成本": "{:,.0f}", "已沖銷買進手續費": "{:,.0f}",
+            "剩餘持倉成本": "{:,.0f}", "持倉股數": "{:,.0f}", "均價(=剩餘÷股數)": "{:,.2f}",
+        }
+        st.dataframe(_debug_df.style.format(_fmt_debug, na_rep="—"), use_container_width=True, hide_index=True)
     else:
         st.caption("尚無持倉。")
 with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘）", expanded=False):
@@ -562,17 +567,20 @@ with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘
             st.caption(f"**依③表加總**（未沖銷買進 股數×單價）：剩餘成本 = {sum_rem:,.0f}，股數 = {sum_qty_lots:,}，均價（不含手續費）= **{avg_from_lots:.2f}**。程式顯示剩餘成本 = {rem_cost:,.0f}（含剩餘手續費 {remaining_fee:,.0f}），股數 = {pos_qty:,}，均價 = {avg_c:.2f}。")
         st.markdown("**① 每筆買進（全部）**")
         if d.get("buys_detail"):
-            st.dataframe(pd.DataFrame(d["buys_detail"]).rename(columns={"trade_id": "交易ID", "date": "日期", "qty": "股數", "price": "單價", "fee": "手續費", "cost": "成本(股數×單價+手續費)"}), use_container_width=True, hide_index=True)
+            _b = pd.DataFrame(d["buys_detail"]).rename(columns={"trade_id": "交易ID", "date": "日期", "qty": "股數", "price": "單價", "fee": "手續費", "cost": "成本(股數×單價+手續費)"})
+            st.dataframe(_b.style.format({"股數": "{:,.0f}", "單價": "{:,.2f}", "手續費": "{:,.0f}", "成本(股數×單價+手續費)": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
         else:
             st.caption("無買進紀錄")
         st.markdown("**② 沖銷配對（已沖銷掉的買進）**")
         if d.get("matches_detail"):
-            st.dataframe(pd.DataFrame(d["matches_detail"]).rename(columns={"buy_id": "買進ID", "sell_id": "賣出ID", "matched_qty": "沖銷股數", "buy_price": "買進單價", "matched_cost": "沖銷成本"}), use_container_width=True, hide_index=True)
+            _m = pd.DataFrame(d["matches_detail"]).rename(columns={"buy_id": "買進ID", "sell_id": "賣出ID", "matched_qty": "沖銷股數", "buy_price": "買進單價", "matched_cost": "沖銷成本"})
+            st.dataframe(_m.style.format({"沖銷股數": "{:,.0f}", "買進單價": "{:,.2f}", "沖銷成本": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
         else:
             st.caption("無沖銷")
         st.markdown("**③ 剩餘持倉（未沖銷的買進，這些構成目前均價）**")
         if d.get("remaining_lots_detail"):
-            st.dataframe(pd.DataFrame(d["remaining_lots_detail"]).rename(columns={"buy_id": "買進ID", "date": "日期", "remaining_qty": "剩餘股數", "price": "單價", "remaining_cost": "剩餘成本"}), use_container_width=True, hide_index=True)
+            _r = pd.DataFrame(d["remaining_lots_detail"]).rename(columns={"buy_id": "買進ID", "date": "日期", "remaining_qty": "剩餘股數", "price": "單價", "remaining_cost": "剩餘成本"})
+            st.dataframe(_r.style.format({"剩餘股數": "{:,.0f}", "單價": "{:,.2f}", "剩餘成本": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
             st.caption("若上表出現單價異常（如 788），代表該筆買進資料有誤或沖銷配對未涵蓋該筆。")
         else:
             st.caption("無剩餘持倉（已全數沖銷）")

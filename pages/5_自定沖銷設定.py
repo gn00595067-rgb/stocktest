@@ -196,16 +196,16 @@ else:
             pos = pos_by_stock.get(sid) if pos_by_stock else None
             with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
                 if current_price is not None:
-                    st.markdown("**%s %s** · 現價 **%.2f**" % (sid, stock_name, current_price))
+                    st.markdown("**%s %s** · 現價 **%s**" % (sid, stock_name, f"{current_price:,.2f}"))
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
                         pnl_amt = (current_price - avg_cost) * pos["qty"]
                         pnl_pct = ((current_price - avg_cost) / avg_cost * 100) if avg_cost else 0
                         if pnl_amt >= 0:
-                            st.markdown("持倉損益：**+%.0f** 元（**+%.2f%%**）" % (pnl_amt, pnl_pct))
+                            st.markdown("持倉損益：**%s** 元（**+%.2f%%**）" % (f"{pnl_amt:+,.0f}", pnl_pct))
                         else:
-                            st.markdown("持倉損益：**%.0f** 元（**%.2f%%**）" % (pnl_amt, pnl_pct))
+                            st.markdown("持倉損益：**%s** 元（**%.2f%%**）" % (f"{pnl_amt:,.0f}", pnl_pct))
                     else:
                         st.caption("目前無持倉（或已全部沖銷）。")
                 else:
@@ -360,7 +360,7 @@ else:
                                     temp_alloc += min(max(0, q), sell_remain - temp_alloc, int(row.get("剩餘可配", 0)))
                         preview_已配 = sell_used[sell_id] + temp_alloc
                         preview_剩餘 = sell_trade.quantity - preview_已配
-                        st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%d** · 已配 **%d** · 剩餘配額 **%d**" % (sell_trade.trade_date, sell_trade.quantity, preview_已配, max(0, preview_剩餘)))
+                        st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%s** · 已配 **%s** · 剩餘配額 **%s**" % (sell_trade.trade_date, f"{sell_trade.quantity:,}", f"{preview_已配:,}", f"{max(0, preview_剩餘):,}"))
                         # 勾選單一筆時連動下方「選擇買進」表格
                         if not checked.empty and buy_id_to_idx:
                             one_checked = [r for _, r in checked.iterrows() if _is_int_buy_id(r.get("買進ID"))]
@@ -388,7 +388,7 @@ else:
                             else:
                                 total_qty = sum(q for _, q in to_add)
                                 if total_qty > sell_remain:
-                                    st.warning("勾選的沖銷股數總和不得超過賣出剩餘配額 %d。" % sell_remain)
+                                    st.warning("勾選的沖銷股數總和不得超過賣出剩餘配額 **%s**。" % f"{sell_remain:,}")
                                 else:
                                     try:
                                         for bid, qty in to_add:
@@ -478,7 +478,7 @@ else:
                     # 檢查是否已有 (sell_id, buy_id) 規則（同一對只能一筆，用 upsert 概念）
                     existing = next((r for r in rules if r.sell_trade_id == sell_id and r.buy_trade_id == buy_id), None)
                     if existing:
-                        st.caption(f"此賣出與此買進已有規則（沖銷 {existing.matched_qty} 股）。若要修改請先刪除該筆規則再新增。")
+                        st.caption(f"此賣出與此買進已有規則（沖銷 **{existing.matched_qty:,}** 股）。若要修改請先刪除該筆規則再新增。")
                     else:
                         # 在沖銷股數上方列出被勾選的賣出／買進，方便判斷
                         st.markdown("**本次配對**")
@@ -486,18 +486,18 @@ else:
                         with col_sell_summary:
                             st.caption("勾選的賣出")
                             nm = (masters.get(sell_trade.stock_id).name if masters.get(sell_trade.stock_id) else "") or ""
-                            st.markdown(f"**#{sell_id}** {sell_trade.stock_id} {nm} · {sell_trade.trade_date} · 賣出 **{sell_trade.quantity}** 股（已配 {sell_used[sell_id]}，剩餘可配 **{sell_remain}**）")
+                            st.markdown(f"**#{sell_id}** {sell_trade.stock_id} {nm} · {sell_trade.trade_date} · 賣出 **{sell_trade.quantity:,}** 股（已配 {sell_used[sell_id]:,}，剩餘可配 **{sell_remain:,}**）")
                         with col_buy_summary:
                             st.caption("勾選的買進")
                             nm = (masters.get(buy_trade.stock_id).name if masters.get(buy_trade.stock_id) else "") or ""
-                            st.markdown(f"**#{buy_id}** {buy_trade.stock_id} {nm} · {buy_trade.trade_date} · 買進 **{buy_trade.quantity}** 股 @ {buy_trade.price}（已配 {buy_used[buy_id]}，剩餘可配 **{buy_remain}**）")
+                            st.markdown(f"**#{buy_id}** {buy_trade.stock_id} {nm} · {buy_trade.trade_date} · 買進 **{buy_trade.quantity:,}** 股 @ {buy_trade.price:,.2f}（已配 {buy_used[buy_id]:,}，剩餘可配 **{buy_remain:,}**）")
                         st.markdown("")  # 空一行
                         qty = st.number_input("沖銷股數", min_value=1, max_value=max_qty, value=min(1, max_qty), key="add_qty")
                         if st.button("新增此筆規則", key="add_rule_btn"):
                             try:
                                 sess.add(CustomMatchRule(sell_trade_id=sell_id, buy_trade_id=buy_id, matched_qty=qty))
                                 sess.commit()
-                                st.success(f"已新增規則：賣出 #{sell_id} 與 買進 #{buy_id} 沖銷 {qty} 股")
+                                st.success(f"已新增規則：賣出 #{sell_id} 與 買進 #{buy_id} 沖銷 **{qty:,}** 股")
                                 st.rerun()
                             except OperationalError as e:
                                 sess.rollback()
@@ -600,7 +600,7 @@ else:
                         try:
                             r.matched_qty = new_qty
                             sess2.commit()
-                            st.success(f"已修改 賣出 #{r.sell_trade_id} ↔ 買進 #{r.buy_trade_id} 為 **{new_qty}** 股")
+                            st.success(f"已修改 賣出 #{r.sell_trade_id} ↔ 買進 #{r.buy_trade_id} 為 **{new_qty:,}** 股")
                             st.rerun()
                         except OperationalError:
                             sess2.rollback()

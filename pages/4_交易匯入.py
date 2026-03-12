@@ -256,7 +256,11 @@ else:
                 {"買賣人": r["user"], "股票": r["stock_id"], "日期": str(r["trade_date"]), "買/賣": r["side"], "當沖": r.get("is_daytrade", False), "價格": r["price"], "股數": r["quantity"], "手續費": r.get("fee"), "稅": r.get("tax")}
                 for r in parsed[:PREVIEW_ROWS]
             ])
-            st.dataframe(preview_df, use_container_width=True, hide_index=True, height=min(400, 50 + min(len(preview_df), 15) * 38))
+            _fmt_preview = {"價格": "{:,.2f}", "股數": "{:,.0f}"}
+            for c in ("手續費", "稅"):
+                if c in preview_df.columns and preview_df[c].notna().any():
+                    _fmt_preview[c] = "{:,.2f}"
+            st.dataframe(preview_df.style.format(_fmt_preview, na_rep="—"), use_container_width=True, hide_index=True, height=min(400, 50 + min(len(preview_df), 15) * 38))
             if len(parsed) > PREVIEW_ROWS:
                 st.caption(f"僅顯示前 {PREVIEW_ROWS} 筆，共 {len(parsed)} 筆。")
             else:
@@ -565,11 +569,17 @@ else:
                     if high_price_buys:
                         st.warning("⚠️ 偵測到 **買進股價 > 600** 的筆數（若該檔歷史股價未超過 600，可能是表頭「股價」對到「賣價」欄導致）。請確認預覽表內價格是否合理後再匯入。")
                         for sid, d, p, q in high_price_buys[:10]:
-                            st.caption(f"• 股票 {sid} 日期 {d} 買進 股價={p} 股數={q}")
+                            st.caption(f"• 股票 {sid} 日期 {d} 買進 股價={p:,.2f} 股數={q:,}")
                     preview_rows = []
                     for tr in all_trades[:50]:
                         preview_rows.append({"買賣人": tr["user"], "股票": tr["stock_id"], "日期": str(tr["trade_date"]), "買/賣": tr["side"], "價格": tr["price"], "股數": tr["quantity"], "當沖": tr.get("is_daytrade", False), "手續費": tr.get("fee"), "稅": tr.get("tax")})
-                    st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+                    _pr_df = pd.DataFrame(preview_rows)
+                    _fmt_pr = {"價格": "{:,.2f}", "股數": "{:,.0f}"}
+                    if "手續費" in _pr_df.columns and _pr_df["手續費"].notna().any():
+                        _fmt_pr["手續費"] = "{:,.2f}"
+                    if "稅" in _pr_df.columns and _pr_df["稅"].notna().any():
+                        _fmt_pr["稅"] = "{:,.2f}"
+                    st.dataframe(_pr_df.style.format(_fmt_pr, na_rep="—"), use_container_width=True, hide_index=True)
                     if len(all_trades) > 50:
                         st.caption(f"僅顯示前 50 筆，共 {len(all_trades)} 筆交易、{len(all_rules)} 筆沖銷配對。")
                     sess = get_session()
