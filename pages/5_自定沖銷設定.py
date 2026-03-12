@@ -307,11 +307,14 @@ else:
                                 "賺賠金額": sum_amt,
                                 "賺賠%": round(avg_pct, 2),
                             }])
-                            df_rec = pd.concat([df_rec[df_rec["分類"] != "中賺"], avg_row], ignore_index=True)
+                            # 保留所有中賺個別筆數，僅在最後追加一列「中賺(平均)」供參考（該列不可用於確定沖銷）
+                            df_rec = pd.concat([df_rec, avg_row], ignore_index=True)
                     if df_rec.empty:
                         st.caption("目前篩選下無推薦筆數。")
                     else:
                         df_rec = df_rec.round({"買價": 2, "現價": 2, "賺賠金額": 0, "賺賠%": 2})
+                        if "中賺(平均)" in df_rec["分類"].values:
+                            st.caption("※ 「中賺(平均)」為彙總列，僅供參考；請勾選上方個別買進列並設定沖銷股數後按「確定沖銷」。")
                         edited_rec = st.data_editor(
                             df_rec,
                             use_container_width=True,
