@@ -11,10 +11,22 @@ load_dotenv(os.path.join(_project_root, ".env"))
 import streamlit as st
 from sqlalchemy.exc import OperationalError
 
-# Streamlit Cloud 的 Secrets 不會自動變成 os.environ，報價服務讀的是 os.environ，所以要同步
+# Streamlit Cloud 的 Secrets 不會自動變成 os.environ，報價與試算表後端讀 os.environ，所以要同步
 try:
-    if hasattr(st, "secrets") and st.secrets.get("FINMIND_TOKEN"):
-        os.environ["FINMIND_TOKEN"] = str(st.secrets["FINMIND_TOKEN"]).strip()
+    if hasattr(st, "secrets"):
+        if st.secrets.get("FINMIND_TOKEN"):
+            os.environ["FINMIND_TOKEN"] = str(st.secrets["FINMIND_TOKEN"]).strip()
+        if st.secrets.get("USE_GOOGLE_SHEET"):
+            os.environ["USE_GOOGLE_SHEET"] = str(st.secrets["USE_GOOGLE_SHEET"]).strip()
+        if st.secrets.get("GOOGLE_SHEET_ID"):
+            os.environ["GOOGLE_SHEET_ID"] = str(st.secrets["GOOGLE_SHEET_ID"]).strip()
+        if st.secrets.get("GOOGLE_SHEET_CREDENTIALS"):
+            cred = st.secrets.get("GOOGLE_SHEET_CREDENTIALS")
+            if isinstance(cred, str):
+                os.environ["GOOGLE_SHEET_CREDENTIALS"] = cred.strip()
+            else:
+                import json
+                os.environ["GOOGLE_SHEET_CREDENTIALS"] = json.dumps(cred)
 except Exception:
     pass
 
@@ -28,6 +40,14 @@ st.set_page_config(
 # 左側欄一出現就自動從 Google Sheet 載入股票清單（每 session 只執行一次；任一頁面載入都會觸發）
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
+
+# 若已啟用 Google 試算表聯動，顯示狀態
+try:
+    from db.database import USE_GOOGLE_SHEET
+    if USE_GOOGLE_SHEET:
+        st.sidebar.caption("📋 **資料聯動**：交易與沖銷規則已與 Google 試算表同步，重啟後會從試算表載入。")
+except Exception:
+    pass
 
 # 左側欄：產生模擬數據按鈕（2024/1/1～今天，2000 筆）
 st.sidebar.markdown("---")
