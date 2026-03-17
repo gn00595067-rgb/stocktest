@@ -3,6 +3,7 @@
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.pool import StaticPool
 from .models import Base
 
 # 雲端部署時 Secrets 可能尚未同步到 os.environ，先從 st.secrets 補上（避免頁面先於 app.py 載入時用錯 engine）
@@ -37,8 +38,14 @@ if DATABASE_URL:
     engine = create_engine(DATABASE_URL, echo=False)
 else:
     if USE_GOOGLE_SHEET:
-        # check_same_thread=False 避免 Streamlit 多執行緒下 SQLite 報錯
-        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, echo=False)
+        # StaticPool：單一連線共用，避免多執行緒時每人一個 :memory: 導致「no such table」
+        # check_same_thread=False 允許同一連線在多執行緒使用（Streamlit 腳本跑在不同 thread）
+        engine = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+            echo=False,
+        )
     else:
         DB_PATH = os.environ.get("DB_PATH", "stock_analysis.db")
         engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
