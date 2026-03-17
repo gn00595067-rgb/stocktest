@@ -123,32 +123,37 @@ else:
     if sell_idx >= len(sell_indices):
         sell_idx = 0
         st.session_state["add_sell_idx"] = 0
-    df_sells_display = df_sells.copy()
-    df_sells_display.insert(0, "勾選", [i == sell_idx for i in sell_indices])
-    # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
-    for col in ("賣出股數", "已配", "剩餘可配"):
-        if col in df_sells_display.columns:
-            df_sells_display[col] = df_sells_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
-    edited_sell = st.data_editor(
-        df_sells_display,
-        use_container_width=True,
-        hide_index=True,
-        key="add_sell_editor",
-        column_config={
-            "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
-        },
-        disabled=["交易ID", "股票", "日期", "當沖", "賣出股數", "已配", "剩餘可配"],
-    )
-    # 從編輯結果取回選中的列（只保留一個勾選）
-    checked = edited_sell.index[edited_sell["勾選"]].tolist()
-    if len(checked) == 1:
-        st.session_state["add_sell_idx"] = int(checked[0])
-        sell_idx = int(checked[0])
-    elif len(checked) > 1:
-        st.session_state["add_sell_idx"] = int(checked[-1])
-        sell_idx = int(checked[-1])
-    sell_id = int(df_sells.iloc[sell_idx]["交易ID"]) if sell_indices else None
-    sell_trade = trade_by_id.get(sell_id) if sell_id else None
+    sell_id = None
+    sell_trade = None
+    if df_sells.empty:
+        st.caption("目前沒有可顯示的賣出交易（請取消「僅顯示有剩餘配額的股票」或選擇其他股票）。")
+    else:
+        df_sells_display = df_sells.copy()
+        df_sells_display.insert(0, "勾選", [i == sell_idx for i in sell_indices])
+        # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
+        for col in ("賣出股數", "已配", "剩餘可配"):
+            if col in df_sells_display.columns:
+                df_sells_display[col] = df_sells_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
+        edited_sell = st.data_editor(
+            df_sells_display,
+            use_container_width=True,
+            hide_index=True,
+            key="add_sell_editor",
+            column_config={
+                "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
+            },
+            disabled=["交易ID", "股票", "日期", "當沖", "賣出股數", "已配", "剩餘可配"],
+        )
+        # 從編輯結果取回選中的列（只保留一個勾選）
+        checked = edited_sell.index[edited_sell["勾選"]].tolist()
+        if len(checked) == 1:
+            st.session_state["add_sell_idx"] = int(checked[0])
+            sell_idx = int(checked[0])
+        elif len(checked) > 1:
+            st.session_state["add_sell_idx"] = int(checked[-1])
+            sell_idx = int(checked[-1])
+        sell_id = int(df_sells.iloc[sell_idx]["交易ID"]) if sell_indices else None
+        sell_trade = trade_by_id.get(sell_id) if sell_id else None
     if sell_trade:
         # 同股票、且交易日在賣出日當天或之前的買進
         same_stock_buys = [
