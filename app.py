@@ -43,11 +43,24 @@ st.set_page_config(
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
 
-# 若已啟用 Google 試算表聯動，顯示狀態
+# 若已啟用 Google 試算表聯動，顯示狀態；若本機用檔案 DB 但已設定試算表，提供手動同步
 try:
-    from db.database import USE_GOOGLE_SHEET
+    from db.database import USE_GOOGLE_SHEET, get_engine
     if USE_GOOGLE_SHEET:
         st.sidebar.caption("📋 **資料聯動**：交易與沖銷規則已與 Google 試算表同步，重啟後會從試算表載入。")
+    else:
+        try:
+            from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
+            if is_google_sheet_enabled():
+                st.sidebar.caption("📋 **本機資料庫**：目前為檔案模式，不會自動寫入試算表。")
+                if st.sidebar.button("手動同步到 Google 試算表"):
+                    ok, err = sync_db_to_sheet(get_engine())
+                    if ok:
+                        st.sidebar.success("已將目前資料庫內容寫入 Google 試算表。")
+                    else:
+                        st.sidebar.error(f"同步失敗：{err or '未知錯誤'}")
+        except Exception:
+            pass
 except Exception:
     pass
 

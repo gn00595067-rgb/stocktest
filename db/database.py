@@ -79,14 +79,31 @@ if USE_GOOGLE_SHEET:
             super().commit()
             try:
                 from services.sheet_sync import sync_db_to_sheet
-                sync_db_to_sheet(engine)
-            except Exception:
-                pass
+                ok, err = sync_db_to_sheet(engine)
+                if not ok and err:
+                    try:
+                        import streamlit as st
+                        if hasattr(st, "warning"):
+                            st.warning(f"已寫入資料庫，但同步到 Google 試算表失敗：{err}")
+                    except Exception:
+                        pass
+            except Exception as e:
+                try:
+                    import streamlit as st
+                    if hasattr(st, "warning"):
+                        st.warning(f"已寫入資料庫，但同步到 Google 試算表時發生錯誤：{e}")
+                except Exception:
+                    pass
     Session = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=_SheetSyncSession))
 else:
     Session = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
 
 _sheet_synced_once = False
+
+
+def get_engine():
+    """回傳目前使用的 engine（供手動同步到 Google 試算表等用途）。"""
+    return engine
 
 
 def get_session():
