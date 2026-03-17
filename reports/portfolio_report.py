@@ -294,6 +294,8 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             "股票代號": sid,
             "名稱": (m.name if m else "-"),
             "產業": (m.industry_name if m else "-"),
+            "買進總股數": total_buy_qty,
+            "賣出總股數": total_sell_qty,
             "股數": qty,
             "均價": round(avg_cost, 2),
             "現價": last_price,

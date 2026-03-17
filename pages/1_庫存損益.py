@@ -532,7 +532,17 @@ build_portfolio_kpi_cards(df)
 # ----- 3. 持倉明細表 -----
 st.markdown("---")
 st.markdown("#### 📋 持倉明細")
-st.dataframe(style_portfolio_dataframe(df), use_container_width=True, hide_index=True)
+st.caption("**持倉股數** = 該股票、該買賣人的「買進總股數 − 賣出總股數」。**自定沖銷**只影響已實現損益與成本分攤，不會減少持倉；持倉要歸零，必須在「交易輸入」中該股票的**賣出總股數 ≥ 買進總股數**。若認為已全部賣出卻仍出現持倉，請至「交易輸入」或「個股明細」確認是否漏輸賣出紀錄。")
+df_display = df.drop(columns=["買進總股數", "賣出總股數"], errors="ignore") if "買進總股數" in df.columns else df
+st.dataframe(style_portfolio_dataframe(df_display), use_container_width=True, hide_index=True)
+with st.expander("🔍 為何還有持倉？— 買進／賣出總股數對照", expanded=False):
+    st.caption("下表為每筆持倉的 **買進總股數** 與 **賣出總股數**，持倉 = 買進 − 賣出。若賣出總股數小於買進總股數，就會有剩餘持倉。請至「交易輸入」補齊該股票、該買賣人的賣出紀錄後，持倉才會歸零。")
+    if not df.empty and "買進總股數" in df.columns:
+        diag = df[["買賣人", "股票代號", "名稱", "買進總股數", "賣出總股數", "股數"]].copy()
+        diag = diag.rename(columns={"股數": "持倉股數"})
+        st.dataframe(diag.style.format({"買進總股數": "{:,.0f}", "賣出總股數": "{:,.0f}", "持倉股數": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
+    else:
+        st.caption("尚無持倉或資料未含買進／賣出總股數。")
 with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價）", expanded=False):
     st.caption("以下為 **程式內部** 依「全部買進成本 − 已沖銷成本 − 已沖銷之買進手續費」算出剩餘持倉成本，再 ÷ 股數 = 均價。可對照檢查是哪一項導致均價異常。")
     if debug_cost:
