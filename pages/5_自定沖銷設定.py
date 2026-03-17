@@ -662,19 +662,19 @@ else:
                     except OperationalError:
                         sess2.rollback()
                         st.error("無法寫入資料庫（目前環境可能唯讀）")
-    # 依買賣人加總（以賣方買賣人統計）
-    if custom_users and all_rules_for_summary:
-        with st.expander("📊 依買賣人加總（以賣方統計）", expanded=False):
-            summary_rows = []
-            for u in custom_users:
-                user_rules = [r for r in all_rules_for_summary if trade_by_id.get(r.sell_trade_id) and getattr(trade_by_id.get(r.sell_trade_id), "user", None) == u]
-                summary_rows.append({
-                    "買賣人": u,
-                    "規則筆數": len(user_rules),
-                    "總沖銷股數": sum(r.matched_qty for r in user_rules),
-                })
-            df_custom_summary = pd.DataFrame(summary_rows)
-            st.dataframe(df_custom_summary.style.format({"總沖銷股數": "{:,.0f}"}), use_container_width=True, hide_index=True)
+        # 依買賣人加總（以賣方買賣人統計）
+        if custom_users and all_rules_for_summary:
+            with st.expander("📊 依買賣人加總（以賣方統計）", expanded=False):
+                summary_rows = []
+                for u in custom_users:
+                    user_rules = [r for r in all_rules_for_summary if trade_by_id.get(r.sell_trade_id) and getattr(trade_by_id.get(r.sell_trade_id), "user", None) == u]
+                    summary_rows.append({
+                        "買賣人": u,
+                        "規則筆數": len(user_rules),
+                        "總沖銷股數": sum(r.matched_qty for r in user_rules),
+                    })
+                df_custom_summary = pd.DataFrame(summary_rows)
+                st.dataframe(df_custom_summary.style.format({"總沖銷股數": "{:,.0f}"}), use_container_width=True, hide_index=True)
     finally:
         sess2.close()
     st.markdown("---")
