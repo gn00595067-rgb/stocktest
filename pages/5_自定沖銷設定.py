@@ -98,7 +98,7 @@ else:
         if filter_has_remain and remain <= 0:
             continue
         name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
-        # 當初買入價格：同股票、買進日 ≤ 賣出日的買進均價（數量加權）
+        # 買入價格：同股票、買進日 ≤ 賣出日的買進均價（數量加權）
         same_stock_buys_before = [b for b in buys if b.stock_id == t.stock_id and b.trade_date <= t.trade_date]
         if same_stock_buys_before:
             total_qty = sum(b.quantity for b in same_stock_buys_before)
@@ -111,7 +111,7 @@ else:
             "交易ID": t.id,
             "股票": f"{t.stock_id} {name}".strip(),
             "日期": str(t.trade_date),
-            "當初買入價格": avg_buy_price,
+            "買入價格": avg_buy_price,
             "當沖": bool(getattr(t, "is_daytrade", False)),
             "賣出股數": t.quantity,
             "已配": used,
@@ -153,8 +153,8 @@ else:
         for col in ("賣出股數", "已配", "剩餘可配"):
             if col in df_sells_display.columns:
                 df_sells_display[col] = df_sells_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
-        # 當初買入價格：數值兩位小數，空值顯示 —
-        if "當初買入價格" in df_sells_display.columns:
+        # 買入價格：數值兩位小數，空值顯示 —
+        if "買入價格" in df_sells_display.columns:
             def _fmt_buy_price(x):
                 if x is None or (isinstance(x, float) and pd.isna(x)):
                     return "—"
@@ -162,7 +162,7 @@ else:
                     return f"{float(x):,.2f}"
                 except (ValueError, TypeError):
                     return str(x)
-            df_sells_display["當初買入價格"] = df_sells_display["當初買入價格"].apply(_fmt_buy_price)
+            df_sells_display["買入價格"] = df_sells_display["買入價格"].apply(_fmt_buy_price)
         edited_sell = st.data_editor(
             df_sells_display,
             use_container_width=True,
@@ -171,7 +171,7 @@ else:
             column_config={
                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
             },
-            disabled=["買賣人", "交易ID", "股票", "日期", "當初買入價格", "當沖", "賣出股數", "已配", "剩餘可配"],
+            disabled=["買賣人", "交易ID", "股票", "日期", "買入價格", "當沖", "賣出股數", "已配", "剩餘可配"],
         )
         # 從編輯結果取回選中的列（只保留一個勾選）
         checked = edited_sell.index[edited_sell["勾選"]].tolist()
@@ -237,6 +237,16 @@ else:
             with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
                 if current_price is not None:
                     st.markdown("**%s %s** · 現價 **%s**" % (sid, stock_name, f"{current_price:,.2f}"))
+                    # 要賣股票的買入價格（同股票、買進日≤賣出日的數量加權均價）
+                    same_stock_buys_before = [b for b in buys if b.stock_id == sell_trade.stock_id and b.trade_date <= sell_trade.trade_date]
+                    if same_stock_buys_before:
+                        total_qty_b = sum(b.quantity for b in same_stock_buys_before)
+                        total_cost_b = sum(b.quantity * float(b.price) for b in same_stock_buys_before)
+                        sell_avg_buy = total_cost_b / total_qty_b if total_qty_b else None
+                    else:
+                        sell_avg_buy = None
+                    if sell_avg_buy is not None:
+                        st.markdown("要賣股票的**買入價格**：**%s**" % f"{sell_avg_buy:,.2f}")
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
