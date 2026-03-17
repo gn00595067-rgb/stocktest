@@ -5,6 +5,26 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
 from .models import Base
 
+# 雲端部署時 Secrets 可能尚未同步到 os.environ，先從 st.secrets 補上（避免頁面先於 app.py 載入時用錯 engine）
+try:
+    import streamlit as st
+    if hasattr(st, "secrets") and st.secrets:
+        if st.secrets.get("USE_GOOGLE_SHEET"):
+            os.environ.setdefault("USE_GOOGLE_SHEET", str(st.secrets["USE_GOOGLE_SHEET"]).strip())
+        if st.secrets.get("GOOGLE_SHEET_ID"):
+            os.environ.setdefault("GOOGLE_SHEET_ID", str(st.secrets["GOOGLE_SHEET_ID"]).strip())
+        if st.secrets.get("GOOGLE_SHEET_CREDENTIALS"):
+            c = st.secrets.get("GOOGLE_SHEET_CREDENTIALS")
+            if isinstance(c, str):
+                os.environ.setdefault("GOOGLE_SHEET_CREDENTIALS", c.strip())
+            else:
+                import json
+                os.environ.setdefault("GOOGLE_SHEET_CREDENTIALS", json.dumps(c))
+        if st.secrets.get("GOOGLE_SHEET_CREDENTIALS_B64"):
+            os.environ.setdefault("GOOGLE_SHEET_CREDENTIALS_B64", str(st.secrets["GOOGLE_SHEET_CREDENTIALS_B64"]).strip())
+except Exception:
+    pass
+
 # 是否啟用 Google 試算表聯動（持倉與沖銷資料存於試算表，程式重啟時從試算表載入）
 USE_GOOGLE_SHEET = os.environ.get("USE_GOOGLE_SHEET", "").strip().lower() in ("1", "true", "yes")
 
@@ -17,7 +37,8 @@ if DATABASE_URL:
     engine = create_engine(DATABASE_URL, echo=False)
 else:
     if USE_GOOGLE_SHEET:
-        engine = create_engine("sqlite:///:memory:", echo=False)
+        # check_same_thread=False 避免 Streamlit 多執行緒下 SQLite 報錯
+        engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, echo=False)
     else:
         DB_PATH = os.environ.get("DB_PATH", "stock_analysis.db")
         engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)

@@ -16,6 +16,7 @@ try:
         os.environ.setdefault("FINMIND_TOKEN", str(st.secrets["FINMIND_TOKEN"]).strip())
 except Exception:
     pass
+from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
@@ -72,9 +73,16 @@ if btn_all:
     st.rerun()
 
 # 先查詢買賣人列表（供篩選用）
-_sess = get_session()
-pl_users = sorted(set(u[0] for u in _sess.query(Trade.user).distinct().all() if u[0]))
-_sess.close()
+try:
+    _sess = get_session()
+    pl_users = sorted(set(u[0] for u in _sess.query(Trade.user).distinct().all() if u[0]))
+    _sess.close()
+except OperationalError:
+    pl_users = []
+    st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.stop()
+except Exception:
+    pl_users = []
 
 col_d1, col_d2, col_p, col_m, col_u = st.columns([1, 1, 1.2, 1.2, 1])
 with col_d1:
