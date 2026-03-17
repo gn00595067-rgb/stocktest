@@ -27,6 +27,8 @@ try:
             else:
                 import json
                 os.environ["GOOGLE_SHEET_CREDENTIALS"] = json.dumps(cred)
+        if st.secrets.get("GOOGLE_SHEET_CREDENTIALS_B64"):
+            os.environ["GOOGLE_SHEET_CREDENTIALS_B64"] = str(st.secrets["GOOGLE_SHEET_CREDENTIALS_B64"]).strip()
 except Exception:
     pass
 

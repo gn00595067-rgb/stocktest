@@ -75,15 +75,24 @@ GOOGLE_SHEET_ID=你的試算表ID
 GOOGLE_SHEET_CREDENTIALS={"type":"service_account", ...}   # 整個 JSON 金鑰內容貼成一行
 ```
 
-**Streamlit Cloud**：在 App 的 **Secrets** 加入：
+**Streamlit Cloud**：在 App 的 **Secrets** 加入（二擇一）：
+
+- **方式 A（JSON 字串）**：整段 JSON 貼成一行，注意雙引號要跳脫或外層用三個雙引號包住。
+- **方式 B（推薦）**：用 **base64** 貼金鑰，避免引號與換行造成解析錯誤：
+
+  1. 本機執行一次：`python -c "import json,base64; f=open('你的金鑰.json'); d=json.load(f); print(base64.b64encode(json.dumps(d).encode()).decode())"`
+  2. 把印出的一整行貼到 Secrets 的 `GOOGLE_SHEET_CREDENTIALS_B64`（不要用 `GOOGLE_SHEET_CREDENTIALS`）。
 
 ```toml
 USE_GOOGLE_SHEET = "true"
 GOOGLE_SHEET_ID = "你的試算表ID"
-GOOGLE_SHEET_CREDENTIALS = '{"type": "service_account", ...}'   # JSON 字串
+# 二擇一：貼 JSON 字串 或 貼 base64 字串
+GOOGLE_SHEET_CREDENTIALS = """{"type": "service_account", ...}"""
+# 或
+GOOGLE_SHEET_CREDENTIALS_B64 = "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50Ii..."
 ```
 
-（若 JSON 較長，可改為用 TOML 多行字串或將金鑰內容存成單一 secret 字串後在程式裡解析。）
+若出現「無法從 Google 試算表載入」，請依畫面上的錯誤訊息檢查：試算表是否已共用給服務帳號 Email、ID 是否正確、或改用 **GOOGLE_SHEET_CREDENTIALS_B64** 貼 base64。
 
 ### 3. 行為說明
 

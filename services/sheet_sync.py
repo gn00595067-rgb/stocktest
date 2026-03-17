@@ -28,23 +28,39 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 
 
 def _get_credentials_and_sheet_id():
-    """從 st.secrets 或環境變數取得憑證與試算表 ID。"""
+    """從 st.secrets 或環境變數取得憑證與試算表 ID。支援 JSON 字串、dict、或 base64 編碼。"""
     creds_json = None
     sheet_id = None
     try:
         import streamlit as st
         if hasattr(st, "secrets"):
-            creds_json = st.secrets.get("GOOGLE_SHEET_CREDENTIALS")
+            creds_json = st.secrets.get("GOOGLE_SHEET_CREDENTIALS") or st.secrets.get("GOOGLE_SHEET_CREDENTIALS_B64")
             sheet_id = st.secrets.get("GOOGLE_SHEET_ID")
     except Exception:
         pass
     if not creds_json:
-        creds_json = os.environ.get("GOOGLE_SHEET_CREDENTIALS")
+        creds_json = os.environ.get("GOOGLE_SHEET_CREDENTIALS") or os.environ.get("GOOGLE_SHEET_CREDENTIALS_B64")
     if not sheet_id:
         sheet_id = os.environ.get("GOOGLE_SHEET_ID")
-    if isinstance(creds_json, str) and creds_json.strip().startswith("{"):
+    # 字串：先嘗試 JSON，失敗再嘗試 base64（Secrets 貼 base64 可避免引號/換行問題）
+    if isinstance(creds_json, str):
         import json
-        creds_json = json.loads(creds_json)
+        s = creds_json.strip()
+        if s.startswith("{"):
+            try:
+                creds_json = json.loads(s)
+            except json.JSONDecodeError:
+                creds_json = None
+        else:
+            try:
+                import base64
+                decoded = base64.b64decode(s).decode("utf-8")
+                creds_json = json.loads(decoded)
+            except Exception:
+                creds_json = None
+    if isinstance(creds_json, str):
+        creds_json = None
+    sheet_id = str(sheet_id).strip() if sheet_id else ""
     return creds_json, sheet_id
 
 
@@ -57,18 +73,26 @@ def is_google_sheet_enabled() -> bool:
 
 
 def _open_spreadsheet():
-    """開啟試算表，回傳 gspread Spreadsheet 或 None。"""
+    """開啟試算表，回傳 (gspread Spreadsheet, None) 或 (None, error_message)。"""
     if not _HAS_GSPREAD:
-        return None
+        return None, "未安裝 gspread 或 google-auth"
     creds_dict, sheet_id = _get_credentials_and_sheet_id()
-    if not creds_dict or not sheet_id:
-        return None
+    if not creds_dict:
+        return None, "GOOGLE_SHEET_CREDENTIALS 未設定或格式錯誤（請貼完整 JSON 或改用 GOOGLE_SHEET_CREDENTIALS_B64 貼 base64）"
+    if not sheet_id or not str(sheet_id).strip():
+        return None, "GOOGLE_SHEET_ID 未設定"
     try:
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
         gc = gspread.authorize(creds)
-        return gc.open_by_key(sheet_id.strip())
-    except Exception:
-        return None
+        spread = gc.open_by_key(str(sheet_id).strip())
+        return spread, None
+    except Exception as e:
+        err = str(e).strip() or type(e).__name__
+        if "404" in err or "not found" in err.lower():
+            return None, f"試算表不存在或未共用給服務帳號：{err}"
+        if "403" in err or "permission" in err.lower() or "forbidden" in err.lower():
+            return None, f"無權限（請將試算表共用給 {creds_dict.get('client_email', '')} 編輯者）：{err}"
+        return None, f"無法開啟試算表：{err}"
 
 
 def _parse_date(v) -> Optional[date]:
@@ -119,9 +143,9 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
     """
     if not _HAS_GSPREAD:
         return False, "未安裝 gspread 或 google-auth"
-    spread = _open_spreadsheet()
-    if not spread:
-        return False, "無法開啟試算表（請檢查 GOOGLE_SHEET_CREDENTIALS 與 GOOGLE_SHEET_ID）"
+    spread, err = _open_spreadsheet()
+    if err:
+        return False, err
 
     from sqlalchemy import text
     from db.models import Trade, CustomMatchRule
@@ -226,9 +250,9 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
     """
     if not _HAS_GSPREAD:
         return False, "未安裝 gspread 或 google-auth"
-    spread = _open_spreadsheet()
-    if not spread:
-        return False, "無法開啟試算表"
+    spread, err = _open_spreadsheet()
+    if err:
+        return False, err
 
     from sqlalchemy import text
 

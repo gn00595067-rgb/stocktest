@@ -2,6 +2,7 @@
 .env
 *.env
 !.env.example
+_secrets_b64.txt
 
 # 資料庫（可選：若不想把 .db 上傳就保留）
 *.db
