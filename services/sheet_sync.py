@@ -270,9 +270,25 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                 FROM custom_match_rules
             """)).fetchall()
 
+        def _date_str(v):
+            """將 date/datetime 或字串轉成 YYYY-MM-DD 字串；DB 有時回傳 str。"""
+            if v is None or (isinstance(v, str) and not v.strip()):
+                return ""
+            if hasattr(v, "isoformat"):
+                return v.isoformat()[:10]
+            return str(v).strip()[:10]
+
+        def _datetime_str(v):
+            """將 datetime 或字串轉成 YYYY-MM-DD HH:MM:SS；DB 有時回傳 str。"""
+            if v is None or (isinstance(v, str) and not v.strip()):
+                return ""
+            if hasattr(v, "strftime"):
+                return v.strftime("%Y-%m-%d %H:%M:%S")
+            return str(v).strip()[:19]
+
         def row_trade(r):
             return [
-                r[0], r[1], r[2], r[3].isoformat() if r[3] else "",
+                r[0], r[1], r[2], _date_str(r[3]),
                 r[4], r[5], r[6], bool(r[7]) if r[7] is not None else False,
                 r[8] if r[8] is not None else "", r[9] if r[9] is not None else "",
                 r[10] or "",
@@ -281,7 +297,7 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         def row_rule(r):
             return [
                 r[0], r[1], r[2],
-                r[3].strftime("%Y-%m-%d %H:%M:%S") if r[3] else "",
+                _datetime_str(r[3]),
             ]
 
         # 寫入 trades 工作表
