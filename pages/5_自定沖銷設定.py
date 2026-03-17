@@ -98,20 +98,13 @@ else:
         if filter_has_remain and remain <= 0:
             continue
         name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
-        # 買入價格：同股票、買進日 ≤ 賣出日的買進均價（數量加權）
-        same_stock_buys_before = [b for b in buys if b.stock_id == t.stock_id and b.trade_date <= t.trade_date]
-        if same_stock_buys_before:
-            total_qty = sum(b.quantity for b in same_stock_buys_before)
-            total_cost = sum(b.quantity * float(b.price) for b in same_stock_buys_before)
-            avg_buy_price = round(total_cost / total_qty, 2) if total_qty else None
-        else:
-            avg_buy_price = None
+        sell_price = round(float(t.price), 2) if t.price is not None else None
         rows_sell.append({
             "買賣人": getattr(t, "user", None) or "",
             "交易ID": t.id,
             "股票": f"{t.stock_id} {name}".strip(),
             "日期": str(t.trade_date),
-            "買入價格": avg_buy_price,
+            "賣出價格": sell_price,
             "當沖": bool(getattr(t, "is_daytrade", False)),
             "賣出股數": t.quantity,
             "已配": used,
@@ -153,16 +146,16 @@ else:
         for col in ("賣出股數", "已配", "剩餘可配"):
             if col in df_sells_display.columns:
                 df_sells_display[col] = df_sells_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
-        # 買入價格：數值兩位小數，空值顯示 —
-        if "買入價格" in df_sells_display.columns:
-            def _fmt_buy_price(x):
+        # 賣出價格：數值兩位小數，空值顯示 —
+        if "賣出價格" in df_sells_display.columns:
+            def _fmt_price(x):
                 if x is None or (isinstance(x, float) and pd.isna(x)):
                     return "—"
                 try:
                     return f"{float(x):,.2f}"
                 except (ValueError, TypeError):
                     return str(x)
-            df_sells_display["買入價格"] = df_sells_display["買入價格"].apply(_fmt_buy_price)
+            df_sells_display["賣出價格"] = df_sells_display["賣出價格"].apply(_fmt_price)
         edited_sell = st.data_editor(
             df_sells_display,
             use_container_width=True,
@@ -171,7 +164,7 @@ else:
             column_config={
                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
             },
-            disabled=["買賣人", "交易ID", "股票", "日期", "買入價格", "當沖", "賣出股數", "已配", "剩餘可配"],
+            disabled=["買賣人", "交易ID", "股票", "日期", "賣出價格", "當沖", "賣出股數", "已配", "剩餘可配"],
         )
         # 從編輯結果取回選中的列（只保留一個勾選）
         checked = edited_sell.index[edited_sell["勾選"]].tolist()
@@ -206,9 +199,9 @@ else:
                     "交易ID": t.id,
                     "股票": f"{t.stock_id} {name}".strip(),
                     "日期": str(t.trade_date),
+                    "買入價格": round(float(t.price), 2) if t.price is not None else None,
                     "當沖": bool(getattr(t, "is_daytrade", False)),
                     "買進股數": t.quantity,
-                    "單價": t.price,
                     "已配": used,
                     "剩餘可配": remain,
                 })
@@ -219,8 +212,8 @@ else:
                     df_buys = df_buys.sort_values("日期", ascending=False)
                 elif "日期（舊→新）" in str(sort_buy_val):
                     df_buys = df_buys.sort_values("日期", ascending=True)
-                elif "單價" in str(sort_buy_val):
-                    df_buys = df_buys.sort_values("單價", ascending=False)
+                elif "買入價格" in str(sort_buy_val):
+                    df_buys = df_buys.sort_values("買入價格", ascending=False)
                 else:
                     df_buys = df_buys.sort_values("剩餘可配", ascending=False)
             df_buys = df_buys.reset_index(drop=True)
@@ -237,16 +230,10 @@ else:
             with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
                 if current_price is not None:
                     st.markdown("**%s %s** · 現價 **%s**" % (sid, stock_name, f"{current_price:,.2f}"))
-                    # 要賣股票的買入價格（同股票、買進日≤賣出日的數量加權均價）
-                    same_stock_buys_before = [b for b in buys if b.stock_id == sell_trade.stock_id and b.trade_date <= sell_trade.trade_date]
-                    if same_stock_buys_before:
-                        total_qty_b = sum(b.quantity for b in same_stock_buys_before)
-                        total_cost_b = sum(b.quantity * float(b.price) for b in same_stock_buys_before)
-                        sell_avg_buy = total_cost_b / total_qty_b if total_qty_b else None
-                    else:
-                        sell_avg_buy = None
-                    if sell_avg_buy is not None:
-                        st.markdown("要賣股票的**買入價格**：**%s**" % f"{sell_avg_buy:,.2f}")
+                    # 要賣股票的賣出價格（勾選的該筆賣出交易的賣出價格）
+                    sell_price_val = sell_trade.price
+                    if sell_price_val is not None:
+                        st.markdown("要賣股票的**賣出價格**：**%s**" % f"{float(sell_price_val):,.2f}")
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
@@ -469,7 +456,7 @@ else:
             st.markdown("**2. 選擇「買進」交易（與上列賣出沖銷）**")
             sort_buy = st.selectbox(
                 "買進列表排序",
-                ["依日期（新→舊）", "依日期（舊→新）", "依單價", "依剩餘可配（多→少）"],
+                ["依日期（新→舊）", "依日期（舊→新）", "依買入價格", "依剩餘可配（多→少）"],
                 key="sort_buy",
             )
             if not df_buys.empty:
@@ -477,8 +464,8 @@ else:
                     df_buys = df_buys.sort_values("日期", ascending=False)
                 elif "日期（舊→新）" in sort_buy:
                     df_buys = df_buys.sort_values("日期", ascending=True)
-                elif "單價" in sort_buy:
-                    df_buys = df_buys.sort_values("單價", ascending=False)
+                elif "買入價格" in sort_buy:
+                    df_buys = df_buys.sort_values("買入價格", ascending=False)
                 else:
                     df_buys = df_buys.sort_values("剩餘可配", ascending=False)
                 df_buys = df_buys.reset_index(drop=True)
@@ -503,7 +490,7 @@ else:
                 df_buys_display["買進股數"] = df_buys_display["買進股數"].astype("int64")
                 df_buys_display["已配"] = df_buys_display["已配"].astype("int64")
                 df_buys_display["剩餘可配"] = df_buys_display["剩餘可配"].astype("int64")
-                df_buys_display["單價"] = df_buys_display["單價"].astype("float64")
+                df_buys_display["買入價格"] = df_buys_display["買入價格"].astype("float64")
                 df_buys_display["當沖"] = df_buys_display["當沖"].astype(bool)
                 df_buys_display["股票"] = df_buys_display["股票"].astype(str)
                 df_buys_display["日期"] = df_buys_display["日期"].astype(str)
@@ -513,11 +500,16 @@ else:
             for col in ("買進股數", "已配", "剩餘可配"):
                 if col in df_buys_display.columns:
                     df_buys_display[col] = df_buys_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
-            # 價錢欄位以千分位顯示（例：1,234.56）
-            if "單價" in df_buys_display.columns:
-                df_buys_display["單價"] = df_buys_display["單價"].apply(
-                    lambda x: f"{float(x):,.2f}" if x is not None and isinstance(x, (int, float)) else str(x) if x is not None else ""
-                )
+            # 買入價格欄位以千分位顯示（例：1,234.56）
+            if "買入價格" in df_buys_display.columns:
+                def _fmt_price(x):
+                    if x is None or (isinstance(x, float) and pd.isna(x)):
+                        return "—"
+                    try:
+                        return f"{float(x):,.2f}"
+                    except (ValueError, TypeError):
+                        return str(x) if x is not None else "—"
+                df_buys_display["買入價格"] = df_buys_display["買入價格"].apply(_fmt_price)
             edited_buy = st.data_editor(
                 df_buys_display,
                 use_container_width=True,
@@ -526,7 +518,7 @@ else:
                 column_config={
                     "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
                 },
-                disabled=["買賣人", "交易ID", "股票", "日期", "當沖", "買進股數", "單價", "已配", "剩餘可配"],
+                disabled=["買賣人", "交易ID", "股票", "日期", "當沖", "買進股數", "買入價格", "已配", "剩餘可配"],
             )
             checked_buy = edited_buy.index[edited_buy["勾選"]].tolist()
             if len(checked_buy) == 1:
@@ -620,25 +612,29 @@ else:
         # 依配對時間由新到舊排序（無 created_at 的排最後）
         from datetime import datetime as dt_min
         rules_list = sorted(rules_list, key=lambda r: (getattr(r, "created_at") or dt_min.min), reverse=True)
-        # 表頭（含買賣人）
-        h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 0.8, 1.2, 0.6])
+        # 表頭（含買賣人、賣出價格、買入價格）
+        h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13 = st.columns([1.2, 0.8, 0.7, 0.8, 0.9, 0.7, 0.8, 0.9, 1.0, 0.7, 0.6, 1.0, 0.5])
         with h1: st.markdown("**股票**")
         with h2: st.markdown("**買賣人**")
         with h3: st.markdown("**賣出ID**")
         with h4: st.markdown("**賣出日**")
-        with h5: st.markdown("**買進ID**")
-        with h6: st.markdown("**買進日**")
-        with h7: st.markdown("**配對時間**")
-        with h8: st.markdown("**沖銷股數**")
-        with h9: st.markdown("**當沖**")
-        with h10: st.markdown("**操作**")
-        with h11: st.markdown("")
+        with h5: st.markdown("**賣出價格**")
+        with h6: st.markdown("**買進ID**")
+        with h7: st.markdown("**買進日**")
+        with h8: st.markdown("**買入價格**")
+        with h9: st.markdown("**配對時間**")
+        with h10: st.markdown("**沖銷股數**")
+        with h11: st.markdown("**當沖**")
+        with h12: st.markdown("**操作**")
+        with h13: st.markdown("")
         st.markdown("---")
         for r in rules_list:
             st_t = trade_by_id.get(r.sell_trade_id)
             buy_t = trade_by_id.get(r.buy_trade_id)
             st_date = str(st_t.trade_date) if st_t else "—"
             buy_date = str(buy_t.trade_date) if buy_t else "—"
+            sell_price_str = f"{float(st_t.price):,.2f}" if st_t and st_t.price is not None else "—"
+            buy_price_str = f"{float(buy_t.price):,.2f}" if buy_t and buy_t.price is not None else "—"
             created = getattr(r, "created_at", None)
             paired_time_str = created.strftime("%Y-%m-%d %H:%M") if created else "—"
             is_dt = "是" if (st_t and getattr(st_t, "is_daytrade", False)) or (buy_t and getattr(buy_t, "is_daytrade", False)) or (st_t and buy_t and st_t.trade_date == buy_t.trade_date) else "否"
@@ -656,18 +652,20 @@ else:
             key_qty = f"rule_qty_{r.sell_trade_id}_{r.buy_trade_id}"
             key_mod = f"rule_mod_{r.sell_trade_id}_{r.buy_trade_id}"
             key_del = f"rule_del_{r.sell_trade_id}_{r.buy_trade_id}"
-            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 0.8, 1.2, 0.6])
+            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13 = st.columns([1.2, 0.8, 0.7, 0.8, 0.9, 0.7, 0.8, 0.9, 1.0, 0.7, 0.6, 1.0, 0.5])
             with c1: st.caption(stock_label)
             with c2: st.caption(str(sell_user))
             with c3: st.caption(str(r.sell_trade_id))
             with c4: st.caption(st_date)
-            with c5: st.caption(str(r.buy_trade_id))
-            with c6: st.caption(buy_date)
-            with c7: st.caption(paired_time_str)
-            with c8:
-                new_qty = st.number_input("股數", min_value=1, max_value=max_new_qty, value=min(cur, max_new_qty), key=key_qty, label_visibility="collapsed")
-            with c9: st.caption(is_dt)
+            with c5: st.caption(sell_price_str)
+            with c6: st.caption(str(r.buy_trade_id))
+            with c7: st.caption(buy_date)
+            with c8: st.caption(buy_price_str)
+            with c9: st.caption(paired_time_str)
             with c10:
+                new_qty = st.number_input("股數", min_value=1, max_value=max_new_qty, value=min(cur, max_new_qty), key=key_qty, label_visibility="collapsed")
+            with c11: st.caption(is_dt)
+            with c12:
                 if st.button("確認", key=key_mod, type="primary"):
                     if new_qty != cur:
                         try:
@@ -681,7 +679,7 @@ else:
                         except Exception as e:
                             sess2.rollback()
                             st.error(f"修改失敗：{e}")
-            with c11:
+            with c13:
                 if st.button("刪除", key=key_del):
                     try:
                         sess2.delete(r)
