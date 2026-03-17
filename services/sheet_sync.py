@@ -232,11 +232,14 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                     })
                 conn.commit()
 
-        # 讓 SQLite 下次自動 id 從 max(id)+1 開始（無交易時為 0，下次新增會從 1 開始）
+        # 讓 SQLite 下次自動 id 從 max(id)+1 開始（無交易時 sqlite_sequence 可能尚不存在，略過即可）
         if engine.dialect.name == "sqlite":
-            with engine.connect() as conn:
-                conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM trades) WHERE name = 'trades'"))
-                conn.commit()
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM trades) WHERE name = 'trades'"))
+                    conn.commit()
+            except Exception:
+                pass
 
         return True, None
     except Exception as e:
