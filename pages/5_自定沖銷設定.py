@@ -105,15 +105,16 @@ else:
             ["依日期（新→舊）", "依日期（舊→新）", "依股票", "依剩餘可配（多→少）"],
             key="sort_sell",
         )
-    if "日期（新→舊）" in sort_sell:
-        df_sells = df_sells.sort_values("日期", ascending=False)
-    elif "日期（舊→新）" in sort_sell:
-        df_sells = df_sells.sort_values("日期", ascending=True)
-    elif "股票" in sort_sell:
-        df_sells = df_sells.sort_values("股票")
-    else:
-        df_sells = df_sells.sort_values("剩餘可配", ascending=False)
-    df_sells = df_sells.reset_index(drop=True)
+    if not df_sells.empty:
+        if "日期（新→舊）" in sort_sell:
+            df_sells = df_sells.sort_values("日期", ascending=False)
+        elif "日期（舊→新）" in sort_sell:
+            df_sells = df_sells.sort_values("日期", ascending=True)
+        elif "股票" in sort_sell:
+            df_sells = df_sells.sort_values("股票")
+        else:
+            df_sells = df_sells.sort_values("剩餘可配", ascending=False)
+        df_sells = df_sells.reset_index(drop=True)
     sell_indices = list(range(len(df_sells)))
     # 用 session_state 記住選中的列，預設第一筆
     if "add_sell_idx" not in st.session_state:
