@@ -98,11 +98,20 @@ else:
         if filter_has_remain and remain <= 0:
             continue
         name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
+        # 當初買入價格：同股票、買進日 ≤ 賣出日的買進均價（數量加權）
+        same_stock_buys_before = [b for b in buys if b.stock_id == t.stock_id and b.trade_date <= t.trade_date]
+        if same_stock_buys_before:
+            total_qty = sum(b.quantity for b in same_stock_buys_before)
+            total_cost = sum(b.quantity * float(b.price) for b in same_stock_buys_before)
+            avg_buy_price = round(total_cost / total_qty, 2) if total_qty else None
+        else:
+            avg_buy_price = None
         rows_sell.append({
             "買賣人": getattr(t, "user", None) or "",
             "交易ID": t.id,
             "股票": f"{t.stock_id} {name}".strip(),
             "日期": str(t.trade_date),
+            "當初買入價格": avg_buy_price,
             "當沖": bool(getattr(t, "is_daytrade", False)),
             "賣出股數": t.quantity,
             "已配": used,
@@ -144,6 +153,16 @@ else:
         for col in ("賣出股數", "已配", "剩餘可配"):
             if col in df_sells_display.columns:
                 df_sells_display[col] = df_sells_display[col].apply(lambda x: f"{int(x):,}" if x is not None and str(x).replace(".", "").replace("-", "").isdigit() else str(x))
+        # 當初買入價格：數值兩位小數，空值顯示 —
+        if "當初買入價格" in df_sells_display.columns:
+            def _fmt_buy_price(x):
+                if x is None or (isinstance(x, float) and pd.isna(x)):
+                    return "—"
+                try:
+                    return f"{float(x):,.2f}"
+                except (ValueError, TypeError):
+                    return str(x)
+            df_sells_display["當初買入價格"] = df_sells_display["當初買入價格"].apply(_fmt_buy_price)
         edited_sell = st.data_editor(
             df_sells_display,
             use_container_width=True,
@@ -152,7 +171,7 @@ else:
             column_config={
                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
             },
-            disabled=["買賣人", "交易ID", "股票", "日期", "當沖", "賣出股數", "已配", "剩餘可配"],
+            disabled=["買賣人", "交易ID", "股票", "日期", "當初買入價格", "當沖", "賣出股數", "已配", "剩餘可配"],
         )
         # 從編輯結果取回選中的列（只保留一個勾選）
         checked = edited_sell.index[edited_sell["勾選"]].tolist()
