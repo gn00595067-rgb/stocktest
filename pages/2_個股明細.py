@@ -9,6 +9,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
+from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from reports.stock_detail_report import build_stock_detail
@@ -16,11 +17,18 @@ from reports.stock_detail_report import build_stock_detail
 st.set_page_config(page_title="個股明細", layout="wide")
 st.title("個股明細表")
 
-sess = get_session()
-trades = sess.query(Trade).all()
-masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-custom_rules_list = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
-sess.close()
+try:
+    sess = get_session()
+    trades = sess.query(Trade).all()
+    masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
+    custom_rules_list = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+    sess.close()
+except OperationalError:
+    st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.stop()
+except Exception:
+    st.warning("無法載入交易資料。")
+    st.stop()
 
 # 有交易紀錄的股票清單與買賣人
 stock_ids = sorted(set(t.stock_id for t in trades))

@@ -18,6 +18,7 @@ try:
 except Exception:
     pass
 
+from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster
 from services.price_service import get_quote_cached, fetch_stock_list_cached, clear_quote_cache, get_finmind_debug
@@ -25,17 +26,34 @@ from services.price_service import get_quote_cached, fetch_stock_list_cached, cl
 st.set_page_config(page_title="交易輸入", layout="wide")
 st.title("交易輸入（仿奇摩）")
 
-session = get_session()
-stocks = session.query(StockMaster).all()
-stock_options = {s.stock_id: f"{s.stock_id} {s.name or ''}" for s in stocks}
-session.close()
+session = None
+try:
+    session = get_session()
+    stocks = session.query(StockMaster).all()
+    stock_options = {s.stock_id: f"{s.stock_id} {s.name or ''}" for s in stocks}
+    session.close()
+except OperationalError:
+    st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.stop()
+except Exception:
+    stocks = []
+    stock_options = {}
+    if session is not None:
+        try:
+            session.close()
+        except Exception:
+            pass
 
 # 若有剛從搜尋加入的股票，重新載入選項
 if st.session_state.get("selected_stock_id"):
-    sess = get_session()
-    stocks = sess.query(StockMaster).all()
-    stock_options = {s.stock_id: f"{s.stock_id} {s.name or ''}" for s in stocks}
-    sess.close()
+    try:
+        sess = get_session()
+        stocks = sess.query(StockMaster).all()
+        stock_options = {s.stock_id: f"{s.stock_id} {s.name or ''}" for s in stocks}
+        sess.close()
+    except OperationalError:
+        st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+        st.stop()
 
 # 若尚未有任何股票，仍顯示搜尋區塊讓使用者從台股列表加入
 show_search_only = not stock_options

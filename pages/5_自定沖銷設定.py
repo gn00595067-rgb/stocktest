@@ -20,12 +20,27 @@ st.set_page_config(page_title="自定沖銷設定", layout="wide")
 st.title("自定沖銷設定")
 st.caption("可指定「某筆賣出」與「某筆買進」的沖銷股數；在 庫存損益、投資績效、個股明細等頁面選擇「自定沖銷」時會依此規則計算損益。")
 
-sess = get_session()
+sess = None
 try:
+    sess = get_session()
     trades = sess.query(Trade).order_by(Trade.trade_date, Trade.id).all()
     masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
     rules = sess.query(CustomMatchRule).all()
+    sess.close()
+except OperationalError:
+    if sess is not None:
+        try:
+            sess.close()
+        except Exception:
+            pass
+    st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.stop()
 except Exception:
+    if sess is not None:
+        try:
+            sess.close()
+        except Exception:
+            pass
     trades = []
     masters = {}
     rules = []

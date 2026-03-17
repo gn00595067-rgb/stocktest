@@ -15,6 +15,7 @@ try:
         os.environ.setdefault("FINMIND_TOKEN", str(st.secrets["FINMIND_TOKEN"]).strip())
 except Exception:
     pass
+from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from reports.portfolio_report import build_portfolio_df
@@ -483,12 +484,18 @@ with st.container():
         st.rerun()
 
     # 先載入資料供篩選與報表使用
-    sess = get_session()
-    all_trades = sess.query(Trade).all()
-    portfolio_users = sorted(set(t.user for t in all_trades))
-    masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-    custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
-    sess.close()
+    try:
+        sess = get_session()
+        all_trades = sess.query(Trade).all()
+        portfolio_users = sorted(set(t.user for t in all_trades))
+        masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
+        custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+        sess.close()
+    except OperationalError:
+        st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+        st.stop()
+    except Exception:
+        st.stop()
 
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     with col_f1:
