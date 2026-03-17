@@ -32,8 +32,17 @@ except Exception:
 
 # 依交易 ID 查詢
 trade_by_id = {t.id: t for t in trades}
+custom_users = sorted(set(t.user for t in trades if getattr(t, "user", None)))
 sells = [t for t in trades if (t.side or "").upper() == "SELL"]
 buys = [t for t in trades if (t.side or "").upper() == "BUY"]
+
+# 買賣人篩選（不影響規則儲存，僅篩選顯示的賣出/買進列表）
+custom_user_opts = ["全部"] + custom_users
+custom_user_idx = st.selectbox("買賣人", range(len(custom_user_opts)), format_func=lambda i: custom_user_opts[i], key="custom_filter_user")
+if custom_user_idx != 0:
+    filter_user = custom_user_opts[custom_user_idx]
+    sells = [t for t in sells if getattr(t, "user", None) == filter_user]
+    buys = [t for t in buys if getattr(t, "user", None) == filter_user]
 
 # 每個賣出/買進已被規則占用的股數
 sell_used = defaultdict(int)
@@ -90,6 +99,7 @@ else:
             continue
         name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
         rows_sell.append({
+            "買賣人": getattr(t, "user", None) or "",
             "交易ID": t.id,
             "股票": f"{t.stock_id} {name}".strip(),
             "日期": str(t.trade_date),
@@ -142,7 +152,7 @@ else:
             column_config={
                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
             },
-            disabled=["交易ID", "股票", "日期", "當沖", "賣出股數", "已配", "剩餘可配"],
+            disabled=["買賣人", "交易ID", "股票", "日期", "當沖", "賣出股數", "已配", "剩餘可配"],
         )
         # 從編輯結果取回選中的列（只保留一個勾選）
         checked = edited_sell.index[edited_sell["勾選"]].tolist()
@@ -173,6 +183,7 @@ else:
                     continue
                 name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
                 rows_buy.append({
+                    "買賣人": getattr(t, "user", None) or "",
                     "交易ID": t.id,
                     "股票": f"{t.stock_id} {name}".strip(),
                     "日期": str(t.trade_date),
@@ -486,7 +497,7 @@ else:
                 column_config={
                     "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
                 },
-                disabled=["交易ID", "股票", "日期", "當沖", "買進股數", "單價", "已配", "剩餘可配"],
+                disabled=["買賣人", "交易ID", "股票", "日期", "當沖", "買進股數", "單價", "已配", "剩餘可配"],
             )
             checked_buy = edited_buy.index[edited_buy["勾選"]].tolist()
             if len(checked_buy) == 1:
@@ -574,23 +585,25 @@ else:
             help="僅顯示所選股票的已配對規則。",
         )
         filter_paired_id = paired_stock_options[filter_paired_idx][1]
+        all_rules_for_summary = list(rules_list)
         if filter_paired_id:
             rules_list = [r for r in rules_list if (trade_by_id.get(r.sell_trade_id) and trade_by_id.get(r.sell_trade_id).stock_id == filter_paired_id)]
         # 依配對時間由新到舊排序（無 created_at 的排最後）
         from datetime import datetime as dt_min
         rules_list = sorted(rules_list, key=lambda r: (getattr(r, "created_at") or dt_min.min), reverse=True)
-        # 表頭
-        h1, h2, h3, h4, h5, h6, h7, h8, h9, h10 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 1.2, 0.6])
+        # 表頭（含買賣人）
+        h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 0.8, 1.2, 0.6])
         with h1: st.markdown("**股票**")
-        with h2: st.markdown("**賣出ID**")
-        with h3: st.markdown("**賣出日**")
-        with h4: st.markdown("**買進ID**")
-        with h5: st.markdown("**買進日**")
-        with h6: st.markdown("**配對時間**")
-        with h7: st.markdown("**沖銷股數**")
-        with h8: st.markdown("**當沖**")
-        with h9: st.markdown("**操作**")
-        with h10: st.markdown("")
+        with h2: st.markdown("**買賣人**")
+        with h3: st.markdown("**賣出ID**")
+        with h4: st.markdown("**賣出日**")
+        with h5: st.markdown("**買進ID**")
+        with h6: st.markdown("**買進日**")
+        with h7: st.markdown("**配對時間**")
+        with h8: st.markdown("**沖銷股數**")
+        with h9: st.markdown("**當沖**")
+        with h10: st.markdown("**操作**")
+        with h11: st.markdown("")
         st.markdown("---")
         for r in rules_list:
             st_t = trade_by_id.get(r.sell_trade_id)
@@ -603,6 +616,7 @@ else:
             sid = st_t.stock_id if st_t else (buy_t.stock_id if buy_t else "—")
             name = (masters.get(sid).name if masters.get(sid) else "") or ""
             stock_label = f"{sid} {name}".strip()
+            sell_user = getattr(st_t, "user", None) or "" if st_t else "—"
             cur = r.matched_qty
             if st_t and buy_t:
                 sell_remain_after = max(0, st_t.quantity - (sell_used2[r.sell_trade_id] - cur))
@@ -613,17 +627,18 @@ else:
             key_qty = f"rule_qty_{r.sell_trade_id}_{r.buy_trade_id}"
             key_mod = f"rule_mod_{r.sell_trade_id}_{r.buy_trade_id}"
             key_del = f"rule_del_{r.sell_trade_id}_{r.buy_trade_id}"
-            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 1.2, 0.6])
+            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11 = st.columns([1.2, 0.8, 0.8, 0.8, 0.8, 1.0, 0.8, 0.6, 0.8, 1.2, 0.6])
             with c1: st.caption(stock_label)
-            with c2: st.caption(str(r.sell_trade_id))
-            with c3: st.caption(st_date)
-            with c4: st.caption(str(r.buy_trade_id))
-            with c5: st.caption(buy_date)
-            with c6: st.caption(paired_time_str)
-            with c7:
+            with c2: st.caption(str(sell_user))
+            with c3: st.caption(str(r.sell_trade_id))
+            with c4: st.caption(st_date)
+            with c5: st.caption(str(r.buy_trade_id))
+            with c6: st.caption(buy_date)
+            with c7: st.caption(paired_time_str)
+            with c8:
                 new_qty = st.number_input("股數", min_value=1, max_value=max_new_qty, value=min(cur, max_new_qty), key=key_qty, label_visibility="collapsed")
-            with c8: st.caption(is_dt)
-            with c9:
+            with c9: st.caption(is_dt)
+            with c10:
                 if st.button("確認", key=key_mod, type="primary"):
                     if new_qty != cur:
                         try:
@@ -637,7 +652,7 @@ else:
                         except Exception as e:
                             sess2.rollback()
                             st.error(f"修改失敗：{e}")
-            with c10:
+            with c11:
                 if st.button("刪除", key=key_del):
                     try:
                         sess2.delete(r)
@@ -647,6 +662,19 @@ else:
                     except OperationalError:
                         sess2.rollback()
                         st.error("無法寫入資料庫（目前環境可能唯讀）")
+    # 依買賣人加總（以賣方買賣人統計）
+    if custom_users and all_rules_for_summary:
+        with st.expander("📊 依買賣人加總（以賣方統計）", expanded=False):
+            summary_rows = []
+            for u in custom_users:
+                user_rules = [r for r in all_rules_for_summary if trade_by_id.get(r.sell_trade_id) and getattr(trade_by_id.get(r.sell_trade_id), "user", None) == u]
+                summary_rows.append({
+                    "買賣人": u,
+                    "規則筆數": len(user_rules),
+                    "總沖銷股數": sum(r.matched_qty for r in user_rules),
+                })
+            df_custom_summary = pd.DataFrame(summary_rows)
+            st.dataframe(df_custom_summary.style.format({"總沖銷股數": "{:,.0f}"}), use_container_width=True, hide_index=True)
     finally:
         sess2.close()
     st.markdown("---")

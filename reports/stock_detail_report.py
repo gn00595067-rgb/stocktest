@@ -39,7 +39,9 @@ def build_stock_sold_df(stock_id: str, trades, masters, policy: str, custom_rule
         buy_expense = pay + buy_fee
         sell_amount = qty * sell_price
         cum_pnl += pnl
+        buy_user = getattr(buy_t, "user", None) or ""
         rows.append({
+            "買賣人": buy_user,
             "買賣日": str(buy_t.trade_date),
             "公司": company,
             "股數": qty,
@@ -97,7 +99,9 @@ def build_stock_inventory_df(stock_id: str, trades, masters, policy: str, custom
         pay = rem * b.price
         expense = pay + fee
         cum_cost += expense
+        buy_user = getattr(t, "user", None) or ""
         rows.append({
+            "買賣人": buy_user,
             "買賣日": str(t.trade_date),
             "公司": company,
             "股數": rem,

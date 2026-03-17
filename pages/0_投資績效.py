@@ -71,7 +71,12 @@ if btn_all:
     st.session_state["pl_end"] = today
     st.rerun()
 
-col_d1, col_d2, col_p, col_m = st.columns([1, 1, 1.5, 1.2])
+# 先查詢買賣人列表（供篩選用）
+_sess = get_session()
+pl_users = sorted(set(u[0] for u in _sess.query(Trade.user).distinct().all() if u[0]))
+_sess.close()
+
+col_d1, col_d2, col_p, col_m, col_u = st.columns([1, 1, 1.2, 1.2, 1])
 with col_d1:
     start_date = st.date_input("開始日期", key="pl_start")
 with col_d2:
@@ -88,6 +93,10 @@ with col_m:
         ["合計", "已實現", "未實現"],
         format_func=lambda x: {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(x, x),
     )
+with col_u:
+    pl_user_opts = ["全部"] + pl_users
+    pl_user_idx = st.selectbox("買賣人", range(len(pl_user_opts)), format_func=lambda i: pl_user_opts[i], key="pl_filter_user")
+    pl_filter_users = None if pl_user_idx == 0 else [pl_user_opts[pl_user_idx]]
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
 
@@ -158,6 +167,48 @@ all_trades = sess.query(Trade).all()
 masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
 custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
+
+# 保留未篩選交易（供「依買賣人加總」使用）
+all_trades_full = list(all_trades)
+
+
+def _pl_realized_unrealized_for_trades(trades_list, _start, _end, _custom_rules, _masters, _policy="CUSTOM"):
+    """給定交易列表與區間，回傳 (已實現加總, 未實現加總)。"""
+    _tr = [t for t in trades_list if _start <= t.trade_date <= _end]
+    _trade_by_id = {t.id: t for t in trades_list}
+    _buys = defaultdict(list)
+    _sells = defaultdict(list)
+    for t in _tr:
+        lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
+        if (t.side or "").upper() == "BUY":
+            _buys[t.stock_id].append(lot)
+        else:
+            _sells[t.stock_id].append(lot)
+    _realized = defaultdict(float)
+    for sid, sells in _sells.items():
+        buys = [Lot(b.trade_id, b.qty, b.price, b.date) for b in _buys.get(sid, [])]
+        sell_lots = [Lot(s.trade_id, s.qty, s.price, s.date) for s in sells]
+        for m in compute_matches(buys, sell_lots, _policy, custom_rules=_custom_rules):
+            _realized[sid] += net_pnl_for_match(m, _trade_by_id)
+    _pos = defaultdict(lambda: {"qty": 0, "cost": 0.0})
+    for sid, data in compute_position_and_cost_by_stock(trades_list, custom_rules=_custom_rules).items():
+        _pos[sid]["qty"] = data["qty"]
+        _pos[sid]["cost"] = data["cost"]
+    _unrealized = defaultdict(float)
+    for sid, p in _pos.items():
+        qty = max(0, p["qty"])
+        if qty <= 0:
+            continue
+        avg = p["cost"] / qty if qty else 0
+        q = get_quote_cached(sid)
+        last = float(q["price"]) if q and q.get("price") is not None else avg
+        _unrealized[sid] = (last - avg) * qty
+    return (sum(_realized.values()), sum(_unrealized.values()))
+
+
+# 依買賣人篩選
+if pl_filter_users is not None:
+    all_trades = [t for t in all_trades if t.user in pl_filter_users]
 
 # 區間內交易（start_date / end_date 來自上方按鈕或日期框，可手動改為自訂）
 if start_date > end_date:
@@ -433,6 +484,19 @@ with r3_4:
         <div class="portfolio-kpi-label">最大單筆虧損</div>
         <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {fmt_money_compact(min_single)}</div>
     </div>""", unsafe_allow_html=True)
+
+# ---------- 依買賣人加總 ----------
+if pl_users:
+    with st.expander("📊 依買賣人加總", expanded=False):
+        user_rows = []
+        for u in pl_users:
+            user_trades = [t for t in all_trades_full if t.user == u]
+            r_sum, u_sum = _pl_realized_unrealized_for_trades(
+                user_trades, start_date, end_date, custom_rules, masters, policy
+            )
+            user_rows.append({"買賣人": u, "已實現": round(r_sum, 2), "未實現": round(u_sum, 2), "合計": round(r_sum + u_sum, 2)})
+        df_user_pl = pd.DataFrame(user_rows)
+        st.dataframe(df_user_pl.style.format({"已實現": "{:,.0f}", "未實現": "{:,.0f}", "合計": "{:,.0f}"}, subset=["已實現", "未實現", "合計"]), use_container_width=True, hide_index=True)
 
 st.markdown("---")
 st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)

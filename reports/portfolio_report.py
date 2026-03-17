@@ -119,12 +119,14 @@ def get_realized_pnl_by_stock(trades, start_date: date, end_date: date, policy: 
     return realized
 
 
-def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy: str, get_quote_fn, custom_rules: Optional[List[Tuple[int, int, int]]] = None):
+def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy: str, get_quote_fn, custom_rules: Optional[List[Tuple[int, int, int]]] = None, filter_users: Optional[List[str]] = None):
     """
-    建構持倉表：stock_id, name, industry, user, shares, avg_cost, last_price,
-    market_value, unrealized_pnl, realized_pnl, total_pnl.
+    建構持倉表：每列為 (股票, 買賣人)，含 買賣人、股票代號、名稱、產業、股數、均價、現價、市值、未實現損益、已實現損益、總損益。
+    filter_users: 若提供則只納入該些買賣人的交易；None 表示全部。
     持倉用「全部」交易計算；已實現損益用 start_date~end_date 內沖銷計算。
     """
+    if filter_users is not None:
+        trades = [t for t in trades if t.user in filter_users]
     buys_by_stock_user = defaultdict(lambda: defaultdict(list))
     sells_by_stock_user = defaultdict(lambda: defaultdict(list))
     for t in trades:
@@ -250,37 +252,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     for sid in unique_sids:
         quote_by_sid[sid] = get_quote_fn(sid)
 
-    rows = []
-    for sid, qty in position_qty.items():
-        if qty <= 0:
-            continue
-        remaining_cost = total_buy_cost[sid]
-        avg_cost = remaining_cost / qty if qty else 0
-        quote = quote_by_sid.get(sid)
-        last_price = quote["price"] if quote else avg_cost
-        market_value = qty * last_price
-        unrealized = (last_price - avg_cost) * qty
-        real = realized.get(sid, 0)
-        m = masters.get(sid)
-        rows.append({
-            "股票代號": sid,
-            "名稱": (m.name if m else "-"),
-            "產業": (m.industry_name if m else "-"),
-            "股數": qty,
-            "均價": round(avg_cost, 2),
-            "現價": last_price,
-            "市值": round(market_value, 2),
-            "未實現損益": round(unrealized, 2),
-            "已實現損益": round(real, 2),
-            "總損益": round(unrealized + real, 2),
-        })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df_industry = df.groupby("產業", as_index=False).agg({"市值": "sum", "總損益": "sum"})
-    else:
-        df_industry = pd.DataFrame()
-    # 按買賣人小計：per (stock_id, user) 持倉後加總
-    user_rows = []
+    # 主表：每列 (股票, 買賣人)，含買賣人欄位
     all_keys = set()
     for sid in buys_by_stock_user:
         for u in buys_by_stock_user[sid]:
@@ -288,6 +260,7 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
     for sid in sells_by_stock_user:
         for u in sells_by_stock_user[sid]:
             all_keys.add((sid, u))
+    main_rows = []
     for (sid, user) in all_keys:
         all_buys = list(buys_by_stock_user.get(sid, {}).get(user, []))
         all_sells = list(sells_by_stock_user.get(sid, {}).get(user, []))
@@ -315,6 +288,25 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         in_range_buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and _is_buy(t)]
         in_range_sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and not _is_buy(t)]
         real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(in_range_buys, in_range_sells, policy, custom_rules=custom_rules))
-        user_rows.append({"買賣人": user, "股票代號": sid, "市值": round(mv, 2), "總損益": round(unrealized + real, 2)})
-    df_user = pd.DataFrame(user_rows).groupby("買賣人", as_index=False).agg({"市值": "sum", "總損益": "sum"}) if user_rows else pd.DataFrame()
+        m = masters.get(sid)
+        main_rows.append({
+            "買賣人": user,
+            "股票代號": sid,
+            "名稱": (m.name if m else "-"),
+            "產業": (m.industry_name if m else "-"),
+            "股數": qty,
+            "均價": round(avg_cost, 2),
+            "現價": last_price,
+            "市值": round(mv, 2),
+            "未實現損益": round(unrealized, 2),
+            "已實現損益": round(real, 2),
+            "總損益": round(unrealized + real, 2),
+        })
+    df = pd.DataFrame(main_rows)
+    if not df.empty:
+        df_industry = df.groupby("產業", as_index=False).agg({"市值": "sum", "總損益": "sum"})
+        df_user = df.groupby("買賣人", as_index=False).agg({"市值": "sum", "總損益": "sum"})
+    else:
+        df_industry = pd.DataFrame()
+        df_user = pd.DataFrame()
     return df, df_industry, df_user, debug_cost

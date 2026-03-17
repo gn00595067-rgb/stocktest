@@ -22,8 +22,9 @@ masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
 custom_rules_list = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
 
-# 有交易紀錄的股票清單
+# 有交易紀錄的股票清單與買賣人
 stock_ids = sorted(set(t.stock_id for t in trades))
+detail_users = sorted(set(t.user for t in trades if getattr(t, "user", None)))
 if not stock_ids:
     st.info("尚無交易，無法顯示個股明細")
     st.stop()
@@ -34,18 +35,26 @@ for sid in stock_ids:
     name = getattr(m, "name", None) or ""
     stock_options[sid] = f"{sid} {name}".strip() if name else sid
 
-policy = st.selectbox(
-    "損益沖銷方式",
-    ["CUSTOM"],
-    format_func=lambda x: "自定沖銷",
-)
-selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), format_func=lambda x: stock_options.get(x, x))
+c_policy, c_stock, c_user = st.columns([1, 1.5, 1])
+with c_policy:
+    policy = st.selectbox(
+        "損益沖銷方式",
+        ["CUSTOM"],
+        format_func=lambda x: "自定沖銷",
+    )
+with c_stock:
+    selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), format_func=lambda x: stock_options.get(x, x))
+with c_user:
+    user_opts = ["全部"] + detail_users
+    user_idx = st.selectbox("買賣人", range(len(user_opts)), format_func=lambda i: user_opts[i], key="detail_filter_user")
+    detail_filter_users = None if user_idx == 0 else [user_opts[user_idx]]
 
-sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(selected_id, trades, masters, policy, custom_rules=custom_rules_list)
+trades_for_detail = trades if detail_filter_users is None else [t for t in trades if t.user in detail_filter_users]
+sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(selected_id, trades_for_detail, masters, policy, custom_rules=custom_rules_list)
 company_label = stock_options.get(selected_id, selected_id)
 
 # ---------- 原始交易紀錄（除錯／與 Excel 比對） ----------
-stock_trades = [t for t in trades if t.stock_id == selected_id]
+stock_trades = [t for t in trades_for_detail if t.stock_id == selected_id]
 with st.expander("📋 此股票全部交易原始資料（與 Excel 比對用）", expanded=False):
     st.caption("下表為系統內此股票的所有買進／賣出筆數。若與您手邊 Excel 筆數或單筆「股價」不一致，可能是重複匯入、漏匯或匯入時欄位解析錯誤。均價異常時請檢查是否有單筆價格異常（例如 >500 或接近 788）。")
     if not stock_trades:
@@ -55,6 +64,7 @@ with st.expander("📋 此股票全部交易原始資料（與 Excel 比對用�
         for t in sorted(stock_trades, key=lambda x: (x.trade_date, x.id)):
             raw_rows.append({
                 "id": t.id,
+                "買賣人": getattr(t, "user", None) or "",
                 "日期": str(t.trade_date),
                 "買/賣": (t.side or "").upper(),
                 "股價": round(float(t.price), 2),
@@ -143,6 +153,27 @@ else:
     c2.metric("原始成本", f"{inv_summary['原始成本']:,.0f}", None)
     c3.metric("原始均價", f"{inv_summary['原始均價']:,.2f}", None)
     c4.metric("結算後均價", f"{inv_summary['結算後均價']:,.2f}", None)
+
+# ---------- 依買賣人加總（本檔股票） ----------
+if detail_users:
+    with st.expander("📊 依買賣人加總（本檔股票）", expanded=False):
+        user_summary_rows = []
+        for u in detail_users:
+            utrades = [t for t in trades if t.user == u]
+            _sold, _rev, _inv, _summ = build_stock_detail(selected_id, utrades, masters, policy, custom_rules=custom_rules_list)
+            user_summary_rows.append({
+                "買賣人": u,
+                "已出售總金額": round(_rev, 0),
+                "庫存股數": _summ.get("庫存股數", 0),
+                "庫存原始成本": _summ.get("原始成本", 0),
+                "庫存均價": _summ.get("原始均價", 0),
+            })
+        df_user_detail = pd.DataFrame(user_summary_rows)
+        st.dataframe(
+            df_user_detail.style.format({"已出售總金額": "{:,.0f}", "庫存股數": "{:,.0f}", "庫存原始成本": "{:,.0f}", "庫存均價": "{:,.2f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 # ---------- 匯出 Excel ----------
 buffer = io.BytesIO()

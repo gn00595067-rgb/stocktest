@@ -482,7 +482,15 @@ with st.container():
         st.session_state["portfolio_end"] = today
         st.rerun()
 
-    col_f1, col_f2, col_f3 = st.columns(3)
+    # 先載入資料供篩選與報表使用
+    sess = get_session()
+    all_trades = sess.query(Trade).all()
+    portfolio_users = sorted(set(t.user for t in all_trades))
+    masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
+    custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+    sess.close()
+
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     with col_f1:
         start_date = st.date_input("開始日期", key="portfolio_start")
     with col_f2:
@@ -494,19 +502,23 @@ with st.container():
             format_func=lambda x: "自定沖銷",
             key="portfolio_policy",
         )
+    with col_f4:
+        filter_user_options = ["全部"] + portfolio_users
+        filter_user_idx = st.selectbox(
+            "買賣人",
+            range(len(filter_user_options)),
+            format_func=lambda i: filter_user_options[i],
+            key="portfolio_filter_user",
+        )
+        portfolio_filter_users = None if filter_user_idx == 0 else [filter_user_options[filter_user_idx]]
     _inject_range_button_highlight(_range_active_index(start_date, end_date, today))
     st.caption("持倉與損益皆依 **自定沖銷** 規則計算。請至「自定沖銷設定」頁設定賣出與買進的配對。")
     st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
 
-sess = get_session()
-trades = sess.query(Trade).filter(Trade.trade_date >= start_date, Trade.trade_date <= end_date).all()
-all_trades = sess.query(Trade).all()
-masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
-sess.close()
+trades = [t for t in all_trades if start_date <= t.trade_date <= end_date]
 
 df, df_industry, df_user, debug_cost = build_portfolio_df(
-    all_trades, masters, start_date, end_date, policy, get_quote_cached, custom_rules=custom_rules
+    all_trades, masters, start_date, end_date, policy, get_quote_cached, custom_rules=custom_rules, filter_users=portfolio_filter_users
 )
 
 if df.empty:
