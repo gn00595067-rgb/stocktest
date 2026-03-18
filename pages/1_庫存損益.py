@@ -552,27 +552,55 @@ if "市值" in df_display.columns:
             df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
         except Exception:
             pass
-# 表格上方一列：展開明細下拉（選一檔後表格下方再展開）
-detail_options = ["— 請選擇一檔以展開明細 —"]
+# 每列對應 (sid, name, user)，點該列按鈕即展開該檔明細
 detail_rows = []
 for idx, row in df_display.iterrows():
     sid = row.get("股票代號") or row.get("stock_id")
     name = row.get("名稱", "")
     user = row.get("買賣人", "")
-    mv = row.get("市值")
-    mv_str = f"{mv:,.0f}" if mv is not None and pd.notna(mv) else "—"
-    detail_options.append(f"{sid} {str(name).strip()} · {user or '—'} · 市值 {mv_str}")
     detail_rows.append((sid, name, user))
 
-cc1, cc2 = st.columns([1, 4])
-with cc1:
-    choice = st.selectbox(
-        "展開明細",
-        range(len(detail_options)),
-        format_func=lambda i: detail_options[i],
-        key="portfolio_detail_select",
-    )
-st.dataframe(style_portfolio_dataframe(df_display), use_container_width=True, hide_index=True)
+if "portfolio_detail_row" not in st.session_state:
+    st.session_state["portfolio_detail_row"] = None
+
+def _cell_fmt(col: str, val):
+    """持倉表單格顯示格式（千分位／小數）"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    if col in ("均價", "現價"):
+        try:
+            return f"{float(val):,.2f}"
+        except (ValueError, TypeError):
+            return str(val)
+    if col in ("市值", "股數", "未實現損益", "已實現損益", "總損益"):
+        try:
+            v = float(val)
+            return f"{int(v):,}" if v == int(v) else f"{v:,.2f}"
+        except (ValueError, TypeError):
+            return str(val)
+    return str(val).strip() if val is not None else "—"
+
+display_cols = list(df_display.columns)
+n_cols = len(display_cols)
+# 表頭：欄名 + 明細
+col_widths = [1] * n_cols + [0.4]
+header_cols = st.columns(col_widths)
+for j, c in enumerate(display_cols):
+    header_cols[j].markdown(f"**{c}**")
+header_cols[-1].markdown("**明細**")
+
+# 每一列：資料格 + 按鈕（點該列即展開／收合該檔）
+for i, (idx, row) in enumerate(df_display.iterrows()):
+    row_cols = st.columns(col_widths)
+    for j, c in enumerate(display_cols):
+        row_cols[j].write(_cell_fmt(c, row.get(c)))
+    with row_cols[-1]:
+        expanded = st.session_state["portfolio_detail_row"] == i
+        if st.button("收合" if expanded else "▼ 明細", key=f"portfolio_detail_btn_{i}"):
+            st.session_state["portfolio_detail_row"] = None if expanded else i
+            st.rerun()
+
+choice = st.session_state["portfolio_detail_row"]
 
 # 僅在「有選擇一檔」時，下方顯示該檔的已出售＋庫存
 def _detail_style_signed(val):
@@ -594,8 +622,8 @@ def _detail_fmt_num(val):
     except (ValueError, TypeError):
         return str(val)
 
-if choice and choice > 0 and choice <= len(detail_rows):
-    sid, name, user = detail_rows[choice - 1]
+if choice is not None and 0 <= choice < len(detail_rows):
+    sid, name, user = detail_rows[choice]
     trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
     sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(sid, trades_for_row, masters, policy, custom_rules=custom_rules)
     st.markdown("---")
