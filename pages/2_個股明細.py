@@ -124,82 +124,182 @@ def _fmt_num(val):
 
 
 # ---------- 已出售 ----------
-st.subheader("已出售")
-st.caption(f"**{company_label}** · 以下為已沖銷的「買→賣」明細，每列一筆沖銷；**買/賣** 欄為「買→賣」表示該列為買進後賣出，實際賣出資訊見 **出售日、賣價、賣出金額**。")
-if sold_df.empty:
-    st.caption("此股票尚無已出售紀錄")
-else:
-    sold_cols_num = [c for c in sold_df.columns if sold_df[c].dtype in ("int64", "float64")]
-    fmt_sold = {c: _fmt_num for c in sold_cols_num}
-    style_sold = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
-    if style_sold:
-        st.dataframe(
-            sold_df.style.format(fmt_sold).applymap(_style_signed, subset=style_sold),
-            use_container_width=True,
-            hide_index=True,
-        )
+tab_detail, tab_daily = st.tabs(["已出售/庫存", "當日交易明細"])
+
+with tab_detail:
+    st.subheader("已出售")
+    st.caption(f"**{company_label}** · 以下為已沖銷的「買→賣」明細，每列一筆沖銷；**買/賣** 欄為「買→賣」表示該列為買進後賣出，實際賣出資訊見 **出售日、賣價、賣出金額**。")
+    if sold_df.empty:
+        st.caption("此股票尚無已出售紀錄")
     else:
-        st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
-    with st.expander("已出售 損益分析"):
-        st.metric("總賣出金額（營收）", f"{sold_revenue:,.0f}" if sold_revenue else "0", None)
+        sold_cols_num = [c for c in sold_df.columns if sold_df[c].dtype in ("int64", "float64")]
+        fmt_sold = {c: _fmt_num for c in sold_cols_num}
+        style_sold = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
+        if style_sold:
+            st.dataframe(
+                sold_df.style.format(fmt_sold).applymap(_style_signed, subset=style_sold),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
+        with st.expander("已出售 損益分析"):
+            st.metric("總賣出金額（營收）", f"{sold_revenue:,.0f}" if sold_revenue else "0", None)
 
-
-# ---------- 庫存 ----------
-st.subheader("庫存")
-st.caption(f"**{company_label}** · 尚未賣出的買單明細")
-if inv_df.empty:
-    st.caption("此股票目前無庫存（已全數賣出或尚無買進）")
-else:
-    inv_cols_num = [c for c in inv_df.columns if inv_df[c].dtype in ("int64", "float64")]
-    fmt_inv = {c: _fmt_num for c in inv_cols_num}
-    style_inv = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
-    if style_inv:
-        st.dataframe(
-            inv_df.style.format(fmt_inv).applymap(_style_signed, subset=style_inv),
-            use_container_width=True,
-            hide_index=True,
-        )
+    st.subheader("庫存")
+    st.caption(f"**{company_label}** · 尚未賣出的買單明細")
+    if inv_df.empty:
+        st.caption("此股票目前無庫存（已全數賣出或尚無買進）")
     else:
-        st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
+        inv_cols_num = [c for c in inv_df.columns if inv_df[c].dtype in ("int64", "float64")]
+        fmt_inv = {c: _fmt_num for c in inv_cols_num}
+        style_inv = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
+        if style_inv:
+            st.dataframe(
+                inv_df.style.format(fmt_inv).applymap(_style_signed, subset=style_inv),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
 
-    st.caption("**小計**")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("庫存股數", f"{inv_summary['庫存股數']:,}", None)
-    c2.metric("原始成本", f"{inv_summary['原始成本']:,.0f}", None)
-    c3.metric("原始均價", f"{inv_summary['原始均價']:,.2f}", None)
-    c4.metric("結算後均價", f"{inv_summary['結算後均價']:,.2f}", None)
+        st.caption("**小計**")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("庫存股數", f"{inv_summary['庫存股數']:,}", None)
+        c2.metric("原始成本", f"{inv_summary['原始成本']:,.0f}", None)
+        c3.metric("原始均價", f"{inv_summary['原始均價']:,.2f}", None)
+        c4.metric("結算後均價", f"{inv_summary['結算後均價']:,.2f}", None)
 
-# ---------- 依買賣人加總（本檔股票） ----------
-if detail_users:
-    with st.expander("📊 依買賣人加總（本檔股票）", expanded=False):
-        user_summary_rows = []
-        for u in detail_users:
-            utrades = [t for t in trades if t.user == u]
-            _sold, _rev, _inv, _summ = build_stock_detail(selected_id, utrades, masters, policy, custom_rules=custom_rules_list)
-            user_summary_rows.append({
-                "買賣人": u,
-                "已出售總金額": round(_rev, 0),
-                "庫存股數": _summ.get("庫存股數", 0),
-                "庫存原始成本": _summ.get("原始成本", 0),
-                "庫存均價": _summ.get("原始均價", 0),
+    if detail_users:
+        with st.expander("📊 依買賣人加總（本檔股票）", expanded=False):
+            user_summary_rows = []
+            for u in detail_users:
+                utrades = [t for t in trades if t.user == u]
+                _sold, _rev, _inv, _summ = build_stock_detail(selected_id, utrades, masters, policy, custom_rules=custom_rules_list)
+                user_summary_rows.append({
+                    "買賣人": u,
+                    "已出售總金額": round(_rev, 0),
+                    "庫存股數": _summ.get("庫存股數", 0),
+                    "庫存原始成本": _summ.get("原始成本", 0),
+                    "庫存均價": _summ.get("原始均價", 0),
+                })
+            df_user_detail = pd.DataFrame(user_summary_rows)
+            st.dataframe(
+                df_user_detail.style.format({"已出售總金額": "{:,.0f}", "庫存股數": "{:,.0f}", "庫存原始成本": "{:,.0f}", "庫存均價": "{:,.2f}"}),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as w:
+        if not sold_df.empty:
+            sold_df.to_excel(w, sheet_name="已出售", index=False)
+        if not inv_df.empty:
+            inv_df.to_excel(w, sheet_name="庫存", index=False)
+    st.download_button(
+        "匯出 Excel（已出售＋庫存）",
+        data=buffer.getvalue(),
+        file_name=f"stock_detail_{selected_id}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+with tab_daily:
+    st.subheader("當日交易明細")
+    st.caption("用於核對每日交割：買進為「應付」（含手續費），賣出為「應收」（扣手續費與證交稅）。")
+
+    all_dates = sorted({t.trade_date for t in trades if getattr(t, "trade_date", None)})
+    default_date = all_dates[-1] if all_dates else None
+    d1, d2, d3 = st.columns([1.2, 1.2, 1.2])
+    with d1:
+        day = st.date_input("日期", value=default_date, key="daily_trade_date")
+    with d2:
+        stock_filter_opts = ["全部"] + [stock_options[sid] for sid in sorted(stock_options.keys())]
+        stock_filter_label = st.selectbox("股票", options=stock_filter_opts, key="daily_trade_stock")
+    with d3:
+        user_filter_opts = ["全部"] + detail_users
+        user_filter = st.selectbox("買賣人", options=user_filter_opts, key="daily_trade_user")
+
+    def _label_to_sid(lbl: str):
+        if lbl == "全部":
+            return None
+        # stock_options value 可能是 "2330 台積電" 或 "2330"
+        return str(lbl).split(" ")[0].strip()
+
+    sid_filter = _label_to_sid(stock_filter_label)
+
+    daily_trades = [t for t in trades if getattr(t, "trade_date", None) == day]
+    if user_filter != "全部":
+        daily_trades = [t for t in daily_trades if (getattr(t, "user", None) or "") == user_filter]
+    if sid_filter:
+        daily_trades = [t for t in daily_trades if str(getattr(t, "stock_id", "")).strip() == sid_filter]
+
+    if not daily_trades:
+        st.info("此日期下沒有符合篩選條件的交易。")
+    else:
+        rows = []
+        for t in sorted(daily_trades, key=lambda x: (x.trade_date, x.stock_id, x.user, x.id)):
+            side = (getattr(t, "side", "") or "").upper()
+            qty = int(getattr(t, "quantity", 0) or 0)
+            price = float(getattr(t, "price", 0) or 0)
+            fee = float(getattr(t, "fee", 0) or 0)
+            tax = float(getattr(t, "tax", 0) or 0)
+            gross = qty * price
+            if side == "BUY":
+                settle = gross + fee
+                settle_in = 0.0
+                settle_out = settle
+            else:
+                settle = gross - fee - tax
+                settle_in = settle
+                settle_out = 0.0
+            rows.append({
+                "買賣人": getattr(t, "user", "") or "",
+                "股票": stock_options.get(t.stock_id, str(t.stock_id)),
+                "買/賣": side,
+                "股數": qty,
+                "價格": price,
+                "成交金額": gross,
+                "手續費": fee if fee else 0.0,
+                "證交稅": tax if tax else 0.0,
+                "交割應收": settle_in,
+                "交割應付": settle_out,
+                "備註": (getattr(t, "note", "") or "")[:30],
             })
-        df_user_detail = pd.DataFrame(user_summary_rows)
-        st.dataframe(
-            df_user_detail.style.format({"已出售總金額": "{:,.0f}", "庫存股數": "{:,.0f}", "庫存原始成本": "{:,.0f}", "庫存均價": "{:,.2f}"}),
-            use_container_width=True,
-            hide_index=True,
-        )
 
-# ---------- 匯出 Excel ----------
-buffer = io.BytesIO()
-with pd.ExcelWriter(buffer, engine="openpyxl") as w:
-    if not sold_df.empty:
-        sold_df.to_excel(w, sheet_name="已出售", index=False)
-    if not inv_df.empty:
-        inv_df.to_excel(w, sheet_name="庫存", index=False)
-st.download_button(
-    "匯出 Excel（已出售＋庫存）",
-    data=buffer.getvalue(),
-    file_name=f"stock_detail_{selected_id}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+        df_day = pd.DataFrame(rows)
+        # 讓「應收/應付」不為 0 的列靠前，並依股票/買賣人排序
+        df_day["_rank"] = (df_day["交割應收"] + df_day["交割應付"]).apply(lambda v: 0 if v else 1)
+        df_day = df_day.sort_values(by=["_rank", "股票", "買賣人", "買/賣"]).drop(columns=["_rank"])
+
+        fmt = {
+            "股數": "{:,.0f}",
+            "價格": "{:,.2f}",
+            "成交金額": "{:,.0f}",
+            "手續費": "{:,.0f}",
+            "證交稅": "{:,.0f}",
+            "交割應收": "{:,.0f}",
+            "交割應付": "{:,.0f}",
+        }
+        st.dataframe(df_day.style.format(fmt, na_rep="—"), use_container_width=True, hide_index=True)
+
+        total_in = float(df_day["交割應收"].sum())
+        total_out = float(df_day["交割應付"].sum())
+        net = total_in - total_out
+
+        st.caption("**交割加總**")
+        s1, s2, s3 = st.columns(3)
+        s1.metric("交割應收（賣出淨入帳）", f"{total_in:,.0f}")
+        s2.metric("交割應付（買進含手續費）", f"{total_out:,.0f}")
+        s3.metric("淨交割（應收－應付）", f"{net:,.0f}")
+
+        # 下載當日明細
+        csv_buf = io.BytesIO()
+        df_day_out = df_day.copy()
+        df_day_out.to_csv(csv_buf, index=False, encoding="utf-8-sig")
+        st.download_button(
+            "下載當日交易明細 CSV",
+            data=csv_buf.getvalue(),
+            file_name=f"daily_trades_{day}.csv",
+            mime="text/csv",
+            key="dl_daily_trades",
+        )
