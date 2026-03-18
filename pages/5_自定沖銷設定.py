@@ -154,6 +154,19 @@ else:
         st.caption("目前沒有可顯示的賣出交易（請取消「僅顯示有剩餘配額的股票」或選擇其他股票）。")
     else:
         df_sells_display = df_sells.copy()
+        # 快速操作：全選 / 取消選擇（僅針對目前列表）
+        a1, a2, a3 = st.columns([1, 1, 6])
+        with a1:
+            if st.button("全選", key="sell_select_all", help="全選目前列表中的賣出交易"):
+                st.session_state["add_sell_ids"] = [int(x) for x in df_sells["交易ID"].tolist()]
+                st.session_state["active_sell_id"] = st.session_state["add_sell_ids"][-1] if st.session_state["add_sell_ids"] else None
+                st.rerun()
+        with a2:
+            if st.button("取消選擇", key="sell_select_none", help="取消所有已勾選的賣出交易"):
+                st.session_state["add_sell_ids"] = []
+                st.session_state["active_sell_id"] = None
+                st.rerun()
+
         selected_ids = set(int(x) for x in (st.session_state.get("add_sell_ids") or []) if str(x).isdigit())
         df_sells_display.insert(0, "勾選", [int(df_sells.iloc[i]["交易ID"]) in selected_ids for i in sell_indices])
         # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
@@ -242,10 +255,24 @@ else:
             with st.expander("輔助篩選配對：現價與推薦買進（依賺賠分類）", expanded=True):
                 if current_price is not None:
                     st.markdown("**%s %s** · 現價 **%s**" % (sid, stock_name, f"{current_price:,.2f}"))
-                    # 要賣股票的賣出價格（勾選的該筆賣出交易的賣出價格）
-                    sell_price_val = sell_trade.price
-                    if sell_price_val is not None:
-                        st.markdown("要賣股票的**賣出價格**：**%s**" % f"{float(sell_price_val):,.2f}")
+                    # 要賣股票的賣出價格：單選顯示單一價格；多選顯示區間（min~max）
+                    selected_sell_ids = list(st.session_state.get("add_sell_ids") or [])
+                    sell_prices = []
+                    for tid in selected_sell_ids:
+                        t = trade_by_id.get(tid)
+                        if t and t.price is not None:
+                            try:
+                                sell_prices.append(float(t.price))
+                            except Exception:
+                                pass
+                    if sell_prices:
+                        lo = min(sell_prices)
+                        hi = max(sell_prices)
+                        if abs(hi - lo) < 1e-9:
+                            s_txt = f"{lo:,.2f}"
+                        else:
+                            s_txt = f"{lo:,.2f}～{hi:,.2f}"
+                        st.markdown("要賣股票的**賣出價格**：**%s**" % s_txt)
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
