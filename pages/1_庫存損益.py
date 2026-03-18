@@ -19,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from reports.portfolio_report import build_portfolio_df
+from reports.stock_detail_report import build_stock_detail
 from services.price_service import get_quote_cached, fetch_daily_prices
 
 # ---------------------------------------------------------------------------
@@ -541,7 +542,74 @@ st.markdown("---")
 st.markdown("#### 📋 持倉明細")
 st.caption("**持倉股數** = 該股票、該買賣人的「買進總股數 − 賣出總股數」。**自定沖銷**只影響已實現損益與成本分攤，不會減少持倉；持倉要歸零，必須在「交易輸入」中該股票的**賣出總股數 ≥ 買進總股數**。若認為已全部賣出卻仍出現持倉，請至「交易輸入」或「個股明細」確認是否漏輸賣出紀錄。")
 df_display = df.drop(columns=["買進總股數", "賣出總股數"], errors="ignore") if "買進總股數" in df.columns else df
+# 預設依「市值」由高到低排序（若欄位存在）
+if "市值" in df_display.columns:
+    try:
+        df_display = df_display.sort_values(by="市值", ascending=False, kind="mergesort")
+    except Exception:
+        # 若因型別混合導致排序失敗，嘗試以浮點轉換後再排
+        try:
+            df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
+        except Exception:
+            pass
 st.dataframe(style_portfolio_dataframe(df_display), use_container_width=True, hide_index=True)
+
+# 每檔股票可展開「已出售＋庫存」明細（同個股明細表）
+def _detail_style_signed(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    if isinstance(val, (int, float)):
+        if val > 0:
+            return "color: #c00; font-weight: 500;"
+        if val < 0:
+            return "color: #0d7a0d; font-weight: 500;"
+    return ""
+
+def _detail_fmt_num(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    try:
+        v = float(val)
+        return f"{int(v):,}" if v == int(v) else f"{v:,.2f}"
+    except (ValueError, TypeError):
+        return str(val)
+
+st.caption("點選下方 **▼ 明細** 可展開該檔的「已出售」與「庫存」紀錄（同個股明細表）。")
+for idx, row in df_display.iterrows():
+    sid = row.get("股票代號") or row.get("stock_id")
+    name = row.get("名稱", "")
+    user = row.get("買賣人", "")
+    mv = row.get("市值")
+    mv_str = f"{mv:,.0f}" if mv is not None and pd.notna(mv) else "—"
+    label = f"▼ 明細 · {sid} {str(name).strip()} · {user or '—'} · 市值 {mv_str}"
+    with st.expander(label, expanded=False):
+        trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
+        sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(sid, trades_for_row, masters, policy, custom_rules=custom_rules)
+        st.markdown("**已出售**")
+        if sold_df.empty:
+            st.caption("此股票尚無已出售紀錄")
+        else:
+            cols_num = [c for c in sold_df.columns if sold_df[c].dtype in ("int64", "float64")]
+            fmt_sold = {c: _detail_fmt_num for c in cols_num}
+            style_cols = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
+            if style_cols:
+                st.dataframe(sold_df.style.format(fmt_sold).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
+            st.caption(f"總賣出金額：{sold_revenue:,.0f}" if sold_revenue else "0")
+        st.markdown("**庫存**")
+        if inv_df.empty:
+            st.caption("此股票目前無庫存")
+        else:
+            cols_num = [c for c in inv_df.columns if inv_df[c].dtype in ("int64", "float64")]
+            fmt_inv = {c: _detail_fmt_num for c in cols_num}
+            style_cols = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
+            if style_cols:
+                st.dataframe(inv_df.style.format(fmt_inv).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
+            else:
+                st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
+            st.caption(f"庫存股數 {inv_summary.get('庫存股數', 0):,} · 原始成本 {inv_summary.get('原始成本', 0):,.0f} · 均價 {inv_summary.get('原始均價', 0):.2f}")
+
 with st.expander("🔍 為何還有持倉？— 買進／賣出總股數對照", expanded=False):
     st.caption("下表為每筆持倉的 **買進總股數** 與 **賣出總股數**，持倉 = 買進 − 賣出。若賣出總股數小於買進總股數，就會有剩餘持倉。請至「交易輸入」補齊該股票、該買賣人的賣出紀錄後，持倉才會歸零。")
     if not df.empty and "買進總股數" in df.columns:
