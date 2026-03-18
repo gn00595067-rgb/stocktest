@@ -6,7 +6,6 @@ import altair as alt
 from datetime import date, timedelta
 import sys
 import os
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.stock_list_loader import ensure_google_sheet_loaded
@@ -553,7 +552,7 @@ if "市值" in df_display.columns:
             df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
         except Exception:
             pass
-# 用 AgGrid 呈現持倉表：可排序、可調欄寬、可點選列以展開明細
+# 用原生 st.dataframe 呈現持倉表：可排序、保持原樣式，點選列展開明細
 if "portfolio_detail_row" not in st.session_state:
     st.session_state["portfolio_detail_row"] = None
 
@@ -565,63 +564,37 @@ for _idx, row in df_display.iterrows():
     user = row.get("買賣人", "")
     detail_rows.append((sid, name, user))
 
-df_grid = df_display.copy()
-df_grid.insert(0, "明細", "▼")
+# 左側一欄：操作（選取狀態提示 + 收合）
+op_col, table_col = st.columns([1, 8], vertical_alignment="top")
+with op_col:
+    if st.session_state["portfolio_detail_row"] is None:
+        st.markdown("**明細**")
+        st.caption("點右側表格任一列即可展開")
+    else:
+        i = int(st.session_state["portfolio_detail_row"])
+        if 0 <= i < len(detail_rows):
+            sid, name, user = detail_rows[i]
+            st.markdown("**已選取**")
+            st.caption(f"{sid} {str(name).strip()}")
+            st.caption(f"{user or '—'}")
+        if st.button("收合", key="portfolio_detail_collapse"):
+            st.session_state["portfolio_detail_row"] = None
+            st.rerun()
 
-gb = GridOptionsBuilder.from_dataframe(df_grid)
-gb.configure_default_column(sortable=True, resizable=True, filter=True, wrapText=False, autoHeight=False)
-gb.configure_selection(selection_mode="single", use_checkbox=False)
-gb.configure_grid_options(domLayout="normal", rowHeight=34, headerHeight=36, rowSelection="single", suppressRowClickSelection=False)
-
-# 欄位格式
-def _fmt_int():
-    return JsCode("function(params){ if(params.value===null||params.value===undefined||params.value===''){return '—';} const v=Number(params.value); if(isNaN(v)){return params.value;} return v.toLocaleString(undefined,{maximumFractionDigits:0}); }")
-
-def _fmt_float2():
-    return JsCode("function(params){ if(params.value===null||params.value===undefined||params.value===''){return '—';} const v=Number(params.value); if(isNaN(v)){return params.value;} return v.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2}); }")
-
-def _pnl_style_js():
-    return JsCode("""
-        function(params){
-            const v = Number(params.value);
-            if (isNaN(v)) { return {}; }
-            if (v >= 0) { return { 'color': '#c62828', 'fontWeight': 600 }; }
-            return { 'color': '#2e7d32', 'fontWeight': 600 };
-        }
-    """)
-
-for col in ["市值", "股數", "未實現損益", "已實現損益", "總損益"]:
-    if col in df_grid.columns:
-        gb.configure_column(col, valueFormatter=_fmt_int(), cellStyle=_pnl_style_js() if "損益" in col else None)
-for col in ["均價", "現價"]:
-    if col in df_grid.columns:
-        gb.configure_column(col, valueFormatter=_fmt_float2())
-
-gb.configure_column("明細", width=70, pinned="left", sortable=False, filter=False)
-
-AgGrid(
-    df_grid,
-    gridOptions=gb.build(),
-    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-    update_mode=GridUpdateMode.NO_UPDATE,
-    fit_columns_on_grid_load=True,
-    theme="streamlit",
-    height=min(520, 70 + 34 * (len(df_grid) + 1)),
-    allow_unsafe_jscode=True,
-)
-
-# 表格內點選在部分環境不會回傳，改在表格下方放「展開明細」按鈕，點哪一檔就展開該檔
-st.caption("點選下方按鈕展開該檔明細：")
-btns_per_row = 5
-for start in range(0, len(detail_rows), btns_per_row):
-    cols = st.columns(btns_per_row)
-    for k, i in enumerate(range(start, min(start + btns_per_row, len(detail_rows)))):
-        sid, name, user = detail_rows[i]
-        label = f"{sid} {str(name).strip()} · {user or '—'}"
-        with cols[k]:
-            if st.button("▼ " + label, key=f"portfolio_detail_btn_{i}"):
-                st.session_state["portfolio_detail_row"] = i
-                st.rerun()
+with table_col:
+    event = st.dataframe(
+        style_portfolio_dataframe(df_display),
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+    try:
+        rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+        if rows:
+            st.session_state["portfolio_detail_row"] = int(rows[0])
+    except Exception:
+        pass
 
 choice = st.session_state["portfolio_detail_row"]
 
