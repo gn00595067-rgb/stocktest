@@ -564,6 +564,7 @@ for _idx, row in df_display.iterrows():
     name = row.get("名稱", "")
     user = row.get("買賣人", "")
     detail_rows.append((sid, name, user))
+detail_row_index = {(str(s).strip(), (u or "").strip()): i for i, (s, _n, u) in enumerate(detail_rows)}
 
 df_grid = df_display.copy()
 df_grid.insert(0, "明細", "▼")
@@ -571,7 +572,7 @@ df_grid.insert(0, "明細", "▼")
 gb = GridOptionsBuilder.from_dataframe(df_grid)
 gb.configure_default_column(sortable=True, resizable=True, filter=True, wrapText=False, autoHeight=False)
 gb.configure_selection(selection_mode="single", use_checkbox=False)
-gb.configure_grid_options(domLayout="normal", rowHeight=34, headerHeight=36)
+gb.configure_grid_options(domLayout="normal", rowHeight=34, headerHeight=36, rowSelection="single", suppressRowClickSelection=False)
 
 # 欄位格式
 def _fmt_int():
@@ -613,22 +614,22 @@ grid_res = AgGrid(
 # AgGrid 可能回傳 dict 或 DataFrame，勿用 grid_res or {} 以免觸發 pandas ValueError
 selected = []
 if isinstance(grid_res, dict):
-    selected = grid_res.get("selected_rows") or []
+    sr = grid_res.get("selected_rows", None)
+    if isinstance(sr, list):
+        selected = sr
+    elif isinstance(sr, pd.DataFrame):
+        selected = sr.to_dict(orient="records")
+    elif sr is None:
+        selected = []
 if selected:
     row_data = selected[0] if isinstance(selected[0], dict) else {}
     try:
-        node_info = row_data.get("_selectedRowNodeInfo") or {}
-        idx = node_info.get("nodeRowIndex")
-        if idx is not None:
-            st.session_state["portfolio_detail_row"] = int(idx)
-        else:
-            # 若無 node 資訊，用選取列內容對應到 detail_rows
-            sid = row_data.get("股票代號") or row_data.get("stock_id")
-            user = row_data.get("買賣人", "")
-            for i, (s, _, u) in enumerate(detail_rows):
-                if str(s).strip() == str(sid).strip() and (u or "") == (user or ""):
-                    st.session_state["portfolio_detail_row"] = i
-                    break
+        # 以「股票代號 + 買賣人」對應回原始列索引（不受 grid 排序/篩選影響）
+        sid = row_data.get("股票代號") or row_data.get("stock_id")
+        user = row_data.get("買賣人", "")
+        key = (str(sid).strip(), (user or "").strip())
+        if key in detail_row_index:
+            st.session_state["portfolio_detail_row"] = int(detail_row_index[key])
     except (TypeError, ValueError, KeyError):
         pass
 
