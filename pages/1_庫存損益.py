@@ -585,6 +585,9 @@ try:
     rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
     if rows:
         st.session_state["portfolio_detail_row"] = int(rows[0])
+    else:
+        # 使用者取消勾選/清除選取時，下方明細也要跟著消失
+        st.session_state["portfolio_detail_row"] = None
 except Exception:
     pass
 
