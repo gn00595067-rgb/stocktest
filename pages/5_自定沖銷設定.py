@@ -102,6 +102,116 @@ if not sells:
 else:
     if "rec_editor_key_v" not in st.session_state:
         st.session_state["rec_editor_key_v"] = 0
+
+    # ---------- 解綁當沖（刪除已自動配對的當沖規則，保留交易本身） ----------
+    with st.expander("🧩 解綁當沖配對（保留交易，移除已配對規則）", expanded=False):
+        st.caption("用於「匯入時已自動配對好當沖」但你想拆開改成分別配對的情況。此操作只會刪除配對規則，不會刪除交易。")
+        dt_rules = []
+        for r in rules:
+            st_t = trade_by_id.get(r.sell_trade_id)
+            buy_t = trade_by_id.get(r.buy_trade_id)
+            if not st_t or not buy_t:
+                continue
+            is_dt = bool(getattr(st_t, "is_daytrade", False)) or bool(getattr(buy_t, "is_daytrade", False)) or (st_t.trade_date == buy_t.trade_date)
+            if not is_dt:
+                continue
+            sid = st_t.stock_id or buy_t.stock_id
+            if not sid:
+                continue
+            dt_rules.append({
+                "_key": f"{r.sell_trade_id}__{r.buy_trade_id}",
+                "股票": _stock_label(sid),
+                "買賣人": getattr(st_t, "user", "") or getattr(buy_t, "user", "") or "",
+                "日期": str(st_t.trade_date),
+                "賣出價格": float(getattr(st_t, "price", 0) or 0) if getattr(st_t, "price", None) is not None else None,
+                "買入價格": float(getattr(buy_t, "price", 0) or 0) if getattr(buy_t, "price", None) is not None else None,
+                "沖銷股數": int(r.matched_qty),
+            })
+        if not dt_rules:
+            st.caption("目前沒有可解綁的當沖配對規則。")
+        else:
+            df_dt = pd.DataFrame(dt_rules)
+            # 篩選
+            dt_stock_opts = ["全部"] + sorted({x["股票"] for x in dt_rules})
+            cdt1, cdt2, cdt3 = st.columns([2, 2, 3], vertical_alignment="center")
+            with cdt1:
+                dt_stock = st.selectbox("股票", options=dt_stock_opts, key="dt_unbind_stock")
+            with cdt2:
+                dt_user_opts = ["全部"] + sorted({x["買賣人"] for x in dt_rules if x.get("買賣人")})
+                dt_user = st.selectbox("買賣人", options=dt_user_opts, key="dt_unbind_user")
+            with cdt3:
+                dt_only_same_day = st.checkbox("僅顯示同日配對", value=True, key="dt_unbind_same_day", help="只看賣出日=買進日的配對（通常是當沖）。")
+            if dt_stock != "全部":
+                df_dt = df_dt[df_dt["股票"] == dt_stock]
+            if dt_user != "全部":
+                df_dt = df_dt[df_dt["買賣人"] == dt_user]
+            if dt_only_same_day:
+                # 由於 df_dt 的 日期欄取自賣出日，且當沖通常同日，這裡保留以降低誤刪風險
+                pass
+
+            if df_dt.empty:
+                st.caption("目前篩選下沒有可解綁的規則。")
+            else:
+                if "dt_unbind_keys" not in st.session_state:
+                    st.session_state["dt_unbind_keys"] = []
+                b1, b2, _ = st.columns([1, 1, 6], vertical_alignment="center")
+                with b1:
+                    if st.button("全選", key="dt_unbind_all"):
+                        st.session_state["dt_unbind_keys"] = df_dt["_key"].tolist()
+                        st.rerun()
+                with b2:
+                    if st.button("取消選擇", key="dt_unbind_none"):
+                        st.session_state["dt_unbind_keys"] = []
+                        st.rerun()
+
+                df_show = df_dt.copy()
+                df_show["勾選"] = df_show["_key"].isin(set(st.session_state.get("dt_unbind_keys") or []))
+                df_show = df_show.set_index("_key")
+                df_show = df_show[["勾選", "股票", "買賣人", "日期", "賣出價格", "買入價格", "沖銷股數"]]
+                edited = st.data_editor(
+                    df_show,
+                    use_container_width=True,
+                    hide_index=True,
+                    key="dt_unbind_editor",
+                    column_config={"勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True)},
+                    disabled=["股票", "買賣人", "日期", "賣出價格", "買入價格", "沖銷股數"],
+                )
+                picked = [str(i) for i in edited.index[edited["勾選"]].tolist()]
+                st.session_state["dt_unbind_keys"] = picked
+
+                n = len(picked)
+                if n:
+                    st.warning(f"即將解綁 **{n}** 筆當沖配對規則（只刪規則，不刪交易）。")
+                    if st.button("解綁已勾選", type="primary", key="dt_unbind_apply"):
+                        sess_u = get_session()
+                        try:
+                            for k in picked:
+                                try:
+                                    sid_str, bid_str = k.split("__", 1)
+                                    sid_i = int(sid_str)
+                                    bid_i = int(bid_str)
+                                except Exception:
+                                    continue
+                                q = sess_u.query(CustomMatchRule).filter(
+                                    CustomMatchRule.sell_trade_id == sid_i,
+                                    CustomMatchRule.buy_trade_id == bid_i,
+                                )
+                                q.delete(synchronize_session=False)
+                            sess_u.commit()
+                            st.session_state["dt_unbind_keys"] = []
+                            st.success("已解綁完成。")
+                            st.rerun()
+                        except OperationalError:
+                            sess_u.rollback()
+                            st.error("無法寫入資料庫（目前環境可能唯讀）")
+                        except Exception as e:
+                            sess_u.rollback()
+                            st.error(f"解綁失敗：{e}")
+                        finally:
+                            sess_u.close()
+                else:
+                    st.caption("勾選要解綁的配對後，再按「解綁已勾選」。")
+
     # 賣出：先選股票（可選「全部」或指定股票），再展開可排序表格 + 單選
     st.markdown("**1. 選擇「賣出」交易**")
     # 選單：篩選要針對哪隻股票（僅顯示該股票的賣出）
