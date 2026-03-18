@@ -552,7 +552,9 @@ if "市值" in df_display.columns:
             df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
         except Exception:
             pass
-# 每檔股票可展開「已出售＋庫存」明細（同個股明細表）
+st.dataframe(style_portfolio_dataframe(df_display), use_container_width=True, hide_index=True)
+
+# 表格下方：每檔可展開「已出售＋庫存」明細（同個股明細表）
 def _detail_style_signed(val):
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -572,38 +574,15 @@ def _detail_fmt_num(val):
     except (ValueError, TypeError):
         return str(val)
 
-def _row_cell(v, col):
-    """格式化欄位供表格列顯示。"""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
-        return "—"
-    if col in ("市值", "未實現損益", "已實現損益", "總損益", "股數", "均價", "現價"):
-        try:
-            x = float(v)
-            if x == int(x):
-                return f"{int(x):,}"
-            return f"{x:,.2f}"
-        except (ValueError, TypeError):
-            return str(v)
-    return str(v).strip() or "—"
-
-# 持倉明細改為「每列可點擊展開」：表頭 + 每列一個 expander，點該列即展開已出售／庫存
-st.caption("點選 **任一列** 可向下展開該檔的「已出售」與「庫存」明細（同個股明細表）。")
-display_cols = [c for c in ["買賣人", "股票代號", "名稱", "產業", "股數", "均價", "現價", "市值", "未實現損益", "已實現損益", "總損益"] if c in df_display.columns]
-# 表頭（模擬表格標題列）
-st.markdown(
-    "<div style='font-weight:700; padding:0.4rem 0; border-bottom:1px solid #eee; margin-bottom:0.25rem;'>" +
-    " &nbsp;|&nbsp; ".join(display_cols) + "</div>",
-    unsafe_allow_html=True,
-)
-
+st.caption("下方可點 **▼ 明細** 展開該檔的「已出售」與「庫存」紀錄（同個股明細表）。")
 for idx, row in df_display.iterrows():
     sid = row.get("股票代號") or row.get("stock_id")
     name = row.get("名稱", "")
     user = row.get("買賣人", "")
-    # 該列摘要（當作 expander 標籤 = 點擊的「那一列」）
-    cells = [_row_cell(row.get(c), c) for c in display_cols]
-    row_label = " | ".join(cells)
-    with st.expander(f"▶ {row_label}", expanded=False):
+    mv = row.get("市值")
+    mv_str = f"{mv:,.0f}" if mv is not None and pd.notna(mv) else "—"
+    label = f"▼ 明細 · {sid} {str(name).strip()} · {user or '—'} · 市值 {mv_str}"
+    with st.expander(label, expanded=False):
         trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
         sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(sid, trades_for_row, masters, policy, custom_rules=custom_rules)
         st.markdown("**已出售**")
