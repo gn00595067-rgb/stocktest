@@ -277,15 +277,17 @@ else:
                             s_txt = f"{lo:,.2f}～{hi:,.2f}"
                         st.markdown("要賣股票的**賣出價格**：**%s**" % s_txt)
                     # 多筆賣出：顯示總剩餘配額（未被規則占用的可配股數總和）
+                    total_remain = None
                     if selected_sell_ids:
-                        total_remain = 0
+                        total_remain_val = 0
                         for tid in selected_sell_ids:
                             t = trade_by_id.get(tid)
                             if not t:
                                 continue
                             used = sell_used.get(t.id, 0)
-                            total_remain += max(0, int(t.quantity or 0) - int(used))
+                            total_remain_val += max(0, int(t.quantity or 0) - int(used))
                         if len(selected_sell_ids) > 1:
+                            total_remain = int(total_remain_val)
                             st.caption(f"總剩餘配額：**{total_remain:,}**")
                     # 多賣出：將分配策略移到推薦買進面板上方
                     if len(selected_sell_ids) > 1:
@@ -430,6 +432,9 @@ else:
                 if not buys_with_remain or current_price is None:
                     st.caption("無剩餘可配的買進，或無現價可試算。")
                 else:
+                    # 多賣出時：推薦買進表的「沖銷股數上限」應是總剩餘配額，而非 active 單筆賣出剩餘
+                    sell_remain_effective = int(total_remain) if (total_remain is not None and len(selected_sell_ids) > 1) else int(sell_remain)
+
                     def _cat(pct):
                         if pct > 20: return "大賺"
                         if pct > 5: return "中賺"
@@ -459,7 +464,7 @@ else:
                         remaining_sell = 0
                     else:
                         capped_checked = None
-                        remaining_sell = sell_remain - total_checked
+                        remaining_sell = sell_remain_effective - total_checked
                     recs = []
                     for t, rem in buys_with_remain:
                         pnl_amt = (current_price - t.price) * rem
@@ -552,7 +557,7 @@ else:
                             key=f"rec_editor_{sell_id}_{int(st.session_state.get('rec_editor_key_v', 0))}",
                             column_config={
                                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
-                                "沖銷股數": st.column_config.NumberColumn("沖銷股數", min_value=0, max_value=sell_remain, step=1, format="%d"),
+                                "沖銷股數": st.column_config.NumberColumn("沖銷股數", min_value=0, max_value=sell_remain_effective, step=1, format="%d"),
                             },
                             disabled=["分類", "買進ID", "買價", "現價", "剩餘可配", "賺賠金額", "賺賠%"],
                         )
@@ -592,10 +597,13 @@ else:
                             for _, row in checked.iterrows():
                                 if _is_int_buy_id(row.get("買進ID")):
                                     q = int(row.get("沖銷股數", 0)) or 0
-                                    temp_alloc += min(max(0, q), sell_remain - temp_alloc, int(row.get("剩餘可配", 0)))
-                        preview_已配 = sell_used[sell_id] + temp_alloc
-                        preview_剩餘 = sell_trade.quantity - preview_已配
-                        st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%s** · 已配 **%s** · 剩餘配額 **%s**" % (sell_trade.trade_date, f"{sell_trade.quantity:,}", f"{preview_已配:,}", f"{max(0, preview_剩餘):,}"))
+                                    temp_alloc += min(max(0, q), sell_remain_effective - temp_alloc, int(row.get("剩餘可配", 0)))
+                        if len(selected_sell_ids) > 1 and total_remain is not None:
+                            st.caption("已勾選的買進沖銷總和：**%s** / 總剩餘配額 **%s**" % (f"{temp_alloc:,}", f"{int(total_remain):,}"))
+                        else:
+                            preview_已配 = sell_used[sell_id] + temp_alloc
+                            preview_剩餘 = sell_trade.quantity - preview_已配
+                            st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%s** · 已配 **%s** · 剩餘配額 **%s**" % (sell_trade.trade_date, f"{sell_trade.quantity:,}", f"{preview_已配:,}", f"{max(0, preview_剩餘):,}"))
                         selected_sell_ids = list(st.session_state.get("add_sell_ids") or [])
                         # 勾選單一筆時連動下方「選擇買進」表格
                         if not checked.empty and buy_id_to_idx:
