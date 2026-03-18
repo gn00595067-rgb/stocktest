@@ -71,6 +71,8 @@ st.subheader("新增自定沖銷規則")
 if not sells:
     st.warning("尚無賣出交易，無法設定沖銷。請先於「交易輸入」或「交易匯入」建立買賣資料。")
 else:
+    if "rec_editor_key_v" not in st.session_state:
+        st.session_state["rec_editor_key_v"] = 0
     # 賣出：先選股票（可選「全部」或指定股票），再展開可排序表格 + 單選
     st.markdown("**1. 選擇「賣出」交易**")
     # 選單：篩選要針對哪隻股票（僅顯示該股票的賣出）
@@ -408,6 +410,8 @@ else:
                                 st.session_state["rec_panel_state"][active_sid] = {
                                     int(bid_): {"勾選": True, "沖銷股數": int(qty_)} for bid_, qty_ in agg.items()
                                 }
+                                # 讓推薦買進表真正以新策略結果重置（避免 data_editor 沿用舊勾選/股數狀態）
+                                st.session_state["rec_editor_key_v"] = int(st.session_state.get("rec_editor_key_v", 0)) + 1
                                 st.rerun()
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
@@ -471,9 +475,11 @@ else:
                             # 未勾選：<= 剩餘配額不變，> 的改為剩餘配額
                             want = int(prev.get("沖銷股數", rem) or rem)
                             qty = min(want, remaining_sell, rem)
+                        # 避免出現「勾選但沖銷股數=0」的視覺噪音：策略/自動分配只勾選 qty>0
+                        checked_final = bool(checked) and int(qty) > 0
                         recs.append({
-                            "勾選": checked,
-                            "沖銷股數": qty,
+                            "勾選": checked_final,
+                            "沖銷股數": int(qty),
                             "分類": _cat(pnl_pct),
                             "買進ID": t.id,
                             "買價": t.price,
@@ -543,7 +549,7 @@ else:
                             df_rec,
                             use_container_width=True,
                             hide_index=True,
-                            key="rec_editor",
+                            key=f"rec_editor_{sell_id}_{int(st.session_state.get('rec_editor_key_v', 0))}",
                             column_config={
                                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
                                 "沖銷股數": st.column_config.NumberColumn("沖銷股數", min_value=0, max_value=sell_remain, step=1, format="%d"),
