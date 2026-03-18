@@ -100,7 +100,21 @@ with st.expander("從台股列表搜尋股票（可輸入代號或名稱）", ex
             st.caption(f"載入列表失敗：{e}。請至主檔/設定先「同步股票列表（FinMind）」")
 
 if not stock_options and not st.session_state.get("selected_stock_id"):
-    st.warning("請在上方「從台股列表搜尋」選擇股票並加入，或至「主檔/設定」載入種子資料。")
+    st.warning("請先在上方「從台股列表搜尋」選擇股票並加入，或至「主檔/設定」載入種子資料。")
+    st.caption("加入任一檔股票後，下方交易表單與報價卡會自動顯示。")
+    st.divider()
+    st.subheader("交易表單")
+    st.selectbox("股票代號", options=[], disabled=True)
+    st.text_input("買賣人", value="", disabled=True)
+    st.date_input("日期", value=date.today(), disabled=True)
+    st.radio("買/賣", ["BUY", "SELL"], horizontal=True, disabled=True)
+    st.number_input("價格", value=0.0, min_value=0.0, step=0.01, format="%.2f", disabled=True)
+    st.number_input("股數", min_value=1, value=1000, step=100, disabled=True)
+    st.checkbox("是否當沖", value=False, disabled=True)
+    st.text_input("備註", value="", disabled=True)
+    st.button("送出", disabled=True)
+    st.subheader("報價卡")
+    st.caption("請先加入股票後再查看報價。")
     st.stop()
 
 col_left, col_right = st.columns([1, 1])
