@@ -557,6 +557,14 @@ if "市值" in df_display.columns:
 if "portfolio_detail_row" not in st.session_state:
     st.session_state["portfolio_detail_row"] = None
 
+# 先建立每列對應 (sid, name, user)，供選取列對應與下方明細使用
+detail_rows = []
+for _idx, row in df_display.iterrows():
+    sid = row.get("股票代號") or row.get("stock_id")
+    name = row.get("名稱", "")
+    user = row.get("買賣人", "")
+    detail_rows.append((sid, name, user))
+
 df_grid = df_display.copy()
 df_grid.insert(0, "明細", "▼")
 
@@ -602,22 +610,29 @@ grid_res = AgGrid(
     allow_unsafe_jscode=True,
 )
 
-selected = (grid_res or {}).get("selected_rows") or []
+# AgGrid 可能回傳 dict 或 DataFrame，勿用 grid_res or {} 以免觸發 pandas ValueError
+selected = []
+if isinstance(grid_res, dict):
+    selected = grid_res.get("selected_rows") or []
 if selected:
+    row_data = selected[0] if isinstance(selected[0], dict) else {}
     try:
-        st.session_state["portfolio_detail_row"] = int(selected[0].get("_selectedRowNodeInfo", {}).get("nodeRowIndex"))
-    except Exception:
-        st.session_state["portfolio_detail_row"] = 0
+        node_info = row_data.get("_selectedRowNodeInfo") or {}
+        idx = node_info.get("nodeRowIndex")
+        if idx is not None:
+            st.session_state["portfolio_detail_row"] = int(idx)
+        else:
+            # 若無 node 資訊，用選取列內容對應到 detail_rows
+            sid = row_data.get("股票代號") or row_data.get("stock_id")
+            user = row_data.get("買賣人", "")
+            for i, (s, _, u) in enumerate(detail_rows):
+                if str(s).strip() == str(sid).strip() and (u or "") == (user or ""):
+                    st.session_state["portfolio_detail_row"] = i
+                    break
+    except (TypeError, ValueError, KeyError):
+        pass
 
 choice = st.session_state["portfolio_detail_row"]
-
-# 每列對應 (sid, name, user)，用 choice 展開該列明細
-detail_rows = []
-for idx, row in df_display.iterrows():
-    sid = row.get("股票代號") or row.get("stock_id")
-    name = row.get("名稱", "")
-    user = row.get("買賣人", "")
-    detail_rows.append((sid, name, user))
 
 # 僅在「有選擇一檔」時，下方顯示該檔的已出售＋庫存
 def _detail_style_signed(val):
