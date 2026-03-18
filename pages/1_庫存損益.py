@@ -552,9 +552,29 @@ if "市值" in df_display.columns:
             df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
         except Exception:
             pass
+# 表格上方一列：展開明細下拉（選一檔後表格下方再展開）
+detail_options = ["— 請選擇一檔以展開明細 —"]
+detail_rows = []
+for idx, row in df_display.iterrows():
+    sid = row.get("股票代號") or row.get("stock_id")
+    name = row.get("名稱", "")
+    user = row.get("買賣人", "")
+    mv = row.get("市值")
+    mv_str = f"{mv:,.0f}" if mv is not None and pd.notna(mv) else "—"
+    detail_options.append(f"{sid} {str(name).strip()} · {user or '—'} · 市值 {mv_str}")
+    detail_rows.append((sid, name, user))
+
+cc1, cc2 = st.columns([1, 4])
+with cc1:
+    choice = st.selectbox(
+        "展開明細",
+        range(len(detail_options)),
+        format_func=lambda i: detail_options[i],
+        key="portfolio_detail_select",
+    )
 st.dataframe(style_portfolio_dataframe(df_display), use_container_width=True, hide_index=True)
 
-# 表格下方：每檔可展開「已出售＋庫存」明細（同個股明細表）
+# 僅在「有選擇一檔」時，下方顯示該檔的已出售＋庫存
 def _detail_style_signed(val):
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -574,41 +594,36 @@ def _detail_fmt_num(val):
     except (ValueError, TypeError):
         return str(val)
 
-st.caption("下方可點 **▼ 明細** 展開該檔的「已出售」與「庫存」紀錄（同個股明細表）。")
-for idx, row in df_display.iterrows():
-    sid = row.get("股票代號") or row.get("stock_id")
-    name = row.get("名稱", "")
-    user = row.get("買賣人", "")
-    mv = row.get("市值")
-    mv_str = f"{mv:,.0f}" if mv is not None and pd.notna(mv) else "—"
-    label = f"▼ 明細 · {sid} {str(name).strip()} · {user or '—'} · 市值 {mv_str}"
-    with st.expander(label, expanded=False):
-        trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
-        sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(sid, trades_for_row, masters, policy, custom_rules=custom_rules)
-        st.markdown("**已出售**")
-        if sold_df.empty:
-            st.caption("此股票尚無已出售紀錄")
+if choice and choice > 0 and choice <= len(detail_rows):
+    sid, name, user = detail_rows[choice - 1]
+    trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
+    sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(sid, trades_for_row, masters, policy, custom_rules=custom_rules)
+    st.markdown("---")
+    st.markdown(f"#### 📋 明細 · {sid} {str(name).strip()} · {user or '—'}")
+    st.markdown("**已出售**")
+    if sold_df.empty:
+        st.caption("此股票尚無已出售紀錄")
+    else:
+        cols_num = [c for c in sold_df.columns if sold_df[c].dtype in ("int64", "float64")]
+        fmt_sold = {c: _detail_fmt_num for c in cols_num}
+        style_cols = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
+        if style_cols:
+            st.dataframe(sold_df.style.format(fmt_sold).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
         else:
-            cols_num = [c for c in sold_df.columns if sold_df[c].dtype in ("int64", "float64")]
-            fmt_sold = {c: _detail_fmt_num for c in cols_num}
-            style_cols = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
-            if style_cols:
-                st.dataframe(sold_df.style.format(fmt_sold).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
-            else:
-                st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
-            st.caption(f"總賣出金額：{sold_revenue:,.0f}" if sold_revenue else "0")
-        st.markdown("**庫存**")
-        if inv_df.empty:
-            st.caption("此股票目前無庫存")
+            st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
+        st.caption(f"總賣出金額：{sold_revenue:,.0f}" if sold_revenue else "0")
+    st.markdown("**庫存**")
+    if inv_df.empty:
+        st.caption("此股票目前無庫存")
+    else:
+        cols_num = [c for c in inv_df.columns if inv_df[c].dtype in ("int64", "float64")]
+        fmt_inv = {c: _detail_fmt_num for c in cols_num}
+        style_cols = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
+        if style_cols:
+            st.dataframe(inv_df.style.format(fmt_inv).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
         else:
-            cols_num = [c for c in inv_df.columns if inv_df[c].dtype in ("int64", "float64")]
-            fmt_inv = {c: _detail_fmt_num for c in cols_num}
-            style_cols = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
-            if style_cols:
-                st.dataframe(inv_df.style.format(fmt_inv).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
-            else:
-                st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
-            st.caption(f"庫存股數 {inv_summary.get('庫存股數', 0):,} · 原始成本 {inv_summary.get('原始成本', 0):,.0f} · 均價 {inv_summary.get('原始均價', 0):.2f}")
+            st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
+        st.caption(f"庫存股數 {inv_summary.get('庫存股數', 0):,} · 原始成本 {inv_summary.get('原始成本', 0):,.0f} · 均價 {inv_summary.get('原始均價', 0):.2f}")
 
 with st.expander("🔍 為何還有持倉？— 買進／賣出總股數對照", expanded=False):
     st.caption("下表為每筆持倉的 **買進總股數** 與 **賣出總股數**，持倉 = 買進 − 賣出。若賣出總股數小於買進總股數，就會有剩餘持倉。請至「交易輸入」補齊該股票、該買賣人的賣出紀錄後，持倉才會歸零。")
