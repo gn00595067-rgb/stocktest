@@ -276,42 +276,109 @@ else:
                         st.markdown("要賣股票的**賣出價格**：**%s**" % s_txt)
                     # 多賣出：將分配策略移到推薦買進面板上方
                     if len(selected_sell_ids) > 1:
-                        st.selectbox(
-                            "多賣出分配策略",
-                            [
-                                "FIFO（買進 舊→新）",
-                                "LIFO（買進 新→舊）",
-                                "買價 低→高",
-                                "買價 高→低",
-                                "依剩餘股數比例分攤",
-                            ],
-                            key="multi_sell_alloc_mode",
-                            help="勾選多筆賣出時，按「確定沖銷」會把你勾的買進依此策略分配到所有賣出（依賣出日由舊到新）。",
-                        )
-                        # 顯示目前勾選的賣出摘要
-                        rows_sel = []
-                        for tid in selected_sell_ids:
-                            t = trade_by_id.get(tid)
-                            if not t:
-                                continue
-                            used = sell_used.get(t.id, 0)
-                            rem = max(0, (t.quantity or 0) - used)
-                            rows_sel.append({
-                                "交易ID": int(t.id),
-                                "日期": str(t.trade_date),
-                                "賣出價格": float(t.price) if t.price is not None else None,
-                                "賣出股數": int(t.quantity or 0),
-                                "已配": int(used),
-                                "剩餘可配": int(rem),
-                                "買賣人": getattr(t, "user", "") or "",
-                            })
-                        if rows_sel:
-                            df_sel = pd.DataFrame(rows_sel).sort_values(["日期", "交易ID"])
-                            st.dataframe(
-                                df_sel.style.format({"賣出價格": "{:,.2f}", "賣出股數": "{:,.0f}", "已配": "{:,.0f}", "剩餘可配": "{:,.0f}"}),
-                                use_container_width=True,
-                                hide_index=True,
+                        s1, s2 = st.columns([4, 1], vertical_alignment="center")
+                        with s1:
+                            st.selectbox(
+                                "集體沖銷策略（多賣出）",
+                                [
+                                    "FIFO（買進 舊→新）",
+                                    "LIFO（買進 新→舊）",
+                                    "買價 低→高",
+                                    "買價 高→低",
+                                    "依剩餘股數比例分攤",
+                                ],
+                                key="multi_sell_alloc_mode",
+                                help="先選策略並按右側「確定策略」，推薦買進表會自動把「配到的」打勾並把勾選列移到最上方；最後按「確定沖銷」才會真正寫入規則。",
                             )
+                        with s2:
+                            if st.button("確定策略", type="primary", key="multi_sell_apply_strategy"):
+                                mode = st.session_state.get("multi_sell_alloc_mode", "FIFO（買進 舊→新）")
+                                # 以「所有勾選賣出」為需求端、以同股票可用買進為供給端，做一次性分配並寫回 rec_panel_state（不寫入 DB）
+                                sell_trades_multi = [trade_by_id[i] for i in selected_sell_ids if i in trade_by_id]
+                                sell_trades_multi = sorted(sell_trades_multi, key=lambda t: (t.trade_date, t.id))
+                                buy_trades_multi = [t for t in same_stock_buys if (t.quantity - buy_used[t.id]) > 0]
+                                if "LIFO" in str(mode):
+                                    buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id), reverse=True)
+                                elif "買價 低→高" in str(mode):
+                                    buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("inf"), t.trade_date, t.id))
+                                elif "買價 高→低" in str(mode):
+                                    buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("-inf"), t.trade_date, t.id), reverse=True)
+                                else:
+                                    buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id))
+
+                                buy_remaining = {t.id: max(0, t.quantity - buy_used[t.id]) for t in buy_trades_multi}
+                                plan = []  # (sell_id, buy_id, qty)
+                                for s in sell_trades_multi:
+                                    s_rem = max(0, s.quantity - sell_used[s.id])
+                                    if s_rem <= 0:
+                                        continue
+                                    eligible = [b for b in buy_trades_multi if b.trade_date <= s.trade_date and buy_remaining.get(b.id, 0) > 0]
+                                    if not eligible:
+                                        continue
+                                    if "比例分攤" in str(mode):
+                                        total_rem = sum(buy_remaining.get(b.id, 0) for b in eligible)
+                                        if total_rem <= 0:
+                                            continue
+                                        allocs = []
+                                        given = 0
+                                        for b in eligible:
+                                            b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                            if b_rem <= 0:
+                                                continue
+                                            qty = int((s_rem * b_rem) // total_rem)
+                                            qty = min(qty, b_rem)
+                                            if qty > 0:
+                                                allocs.append((b, qty))
+                                                given += qty
+                                        left = s_rem - given
+                                        if left > 0:
+                                            for b in eligible:
+                                                if left <= 0:
+                                                    break
+                                                b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                                already = next((q for bb, q in allocs if bb.id == b.id), 0)
+                                                cap = b_rem - already
+                                                if cap <= 0:
+                                                    continue
+                                                add = min(left, cap)
+                                                if add <= 0:
+                                                    continue
+                                                found = False
+                                                for ii in range(len(allocs)):
+                                                    if allocs[ii][0].id == b.id:
+                                                        allocs[ii] = (allocs[ii][0], allocs[ii][1] + add)
+                                                        found = True
+                                                        break
+                                                if not found:
+                                                    allocs.append((b, add))
+                                                left -= add
+                                        for b, qty in allocs:
+                                            if qty <= 0:
+                                                continue
+                                            plan.append((s.id, b.id, int(qty)))
+                                            buy_remaining[b.id] = int(buy_remaining.get(b.id, 0) or 0) - int(qty)
+                                    else:
+                                        for b in eligible:
+                                            if s_rem <= 0:
+                                                break
+                                            b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                            if b_rem <= 0:
+                                                continue
+                                            qty = min(int(s_rem), b_rem)
+                                            if qty <= 0:
+                                                continue
+                                            plan.append((s.id, b.id, int(qty)))
+                                            s_rem -= qty
+                                            buy_remaining[b.id] = b_rem - qty
+
+                                if "rec_panel_state" not in st.session_state:
+                                    st.session_state["rec_panel_state"] = {}
+                                # 先清掉本次多選賣出的既有勾選（避免殘留）
+                                for sid_ in selected_sell_ids:
+                                    st.session_state["rec_panel_state"][sid_] = {}
+                                for sid_, bid_, qty_ in plan:
+                                    st.session_state["rec_panel_state"][sid_][int(bid_)] = {"勾選": True, "沖銷股數": int(qty_)}
+                                st.rerun()
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
@@ -402,6 +469,13 @@ else:
                     if show_中賠: show_cats.add("中賠")
                     if show_小賠: show_cats.add("小賠")
                     df_rec = df_rec[df_rec["分類"].isin(show_cats)]
+                    # 讓已勾選（配到的）優先顯示在上面
+                    if not df_rec.empty and "勾選" in df_rec.columns:
+                        try:
+                            df_rec["_rank_checked"] = df_rec["勾選"].apply(lambda x: 0 if bool(x) else 1)
+                            df_rec = df_rec.sort_values(by=["_rank_checked", "分類", "買進ID"], ascending=[True, True, True]).drop(columns=["_rank_checked"])
+                        except Exception:
+                            pass
                     if show_中賺 and "中賺" in df_rec["分類"].values:
                         mid = df_rec[df_rec["分類"] == "中賺"]
                         n = len(mid)
@@ -477,15 +551,6 @@ else:
                             except (TypeError, ValueError):
                                 return False
                         checked = edited_rec[edited_rec["勾選"] == True] if "勾選" in edited_rec.columns else pd.DataFrame()
-                        # 有選擇時，下方直接顯示勾選結果（買進勾選 + 沖銷股數）
-                        if not checked.empty:
-                            show_cols = [c for c in ["分類", "買進ID", "買價", "剩餘可配", "沖銷股數"] if c in checked.columns]
-                            st.markdown("**已勾選的買進（將用於配對）**")
-                            st.dataframe(
-                                checked[show_cols].style,
-                                use_container_width=True,
-                                hide_index=True,
-                            )
                         temp_alloc = 0
                         if not checked.empty:
                             for _, row in checked.iterrows():
