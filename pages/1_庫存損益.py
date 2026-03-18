@@ -508,10 +508,17 @@ with st.container():
     with col_f2:
         end_date = st.date_input("結束日期", key="portfolio_end")
     with col_f3:
+        policy_labels = {
+            "CUSTOM_ONLY": "僅顯示自定沖銷",
+            "CUSTOM_PLUS_FIFO": "先進先出（未定沖銷部分）",
+            "CUSTOM_PLUS_CONSERVATIVE": "保守（未定沖銷部分）",
+            "CUSTOM_PLUS_OPTIMISTIC": "樂觀（未定沖銷部分）",
+            "CUSTOM_PLUS_MEAN": "均值配對（未定沖銷部分）",
+        }
         policy = st.selectbox(
             "損益沖銷方式",
-            ["CUSTOM"],
-            format_func=lambda x: "自定沖銷",
+            list(policy_labels.keys()),
+            format_func=lambda x: policy_labels.get(x, x),
             key="portfolio_policy",
         )
     with col_f4:
@@ -524,7 +531,7 @@ with st.container():
         )
         portfolio_filter_users = None if filter_user_idx == 0 else [filter_user_options[filter_user_idx]]
     _inject_range_button_highlight(_range_active_index(start_date, end_date, today))
-    st.caption("持倉與損益皆依 **自定沖銷** 規則計算。請至「自定沖銷設定」頁設定賣出與買進的配對。")
+    st.caption("持倉與損益會先套用 **自定沖銷** 規則；若選擇「未定沖銷部分」策略，則會對尚未被規則覆蓋的部分自動補配。")
     st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
 
 trades = [t for t in all_trades if start_date <= t.trade_date <= end_date]

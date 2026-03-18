@@ -90,10 +90,17 @@ with col_d1:
 with col_d2:
     end_date = st.date_input("結束日期", key="pl_end")
 with col_p:
+    policy_labels = {
+        "CUSTOM_ONLY": "僅顯示自定沖銷",
+        "CUSTOM_PLUS_FIFO": "先進先出（未定沖銷部分）",
+        "CUSTOM_PLUS_CONSERVATIVE": "保守（未定沖銷部分）",
+        "CUSTOM_PLUS_OPTIMISTIC": "樂觀（未定沖銷部分）",
+        "CUSTOM_PLUS_MEAN": "均值配對（未定沖銷部分）",
+    }
     policy = st.selectbox(
         "沖銷方式",
-        ["CUSTOM"],
-        format_func=lambda x: "自定沖銷",
+        list(policy_labels.keys()),
+        format_func=lambda x: policy_labels.get(x, x),
     )
 with col_m:
     display_mode = st.selectbox(
@@ -514,7 +521,7 @@ n_buys_range = sum(len(b) for b in buys_by_stock.values())
 n_sells_range = sum(len(s) for s in sells_by_stock.values())
 n_stocks_realized = len(realized_by_stock)
 n_stocks_position = len(position)
-policy_label = "自定沖銷"
+policy_label = policy_labels.get(policy, str(policy))
 n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
 n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
 
