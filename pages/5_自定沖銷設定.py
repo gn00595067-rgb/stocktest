@@ -20,6 +20,15 @@ st.set_page_config(page_title="自定沖銷設定", layout="wide")
 st.title("自定沖銷設定")
 st.caption("可指定「某筆賣出」與「某筆買進」的沖銷股數；在 庫存損益、投資績效、個股明細等頁面選擇「自定沖銷」時會依此規則計算損益。")
 
+# 集體沖銷策略（多賣出）選項：(顯示文字, 內部 key)
+MULTI_SELL_STRATEGIES = [
+    ("先進先出", "fifo"),                    # 買進日期舊→新
+    ("後進先出", "lifo"),                    # 買進日期新→舊
+    ("樂觀(賺最多)", "price_low_high"),      # 買價低→高，先沖銷低成本，帳上損益較高
+    ("保守(賺最少)", "price_high_low"),      # 買價高→低，先沖銷高成本，帳上損益較低
+    ("均值(最靠近平均)", "proportional"),    # 依剩餘股數比例分攤
+]
+
 sess = None
 try:
     sess = get_session()
@@ -313,32 +322,32 @@ else:
                             st.caption(f"總剩餘配額：**{total_remain:,}**")
                     # 多賣出：將分配策略移到推薦買進面板上方
                     if len(selected_sell_ids) > 1:
+                        # 若先前存的是舊版文字，遷移為新 key
+                        _valid_keys = [k for _, k in MULTI_SELL_STRATEGIES]
+                        _current = st.session_state.get("multi_sell_alloc_mode", "fifo")
+                        if _current not in _valid_keys:
+                            st.session_state["multi_sell_alloc_mode"] = "fifo"
                         s1, s2 = st.columns([4, 1], vertical_alignment="center")
                         with s1:
                             st.selectbox(
                                 "集體沖銷策略（多賣出）",
-                                [
-                                    "FIFO（買進 舊→新）",
-                                    "LIFO（買進 新→舊）",
-                                    "買價 低→高",
-                                    "買價 高→低",
-                                    "依剩餘股數比例分攤",
-                                ],
+                                options=[k for _, k in MULTI_SELL_STRATEGIES],
+                                format_func=lambda k: next((label for label, key in MULTI_SELL_STRATEGIES if key == k), k),
                                 key="multi_sell_alloc_mode",
                                 help="先選策略並按右側「確定策略」，推薦買進表會自動把「配到的」打勾並把勾選列移到最上方；最後按「確定沖銷」才會真正寫入規則。",
                             )
                         with s2:
                             if st.button("確定策略", type="primary", key="multi_sell_apply_strategy"):
-                                mode = st.session_state.get("multi_sell_alloc_mode", "FIFO（買進 舊→新）")
+                                mode = st.session_state.get("multi_sell_alloc_mode", "fifo")
                                 # 以「所有勾選賣出」為需求端、以同股票可用買進為供給端，做一次性分配並寫回 rec_panel_state（不寫入 DB）
                                 sell_trades_multi = [trade_by_id[i] for i in selected_sell_ids if i in trade_by_id]
                                 sell_trades_multi = sorted(sell_trades_multi, key=lambda t: (t.trade_date, t.id))
                                 buy_trades_multi = [t for t in same_stock_buys if (t.quantity - buy_used[t.id]) > 0]
-                                if "LIFO" in str(mode):
+                                if mode == "lifo":
                                     buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id), reverse=True)
-                                elif "買價 低→高" in str(mode):
+                                elif mode == "price_low_high":
                                     buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("inf"), t.trade_date, t.id))
-                                elif "買價 高→低" in str(mode):
+                                elif mode == "price_high_low":
                                     buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("-inf"), t.trade_date, t.id), reverse=True)
                                 else:
                                     buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id))
@@ -352,7 +361,7 @@ else:
                                     eligible = [b for b in buy_trades_multi if b.trade_date <= s.trade_date and buy_remaining.get(b.id, 0) > 0]
                                     if not eligible:
                                         continue
-                                    if "比例分攤" in str(mode):
+                                    if mode == "proportional":
                                         total_rem = sum(buy_remaining.get(b.id, 0) for b in eligible)
                                         if total_rem <= 0:
                                             continue
@@ -682,12 +691,12 @@ else:
                                     sell_trades_multi = [trade_by_id[i] for i in selected_sell_ids if i in trade_by_id]
                                     sell_trades_multi = sorted(sell_trades_multi, key=lambda t: (t.trade_date, t.id))
                                     buy_trades_multi = [trade_by_id[i] for i in selected_buy_ids if i in trade_by_id]
-                                    mode = st.session_state.get("multi_sell_alloc_mode", "FIFO（買進 舊→新）")
-                                    if "LIFO" in str(mode):
+                                    mode = st.session_state.get("multi_sell_alloc_mode", "fifo")
+                                    if mode == "lifo":
                                         buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id), reverse=True)
-                                    elif "買價 低→高" in str(mode):
+                                    elif mode == "price_low_high":
                                         buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("inf"), t.trade_date, t.id))
-                                    elif "買價 高→低" in str(mode):
+                                    elif mode == "price_high_low":
                                         buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("-inf"), t.trade_date, t.id), reverse=True)
                                     else:
                                         buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id))
@@ -701,7 +710,7 @@ else:
                                         eligible = [b for b in buy_trades_multi if b.trade_date <= s.trade_date and buy_remaining.get(b.id, 0) > 0]
                                         if not eligible:
                                             continue
-                                        if "比例分攤" in str(mode):
+                                        if mode == "proportional":
                                             total_rem = sum(buy_remaining.get(b.id, 0) for b in eligible)
                                             if total_rem <= 0:
                                                 continue
