@@ -61,6 +61,10 @@ def _inject_page_style():
     .portfolio-kpi-value--positive { color: #c62828; }
     .portfolio-kpi-value--negative { color: #2e7d32; }
     div[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+    /* 持倉表列選取：未勾選時看起來像空白（仍可點） */
+    div[data-testid="stDataFrame"] input[type="checkbox"]:not(:checked) {
+        opacity: 0;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -555,6 +559,8 @@ if "市值" in df_display.columns:
 # 用原生 st.dataframe 呈現持倉表：可排序、保持原樣式，點選列展開明細
 if "portfolio_detail_row" not in st.session_state:
     st.session_state["portfolio_detail_row"] = None
+if "portfolio_table_key_v" not in st.session_state:
+    st.session_state["portfolio_table_key_v"] = 0
 
 # 先建立每列對應 (sid, name, user)，供選取列對應與下方明細使用
 detail_rows = []
@@ -565,18 +571,7 @@ for _idx, row in df_display.iterrows():
     detail_rows.append((sid, name, user))
 
 # 簡化操作：不再佔左側空間；僅在有選取時於表格上方顯示一條工具列 + 小收合按鈕
-choice = st.session_state["portfolio_detail_row"]
-if choice is not None and 0 <= int(choice) < len(detail_rows):
-    sid, name, user = detail_rows[int(choice)]
-    bar_l, bar_r = st.columns([8, 1], vertical_alignment="center")
-    with bar_l:
-        st.caption(f"已選取：{sid} {str(name).strip()} · {user or '—'}（點表格其他列可切換）")
-    with bar_r:
-        if st.button("收合", key="portfolio_detail_collapse", help="收合下方明細"):
-            st.session_state["portfolio_detail_row"] = None
-            st.rerun()
-else:
-    st.caption("提示：點表格任一列即可展開下方明細")
+st.caption("提示：點表格任一列即可展開下方明細")
 
 event = st.dataframe(
     style_portfolio_dataframe(df_display),
@@ -584,6 +579,7 @@ event = st.dataframe(
     hide_index=True,
     on_select="rerun",
     selection_mode="single-row",
+    key=f"portfolio_table_{st.session_state['portfolio_table_key_v']}",
 )
 try:
     rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
@@ -619,7 +615,14 @@ if choice is not None and 0 <= choice < len(detail_rows):
     trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
     sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(sid, trades_for_row, masters, policy, custom_rules=custom_rules)
     st.markdown("---")
-    st.markdown(f"#### 📋 明細 · {sid} {str(name).strip()} · {user or '—'}")
+    h_l, h_r = st.columns([9, 1], vertical_alignment="center")
+    with h_l:
+        st.markdown(f"#### 📋 明細 · {sid} {str(name).strip()} · {user or '—'}")
+    with h_r:
+        if st.button("×", key="portfolio_detail_close", help="關閉明細並清除勾選"):
+            st.session_state["portfolio_detail_row"] = None
+            st.session_state["portfolio_table_key_v"] = int(st.session_state.get("portfolio_table_key_v", 0)) + 1
+            st.rerun()
     st.markdown("**已出售**")
     if sold_df.empty:
         st.caption("此股票尚無已出售紀錄")
