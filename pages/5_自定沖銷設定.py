@@ -156,7 +156,13 @@ else:
 
             alloc_mode = st.radio(
                 "分配方式",
-                ["自動分配（買進 FIFO：舊→新）"],
+                [
+                    "自動分配：FIFO（買進 舊→新）",
+                    "自動分配：LIFO（買進 新→舊）",
+                    "自動分配：買價 低→高",
+                    "自動分配：買價 高→低",
+                    "自動分配：依剩餘股數比例分攤",
+                ],
                 horizontal=True,
                 key="batch_alloc_mode",
             )
@@ -167,34 +173,99 @@ else:
                 sell_trades = [trade_by_id[i] for i in batch_sell_ids if i in trade_by_id]
                 buy_trades = [trade_by_id[i] for i in batch_buy_ids if i in trade_by_id]
                 sell_trades = sorted(sell_trades, key=lambda t: (t.trade_date, t.id))
-                buy_trades = sorted(buy_trades, key=lambda t: (t.trade_date, t.id))
+                # 依分配策略決定買進順序（比例分攤另行處理）
+                if "LIFO" in alloc_mode:
+                    buy_trades = sorted(buy_trades, key=lambda t: (t.trade_date, t.id), reverse=True)
+                elif "買價 低→高" in alloc_mode:
+                    buy_trades = sorted(buy_trades, key=lambda t: (float(t.price) if t.price is not None else float("inf"), t.trade_date, t.id))
+                elif "買價 高→低" in alloc_mode:
+                    buy_trades = sorted(buy_trades, key=lambda t: (float(t.price) if t.price is not None else float("-inf"), t.trade_date, t.id), reverse=True)
+                else:
+                    buy_trades = sorted(buy_trades, key=lambda t: (t.trade_date, t.id))
 
                 buy_remaining = {t.id: max(0, t.quantity - buy_used[t.id]) for t in buy_trades}
                 for s in sell_trades:
                     s_rem = max(0, s.quantity - sell_used[s.id])
                     if s_rem <= 0:
                         continue
-                    for b in buy_trades:
-                        if s_rem <= 0:
-                            break
-                        if b.trade_date > s.trade_date:
-                            continue  # 買進日晚於賣出日，不可配
-                        b_rem = buy_remaining.get(b.id, 0)
-                        if b_rem <= 0:
+                    eligible_buys = [b for b in buy_trades if b.trade_date <= s.trade_date and buy_remaining.get(b.id, 0) > 0]
+                    if not eligible_buys:
+                        continue
+                    if "比例分攤" in alloc_mode:
+                        # 依剩餘股數比例分攤（四捨五入後以買進順序補足餘數）
+                        total_rem = sum(buy_remaining.get(b.id, 0) for b in eligible_buys)
+                        if total_rem <= 0:
                             continue
-                        qty = min(s_rem, b_rem)
-                        if qty <= 0:
-                            continue
-                        plan_rows.append({
-                            "賣出ID": s.id,
-                            "賣出日": str(s.trade_date),
-                            "買進ID": b.id,
-                            "買進日": str(b.trade_date),
-                            "沖銷股數": qty,
-                            "買賣人": getattr(s, "user", "") or "",
-                        })
-                        s_rem -= qty
-                        buy_remaining[b.id] = b_rem - qty
+                        # 先給 floor 配額
+                        allocs = []
+                        given = 0
+                        for b in eligible_buys:
+                            b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                            if b_rem <= 0:
+                                continue
+                            qty = int((s_rem * b_rem) // total_rem)
+                            qty = min(qty, b_rem)
+                            if qty > 0:
+                                allocs.append((b, qty))
+                                given += qty
+                        # 補足剩餘（按 eligible_buys 順序）
+                        left = s_rem - given
+                        if left > 0:
+                            for b in eligible_buys:
+                                if left <= 0:
+                                    break
+                                b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                already = next((q for bb, q in allocs if bb.id == b.id), 0)
+                                cap = b_rem - already
+                                if cap <= 0:
+                                    continue
+                                add = min(left, cap)
+                                if add <= 0:
+                                    continue
+                                # 更新/加入
+                                found = False
+                                for ii in range(len(allocs)):
+                                    if allocs[ii][0].id == b.id:
+                                        allocs[ii] = (allocs[ii][0], allocs[ii][1] + add)
+                                        found = True
+                                        break
+                                if not found:
+                                    allocs.append((b, add))
+                                left -= add
+                        # 寫入配對
+                        for b, qty in allocs:
+                            if qty <= 0:
+                                continue
+                            plan_rows.append({
+                                "賣出ID": s.id,
+                                "賣出日": str(s.trade_date),
+                                "買進ID": b.id,
+                                "買進日": str(b.trade_date),
+                                "沖銷股數": int(qty),
+                                "買賣人": getattr(s, "user", "") or "",
+                            })
+                            buy_remaining[b.id] = int(buy_remaining.get(b.id, 0) or 0) - int(qty)
+                    else:
+                        # 依買進順序貪婪分配（FIFO/LIFO/買價排序）
+                        for b in eligible_buys:
+                            if s_rem <= 0:
+                                break
+                            b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                            if b_rem <= 0:
+                                continue
+                            qty = min(int(s_rem), b_rem)
+                            if qty <= 0:
+                                continue
+                            plan_rows.append({
+                                "賣出ID": s.id,
+                                "賣出日": str(s.trade_date),
+                                "買進ID": b.id,
+                                "買進日": str(b.trade_date),
+                                "沖銷股數": int(qty),
+                                "買賣人": getattr(s, "user", "") or "",
+                            })
+                            s_rem -= qty
+                            buy_remaining[b.id] = b_rem - qty
 
             if plan_rows:
                 df_plan = pd.DataFrame(plan_rows)
