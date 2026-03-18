@@ -71,6 +71,170 @@ st.subheader("新增自定沖銷規則")
 if not sells:
     st.warning("尚無賣出交易，無法設定沖銷。請先於「交易輸入」或「交易匯入」建立買賣資料。")
 else:
+    # ---------- 批次配對（多選/全選） ----------
+    with st.expander("🚀 批次配對（可多選/全選；一批賣出配對一批買進）", expanded=False):
+        st.caption("用於一次選多筆賣出、再選多筆買進，系統會依「買進 FIFO（舊→新）」自動把股數分配到各賣出，並寫入多筆自定沖銷規則。")
+
+        # 依股票篩選（批次配對需要同一股票）
+        stock_opts_batch = []
+        seen = set()
+        for t in sells:
+            if t.stock_id in seen:
+                continue
+            seen.add(t.stock_id)
+            nm = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
+            stock_opts_batch.append((f"{t.stock_id} {nm}".strip(), t.stock_id))
+        stock_opts_batch = sorted(stock_opts_batch, key=lambda x: x[1])
+        if not stock_opts_batch:
+            st.caption("目前無可用股票。")
+        else:
+            batch_stock = st.selectbox(
+                "選擇股票（批次配對僅支援同一股票）",
+                options=[sid for _, sid in stock_opts_batch],
+                format_func=lambda sid: next((lbl for lbl, s in stock_opts_batch if s == sid), sid),
+                key="batch_stock",
+            )
+
+            batch_sells = [t for t in sells if t.stock_id == batch_stock]
+            batch_buys = [t for t in buys if t.stock_id == batch_stock]
+
+            # 僅可配：買進日 ≤ 賣出日 的約束會在分配時處理（每筆賣出各自可用買進集合）
+            def _sell_label(t: Trade):
+                used = sell_used[t.id]
+                remain = max(0, t.quantity - used)
+                return f"#{t.id} {t.trade_date} · 賣 {t.quantity:,}（剩 {remain:,}）· {getattr(t,'user', '') or '—'}"
+
+            def _buy_label(t: Trade):
+                used = buy_used[t.id]
+                remain = max(0, t.quantity - used)
+                px = f"{float(t.price):,.2f}" if t.price is not None else "—"
+                return f"#{t.id} {t.trade_date} · 買 {t.quantity:,} @ {px}（剩 {remain:,}）· {getattr(t,'user', '') or '—'}"
+
+            # 多選（支援全選/清空）
+            if "batch_sell_ids" not in st.session_state:
+                st.session_state["batch_sell_ids"] = []
+            if "batch_buy_ids" not in st.session_state:
+                st.session_state["batch_buy_ids"] = []
+
+            c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+            with c1:
+                if st.button("賣出全選", key="batch_sell_all"):
+                    st.session_state["batch_sell_ids"] = [t.id for t in batch_sells if (t.quantity - sell_used[t.id]) > 0]
+                    st.rerun()
+            with c2:
+                if st.button("賣出清空", key="batch_sell_none"):
+                    st.session_state["batch_sell_ids"] = []
+                    st.rerun()
+            with c3:
+                if st.button("買進全選", key="batch_buy_all"):
+                    st.session_state["batch_buy_ids"] = [t.id for t in batch_buys if (t.quantity - buy_used[t.id]) > 0]
+                    st.rerun()
+            with c4:
+                if st.button("買進清空", key="batch_buy_none"):
+                    st.session_state["batch_buy_ids"] = []
+                    st.rerun()
+
+            sell_id_opts = [t.id for t in sorted(batch_sells, key=lambda x: (x.trade_date, x.id))]
+            buy_id_opts = [t.id for t in sorted(batch_buys, key=lambda x: (x.trade_date, x.id))]
+
+            batch_sell_ids = st.multiselect(
+                "選擇賣出（可多選）",
+                options=sell_id_opts,
+                default=[i for i in st.session_state["batch_sell_ids"] if i in sell_id_opts],
+                format_func=lambda tid: _sell_label(trade_by_id.get(tid)),
+                key="batch_sell_ids_widget",
+            )
+            batch_buy_ids = st.multiselect(
+                "選擇買進（可多選）",
+                options=buy_id_opts,
+                default=[i for i in st.session_state["batch_buy_ids"] if i in buy_id_opts],
+                format_func=lambda tid: _buy_label(trade_by_id.get(tid)),
+                key="batch_buy_ids_widget",
+            )
+            st.session_state["batch_sell_ids"] = batch_sell_ids
+            st.session_state["batch_buy_ids"] = batch_buy_ids
+
+            alloc_mode = st.radio(
+                "分配方式",
+                ["自動分配（買進 FIFO：舊→新）"],
+                horizontal=True,
+                key="batch_alloc_mode",
+            )
+
+            # 產生配對計畫（預覽）
+            plan_rows = []
+            if batch_sell_ids and batch_buy_ids:
+                sell_trades = [trade_by_id[i] for i in batch_sell_ids if i in trade_by_id]
+                buy_trades = [trade_by_id[i] for i in batch_buy_ids if i in trade_by_id]
+                sell_trades = sorted(sell_trades, key=lambda t: (t.trade_date, t.id))
+                buy_trades = sorted(buy_trades, key=lambda t: (t.trade_date, t.id))
+
+                buy_remaining = {t.id: max(0, t.quantity - buy_used[t.id]) for t in buy_trades}
+                for s in sell_trades:
+                    s_rem = max(0, s.quantity - sell_used[s.id])
+                    if s_rem <= 0:
+                        continue
+                    for b in buy_trades:
+                        if s_rem <= 0:
+                            break
+                        if b.trade_date > s.trade_date:
+                            continue  # 買進日晚於賣出日，不可配
+                        b_rem = buy_remaining.get(b.id, 0)
+                        if b_rem <= 0:
+                            continue
+                        qty = min(s_rem, b_rem)
+                        if qty <= 0:
+                            continue
+                        plan_rows.append({
+                            "賣出ID": s.id,
+                            "賣出日": str(s.trade_date),
+                            "買進ID": b.id,
+                            "買進日": str(b.trade_date),
+                            "沖銷股數": qty,
+                            "買賣人": getattr(s, "user", "") or "",
+                        })
+                        s_rem -= qty
+                        buy_remaining[b.id] = b_rem - qty
+
+            if plan_rows:
+                df_plan = pd.DataFrame(plan_rows)
+                st.markdown("**預覽：將新增/累加的規則**")
+                st.dataframe(df_plan.style.format({"沖銷股數": "{:,.0f}"}), use_container_width=True, hide_index=True)
+
+                total_qty = int(df_plan["沖銷股數"].sum())
+                st.caption(f"本次預計配對總股數：**{total_qty:,}**")
+
+                if st.button("套用批次配對", type="primary", key="batch_apply"):
+                    sessw = get_session()
+                    try:
+                        for _, r in df_plan.iterrows():
+                            sid = int(r["賣出ID"])
+                            bid = int(r["買進ID"])
+                            qty = int(r["沖銷股數"])
+                            if qty <= 0:
+                                continue
+                            existing = sessw.query(CustomMatchRule).filter(
+                                CustomMatchRule.sell_trade_id == sid,
+                                CustomMatchRule.buy_trade_id == bid,
+                            ).first()
+                            if existing:
+                                existing.matched_qty = int(existing.matched_qty) + qty
+                            else:
+                                sessw.add(CustomMatchRule(sell_trade_id=sid, buy_trade_id=bid, matched_qty=qty))
+                        sessw.commit()
+                        st.success(f"已套用批次配對：新增/更新 {len(df_plan)} 筆規則")
+                        st.rerun()
+                    except OperationalError:
+                        sessw.rollback()
+                        st.error("無法寫入資料庫（目前環境可能唯讀）")
+                    except Exception as e:
+                        sessw.rollback()
+                        st.error(f"套用失敗：{e}")
+                    finally:
+                        sessw.close()
+            else:
+                st.caption("請先選擇至少 1 筆賣出與 1 筆買進；或目前沒有可分配的剩餘股數。")
+
     # 賣出：先選股票（可選「全部」或指定股票），再展開可排序表格 + 單選
     st.markdown("**1. 選擇「賣出」交易**")
     # 選單：篩選要針對哪隻股票（僅顯示該股票的賣出）
