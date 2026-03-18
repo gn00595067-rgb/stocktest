@@ -564,37 +564,33 @@ for _idx, row in df_display.iterrows():
     user = row.get("買賣人", "")
     detail_rows.append((sid, name, user))
 
-# 左側一欄：操作（選取狀態提示 + 收合）
-op_col, table_col = st.columns([1, 8], vertical_alignment="top")
-with op_col:
-    if st.session_state["portfolio_detail_row"] is None:
-        st.markdown("**明細**")
-        st.caption("點右側表格任一列即可展開")
-    else:
-        i = int(st.session_state["portfolio_detail_row"])
-        if 0 <= i < len(detail_rows):
-            sid, name, user = detail_rows[i]
-            st.markdown("**已選取**")
-            st.caption(f"{sid} {str(name).strip()}")
-            st.caption(f"{user or '—'}")
-        if st.button("收合", key="portfolio_detail_collapse"):
+# 簡化操作：不再佔左側空間；僅在有選取時於表格上方顯示一條工具列 + 小收合按鈕
+choice = st.session_state["portfolio_detail_row"]
+if choice is not None and 0 <= int(choice) < len(detail_rows):
+    sid, name, user = detail_rows[int(choice)]
+    bar_l, bar_r = st.columns([8, 1], vertical_alignment="center")
+    with bar_l:
+        st.caption(f"已選取：{sid} {str(name).strip()} · {user or '—'}（點表格其他列可切換）")
+    with bar_r:
+        if st.button("收合", key="portfolio_detail_collapse", help="收合下方明細"):
             st.session_state["portfolio_detail_row"] = None
             st.rerun()
+else:
+    st.caption("提示：點表格任一列即可展開下方明細")
 
-with table_col:
-    event = st.dataframe(
-        style_portfolio_dataframe(df_display),
-        use_container_width=True,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-    )
-    try:
-        rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
-        if rows:
-            st.session_state["portfolio_detail_row"] = int(rows[0])
-    except Exception:
-        pass
+event = st.dataframe(
+    style_portfolio_dataframe(df_display),
+    use_container_width=True,
+    hide_index=True,
+    on_select="rerun",
+    selection_mode="single-row",
+)
+try:
+    rows = list(getattr(getattr(event, "selection", None), "rows", []) or [])
+    if rows:
+        st.session_state["portfolio_detail_row"] = int(rows[0])
+except Exception:
+    pass
 
 choice = st.session_state["portfolio_detail_row"]
 
