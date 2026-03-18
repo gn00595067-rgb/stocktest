@@ -6,6 +6,7 @@ import altair as alt
 from datetime import date, timedelta
 import sys
 import os
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.stock_list_loader import ensure_google_sheet_loaded
@@ -552,55 +553,71 @@ if "市值" in df_display.columns:
             df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
         except Exception:
             pass
-# 每列對應 (sid, name, user)，點該列按鈕即展開該檔明細
+# 用 AgGrid 呈現持倉表：可排序、可調欄寬、可點選列以展開明細
+if "portfolio_detail_row" not in st.session_state:
+    st.session_state["portfolio_detail_row"] = None
+
+df_grid = df_display.copy()
+df_grid.insert(0, "明細", "▼")
+
+gb = GridOptionsBuilder.from_dataframe(df_grid)
+gb.configure_default_column(sortable=True, resizable=True, filter=True, wrapText=False, autoHeight=False)
+gb.configure_selection(selection_mode="single", use_checkbox=False)
+gb.configure_grid_options(domLayout="normal", rowHeight=34, headerHeight=36)
+
+# 欄位格式
+def _fmt_int():
+    return JsCode("function(params){ if(params.value===null||params.value===undefined||params.value===''){return '—';} const v=Number(params.value); if(isNaN(v)){return params.value;} return v.toLocaleString(undefined,{maximumFractionDigits:0}); }")
+
+def _fmt_float2():
+    return JsCode("function(params){ if(params.value===null||params.value===undefined||params.value===''){return '—';} const v=Number(params.value); if(isNaN(v)){return params.value;} return v.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2}); }")
+
+def _pnl_style_js():
+    return JsCode("""
+        function(params){
+            const v = Number(params.value);
+            if (isNaN(v)) { return {}; }
+            if (v >= 0) { return { 'color': '#c62828', 'fontWeight': 600 }; }
+            return { 'color': '#2e7d32', 'fontWeight': 600 };
+        }
+    """)
+
+for col in ["市值", "股數", "未實現損益", "已實現損益", "總損益"]:
+    if col in df_grid.columns:
+        gb.configure_column(col, valueFormatter=_fmt_int(), cellStyle=_pnl_style_js() if "損益" in col else None)
+for col in ["均價", "現價"]:
+    if col in df_grid.columns:
+        gb.configure_column(col, valueFormatter=_fmt_float2())
+
+gb.configure_column("明細", width=70, pinned="left", sortable=False, filter=False)
+
+grid_res = AgGrid(
+    df_grid,
+    gridOptions=gb.build(),
+    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+    update_mode=GridUpdateMode.SELECTION_CHANGED,
+    fit_columns_on_grid_load=True,
+    theme="streamlit",
+    height=min(520, 70 + 34 * (len(df_grid) + 1)),
+    allow_unsafe_jscode=True,
+)
+
+selected = (grid_res or {}).get("selected_rows") or []
+if selected:
+    try:
+        st.session_state["portfolio_detail_row"] = int(selected[0].get("_selectedRowNodeInfo", {}).get("nodeRowIndex"))
+    except Exception:
+        st.session_state["portfolio_detail_row"] = 0
+
+choice = st.session_state["portfolio_detail_row"]
+
+# 每列對應 (sid, name, user)，用 choice 展開該列明細
 detail_rows = []
 for idx, row in df_display.iterrows():
     sid = row.get("股票代號") or row.get("stock_id")
     name = row.get("名稱", "")
     user = row.get("買賣人", "")
     detail_rows.append((sid, name, user))
-
-if "portfolio_detail_row" not in st.session_state:
-    st.session_state["portfolio_detail_row"] = None
-
-def _cell_fmt(col: str, val):
-    """持倉表單格顯示格式（千分位／小數）"""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return "—"
-    if col in ("均價", "現價"):
-        try:
-            return f"{float(val):,.2f}"
-        except (ValueError, TypeError):
-            return str(val)
-    if col in ("市值", "股數", "未實現損益", "已實現損益", "總損益"):
-        try:
-            v = float(val)
-            return f"{int(v):,}" if v == int(v) else f"{v:,.2f}"
-        except (ValueError, TypeError):
-            return str(val)
-    return str(val).strip() if val is not None else "—"
-
-display_cols = list(df_display.columns)
-n_cols = len(display_cols)
-# 表頭：欄名 + 明細
-col_widths = [1] * n_cols + [0.4]
-header_cols = st.columns(col_widths)
-for j, c in enumerate(display_cols):
-    header_cols[j].markdown(f"**{c}**")
-header_cols[-1].markdown("**明細**")
-
-# 每一列：資料格 + 按鈕（點該列即展開／收合該檔）
-for i, (idx, row) in enumerate(df_display.iterrows()):
-    row_cols = st.columns(col_widths)
-    for j, c in enumerate(display_cols):
-        row_cols[j].write(_cell_fmt(c, row.get(c)))
-    with row_cols[-1]:
-        expanded = st.session_state["portfolio_detail_row"] == i
-        if st.button("收合" if expanded else "▼ 明細", key=f"portfolio_detail_btn_{i}"):
-            st.session_state["portfolio_detail_row"] = None if expanded else i
-            st.rerun()
-
-choice = st.session_state["portfolio_detail_row"]
 
 # 僅在「有選擇一檔」時，下方顯示該檔的已出售＋庫存
 def _detail_style_signed(val):
