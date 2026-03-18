@@ -155,12 +155,15 @@ else:
     if df_sells.empty:
         st.caption("目前沒有可顯示的賣出交易（請取消「僅顯示有剩餘配額的股票」或選擇其他股票）。")
     else:
+        # 將交易ID放到 index（不顯示），表格內只顯示人類可辨識欄位
         df_sells_display = df_sells.copy()
+        if "交易ID" in df_sells_display.columns:
+            df_sells_display = df_sells_display.set_index("交易ID")
         # 快速操作：全選 / 取消選擇（僅針對目前列表）
         a1, a2, a3 = st.columns([1, 1, 6])
         with a1:
             if st.button("全選", key="sell_select_all", help="全選目前列表中的賣出交易"):
-                st.session_state["add_sell_ids"] = [int(x) for x in df_sells["交易ID"].tolist()]
+                st.session_state["add_sell_ids"] = [int(x) for x in df_sells_display.index.tolist()]
                 st.session_state["active_sell_id"] = st.session_state["add_sell_ids"][-1] if st.session_state["add_sell_ids"] else None
                 st.rerun()
         with a2:
@@ -171,7 +174,7 @@ else:
                 st.rerun()
 
         selected_ids = set(int(x) for x in (st.session_state.get("add_sell_ids") or []) if str(x).isdigit())
-        df_sells_display.insert(0, "勾選", [int(df_sells.iloc[i]["交易ID"]) in selected_ids for i in sell_indices])
+        df_sells_display.insert(0, "勾選", [int(i) in selected_ids for i in df_sells_display.index.tolist()])
         # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
         for col in ("賣出股數", "已配", "剩餘可配"):
             if col in df_sells_display.columns:
@@ -194,11 +197,11 @@ else:
             column_config={
                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
             },
-            disabled=["買賣人", "交易ID", "股票", "日期", "賣出價格", "當沖", "賣出股數", "已配", "剩餘可配"],
+            disabled=["買賣人", "股票", "日期", "賣出價格", "當沖", "賣出股數", "已配", "剩餘可配"],
         )
         # 從編輯結果取回勾選的賣出交易ID（允許多選）
-        checked_rows = edited_sell.index[edited_sell["勾選"]].tolist()
-        sell_ids = [int(df_sells.iloc[i]["交易ID"]) for i in checked_rows] if checked_rows else []
+        checked_ids = edited_sell.index[edited_sell["勾選"]].tolist()
+        sell_ids = [int(x) for x in checked_ids] if checked_ids else []
         st.session_state["add_sell_ids"] = sell_ids
         # active 賣出：用最後一次勾到的那筆（若全取消則為 None）
         st.session_state["active_sell_id"] = sell_ids[-1] if sell_ids else None
@@ -515,7 +518,8 @@ else:
                             "勾選": checked_final,
                             "沖銷股數": int(qty),
                             "分類": _cat(pnl_pct),
-                            "買進ID": t.id,
+                            "_buy_id": int(t.id),
+                            "買進日": str(t.trade_date),
                             "買價": t.price,
                             "現價": current_price,
                             "剩餘可配": rem,
@@ -523,6 +527,8 @@ else:
                             "賺賠%": pnl_pct,
                         })
                     df_rec = pd.DataFrame(recs)
+                    if not df_rec.empty and "_buy_id" in df_rec.columns:
+                        df_rec = df_rec.set_index("_buy_id")
                     st.markdown("**依賺賠篩選推薦買進**")
                     cx1, cx2, cx3, cx4, cx5, cx6 = st.columns(6)
                     with cx1: show_大賺 = st.checkbox("大賺(>20%%)", value=True, key="rec_大賺")
@@ -543,7 +549,7 @@ else:
                     if not df_rec.empty and "勾選" in df_rec.columns:
                         try:
                             df_rec["_rank_checked"] = df_rec["勾選"].apply(lambda x: 0 if bool(x) else 1)
-                            df_rec = df_rec.sort_values(by=["_rank_checked", "分類", "買進ID"], ascending=[True, True, True]).drop(columns=["_rank_checked"])
+                            df_rec = df_rec.sort_values(by=["_rank_checked", "分類"], ascending=[True, True]).drop(columns=["_rank_checked"])
                         except Exception:
                             pass
                     if show_中賺 and "中賺" in df_rec["分類"].values:
@@ -559,7 +565,7 @@ else:
                                 "勾選": False,
                                 "沖銷股數": 0,
                                 "分類": "中賺(平均)",
-                                "買進ID": "共%d筆" % n,
+                                "買進日": "共%d筆" % n,
                                 "買價": round(avg_price, 2),
                                 "現價": current_price,
                                 "剩餘可配": int(total_rem),
@@ -588,7 +594,7 @@ else:
                                 "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
                                 "沖銷股數": st.column_config.NumberColumn("沖銷股數", min_value=0, max_value=sell_remain_effective, step=1, format="%d"),
                             },
-                            disabled=["分類", "買進ID", "買價", "現價", "剩餘可配", "賺賠金額", "賺賠%"],
+                            disabled=["分類", "買進日", "買價", "現價", "剩餘可配", "賺賠金額", "賺賠%"],
                         )
                         # 儲存勾選與沖銷股數，下次 run 時依序分配以確保總和 <= 賣出剩餘配額
                         if "rec_panel_state" not in st.session_state:
@@ -598,7 +604,7 @@ else:
                         rec_changed = False
                         for _, row in edited_rec.iterrows():
                             try:
-                                bid = int(row["買進ID"])
+                                bid = int(row.name)
                             except (TypeError, ValueError):
                                 continue
                             new_勾選 = bool(row.get("勾選", False))
@@ -616,15 +622,14 @@ else:
                         # 依勾選與沖銷股數計算預覽已配／剩餘配額（僅計買進ID 為整數的列）
                         def _is_int_buy_id(x):
                             try:
-                                int(x)
-                                return True
+                                return int(x) > 0
                             except (TypeError, ValueError):
                                 return False
                         checked = edited_rec[edited_rec["勾選"] == True] if "勾選" in edited_rec.columns else pd.DataFrame()
                         temp_alloc = 0
                         if not checked.empty:
-                            for _, row in checked.iterrows():
-                                if _is_int_buy_id(row.get("買進ID")):
+                            for bid, row in checked.iterrows():
+                                if _is_int_buy_id(bid):
                                     q = int(row.get("沖銷股數", 0)) or 0
                                     temp_alloc += min(max(0, q), sell_remain_effective - temp_alloc, int(row.get("剩餘可配", 0)))
                         if len(selected_sell_ids) > 1 and total_remain is not None:
@@ -636,9 +641,9 @@ else:
                         selected_sell_ids = list(st.session_state.get("add_sell_ids") or [])
                         # 勾選單一筆時連動下方「選擇買進」表格
                         if not checked.empty and buy_id_to_idx:
-                            one_checked = [r for _, r in checked.iterrows() if _is_int_buy_id(r.get("買進ID"))]
-                            if len(one_checked) == 1:
-                                bid = int(one_checked[0]["買進ID"])
+                            one_checked_ids = [int(i) for i in checked.index.tolist() if _is_int_buy_id(i)]
+                            if len(one_checked_ids) == 1:
+                                bid = int(one_checked_ids[0])
                                 if bid in buy_id_to_idx:
                                     st.session_state["add_buy_idx"] = buy_id_to_idx[bid]
                                     st.session_state["panel_selected_buy_id"] = bid
@@ -647,9 +652,9 @@ else:
                             # 取「被勾選的買進ID」作為候選池（多賣出模式用自動分配；單賣出模式沿用手動 qty）
                             selected_buy_ids = []
                             if not checked.empty:
-                                for _, row in checked.iterrows():
-                                    if _is_int_buy_id(row.get("買進ID")):
-                                        selected_buy_ids.append(int(row.get("買進ID")))
+                                for bid in checked.index.tolist():
+                                    if _is_int_buy_id(bid):
+                                        selected_buy_ids.append(int(bid))
 
                             if len(selected_sell_ids) > 1:
                                 if not selected_buy_ids:
@@ -761,9 +766,9 @@ else:
                             else:
                                 to_add = []
                                 for _, row in checked.iterrows():
-                                    if not _is_int_buy_id(row.get("買進ID")):
+                                    if not _is_int_buy_id(row.name):
                                         continue
-                                    bid = int(row["買進ID"])
+                                    bid = int(row.name)
                                     qty = int(row.get("沖銷股數", 0)) or 0
                                     rem_buy = int(row.get("剩餘可配", 0))
                                     if qty <= 0 or qty > rem_buy or qty > sell_remain:
@@ -826,9 +831,11 @@ else:
                 st.session_state["add_buy_idx"] = 0
             df_buys_display = df_buys.copy()
             df_buys_display.insert(0, "勾選", [bool(i == buy_idx) for i in buy_indices])
+            # 將交易ID放到 index（不顯示）
+            if "交易ID" in df_buys_display.columns:
+                df_buys_display = df_buys_display.set_index("交易ID")
             if not df_buys_display.empty:
                 df_buys_display["勾選"] = df_buys_display["勾選"].astype(bool)
-                df_buys_display["交易ID"] = df_buys_display["交易ID"].astype("int64")
                 df_buys_display["買進股數"] = df_buys_display["買進股數"].astype("int64")
                 df_buys_display["已配"] = df_buys_display["已配"].astype("int64")
                 df_buys_display["剩餘可配"] = df_buys_display["剩餘可配"].astype("int64")
@@ -860,15 +867,24 @@ else:
                 column_config={
                     "勾選": st.column_config.CheckboxColumn("勾選", width="small", required=True),
                 },
-                disabled=["買賣人", "交易ID", "股票", "日期", "當沖", "買進股數", "買入價格", "已配", "剩餘可配"],
+                disabled=["買賣人", "股票", "日期", "當沖", "買進股數", "買入價格", "已配", "剩餘可配"],
             )
             checked_buy = edited_buy.index[edited_buy["勾選"]].tolist()
             if len(checked_buy) == 1:
-                st.session_state["add_buy_idx"] = int(checked_buy[0])
-                buy_idx = int(checked_buy[0])
+                # index 是交易ID，需反查到 df_buys 的列索引
+                sel_id = int(checked_buy[0])
+                st.session_state["panel_selected_buy_id"] = sel_id
+                new_idx = next((i for i in range(len(df_buys)) if int(df_buys.iloc[i]["交易ID"]) == sel_id), None)
+                if new_idx is not None:
+                    st.session_state["add_buy_idx"] = int(new_idx)
+                    buy_idx = int(new_idx)
             elif len(checked_buy) > 1:
-                st.session_state["add_buy_idx"] = int(checked_buy[-1])
-                buy_idx = int(checked_buy[-1])
+                sel_id = int(checked_buy[-1])
+                st.session_state["panel_selected_buy_id"] = sel_id
+                new_idx = next((i for i in range(len(df_buys)) if int(df_buys.iloc[i]["交易ID"]) == sel_id), None)
+                if new_idx is not None:
+                    st.session_state["add_buy_idx"] = int(new_idx)
+                    buy_idx = int(new_idx)
             buy_id = int(df_buys.iloc[buy_idx]["交易ID"]) if buy_indices else None
             buy_trade = trade_by_id.get(buy_id) if buy_id else None
             st.markdown("---")
@@ -955,13 +971,12 @@ else:
         from datetime import datetime as dt_min
         rules_list = sorted(rules_list, key=lambda r: (getattr(r, "created_at") or dt_min.min), reverse=True)
         # 表頭（含買賣人、賣出價格、買入價格）
-        h1, h2, h3, h4, h5, h6, h7, h8, h9, h10, h11, h12, h13 = st.columns([1.2, 0.8, 0.7, 0.8, 0.9, 0.7, 0.8, 0.9, 1.0, 0.7, 0.6, 1.0, 0.5])
+        # 介面不顯示 ID（使用者不需要記），但操作鍵仍以 ID 當 key
+        h1, h2, h4, h5, h7, h8, h9, h10, h11, h12, h13 = st.columns([1.2, 0.8, 0.8, 0.9, 0.8, 0.9, 1.0, 0.7, 0.6, 1.0, 0.5])
         with h1: st.markdown("**股票**")
         with h2: st.markdown("**買賣人**")
-        with h3: st.markdown("**賣出ID**")
         with h4: st.markdown("**賣出日**")
         with h5: st.markdown("**賣出價格**")
-        with h6: st.markdown("**買進ID**")
         with h7: st.markdown("**買進日**")
         with h8: st.markdown("**買入價格**")
         with h9: st.markdown("**配對時間**")
@@ -994,13 +1009,11 @@ else:
             key_qty = f"rule_qty_{r.sell_trade_id}_{r.buy_trade_id}"
             key_mod = f"rule_mod_{r.sell_trade_id}_{r.buy_trade_id}"
             key_del = f"rule_del_{r.sell_trade_id}_{r.buy_trade_id}"
-            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13 = st.columns([1.2, 0.8, 0.7, 0.8, 0.9, 0.7, 0.8, 0.9, 1.0, 0.7, 0.6, 1.0, 0.5])
+            c1, c2, c4, c5, c7, c8, c9, c10, c11, c12, c13 = st.columns([1.2, 0.8, 0.8, 0.9, 0.8, 0.9, 1.0, 0.7, 0.6, 1.0, 0.5])
             with c1: st.caption(stock_label)
             with c2: st.caption(str(sell_user))
-            with c3: st.caption(str(r.sell_trade_id))
             with c4: st.caption(st_date)
             with c5: st.caption(sell_price_str)
-            with c6: st.caption(str(r.buy_trade_id))
             with c7: st.caption(buy_date)
             with c8: st.caption(buy_price_str)
             with c9: st.caption(paired_time_str)
@@ -1013,7 +1026,7 @@ else:
                         try:
                             r.matched_qty = new_qty
                             sess2.commit()
-                            st.success(f"已修改 賣出 #{r.sell_trade_id} ↔ 買進 #{r.buy_trade_id} 為 **{new_qty:,}** 股")
+                            st.success(f"已修改沖銷股數為 **{new_qty:,}** 股")
                             st.rerun()
                         except OperationalError:
                             sess2.rollback()
