@@ -564,7 +564,6 @@ for _idx, row in df_display.iterrows():
     name = row.get("名稱", "")
     user = row.get("買賣人", "")
     detail_rows.append((sid, name, user))
-detail_row_index = {(str(s).strip(), (u or "").strip()): i for i, (s, _n, u) in enumerate(detail_rows)}
 
 df_grid = df_display.copy()
 df_grid.insert(0, "明細", "▼")
@@ -600,38 +599,29 @@ for col in ["均價", "現價"]:
 
 gb.configure_column("明細", width=70, pinned="left", sortable=False, filter=False)
 
-grid_res = AgGrid(
+AgGrid(
     df_grid,
     gridOptions=gb.build(),
     data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-    update_mode=GridUpdateMode.SELECTION_CHANGED,
+    update_mode=GridUpdateMode.NO_UPDATE,
     fit_columns_on_grid_load=True,
     theme="streamlit",
     height=min(520, 70 + 34 * (len(df_grid) + 1)),
     allow_unsafe_jscode=True,
 )
 
-# AgGrid 可能回傳 dict 或 DataFrame，勿用 grid_res or {} 以免觸發 pandas ValueError
-selected = []
-if isinstance(grid_res, dict):
-    sr = grid_res.get("selected_rows", None)
-    if isinstance(sr, list):
-        selected = sr
-    elif isinstance(sr, pd.DataFrame):
-        selected = sr.to_dict(orient="records")
-    elif sr is None:
-        selected = []
-if selected:
-    row_data = selected[0] if isinstance(selected[0], dict) else {}
-    try:
-        # 以「股票代號 + 買賣人」對應回原始列索引（不受 grid 排序/篩選影響）
-        sid = row_data.get("股票代號") or row_data.get("stock_id")
-        user = row_data.get("買賣人", "")
-        key = (str(sid).strip(), (user or "").strip())
-        if key in detail_row_index:
-            st.session_state["portfolio_detail_row"] = int(detail_row_index[key])
-    except (TypeError, ValueError, KeyError):
-        pass
+# 表格內點選在部分環境不會回傳，改在表格下方放「展開明細」按鈕，點哪一檔就展開該檔
+st.caption("點選下方按鈕展開該檔明細：")
+btns_per_row = 5
+for start in range(0, len(detail_rows), btns_per_row):
+    cols = st.columns(btns_per_row)
+    for k, i in enumerate(range(start, min(start + btns_per_row, len(detail_rows)))):
+        sid, name, user = detail_rows[i]
+        label = f"{sid} {str(name).strip()} · {user or '—'}"
+        with cols[k]:
+            if st.button("▼ " + label, key=f"portfolio_detail_btn_{i}"):
+                st.session_state["portfolio_detail_row"] = i
+                st.rerun()
 
 choice = st.session_state["portfolio_detail_row"]
 
