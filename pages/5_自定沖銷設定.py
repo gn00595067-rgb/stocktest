@@ -71,241 +71,6 @@ st.subheader("新增自定沖銷規則")
 if not sells:
     st.warning("尚無賣出交易，無法設定沖銷。請先於「交易輸入」或「交易匯入」建立買賣資料。")
 else:
-    # ---------- 批次配對（多選/全選） ----------
-    with st.expander("🚀 批次配對（可多選/全選；一批賣出配對一批買進）", expanded=False):
-        st.caption("用於一次選多筆賣出、再選多筆買進，系統會依「買進 FIFO（舊→新）」自動把股數分配到各賣出，並寫入多筆自定沖銷規則。")
-
-        # 依股票篩選（批次配對需要同一股票）
-        stock_opts_batch = []
-        seen = set()
-        for t in sells:
-            if t.stock_id in seen:
-                continue
-            seen.add(t.stock_id)
-            nm = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
-            stock_opts_batch.append((f"{t.stock_id} {nm}".strip(), t.stock_id))
-        stock_opts_batch = sorted(stock_opts_batch, key=lambda x: x[1])
-        if not stock_opts_batch:
-            st.caption("目前無可用股票。")
-        else:
-            batch_stock = st.selectbox(
-                "選擇股票（批次配對僅支援同一股票）",
-                options=[sid for _, sid in stock_opts_batch],
-                format_func=lambda sid: next((lbl for lbl, s in stock_opts_batch if s == sid), sid),
-                key="batch_stock",
-            )
-
-            batch_sells = [t for t in sells if t.stock_id == batch_stock]
-            batch_buys = [t for t in buys if t.stock_id == batch_stock]
-
-            # 僅可配：買進日 ≤ 賣出日 的約束會在分配時處理（每筆賣出各自可用買進集合）
-            def _sell_label(t: Trade):
-                used = sell_used[t.id]
-                remain = max(0, t.quantity - used)
-                return f"#{t.id} {t.trade_date} · 賣 {t.quantity:,}（剩 {remain:,}）· {getattr(t,'user', '') or '—'}"
-
-            def _buy_label(t: Trade):
-                used = buy_used[t.id]
-                remain = max(0, t.quantity - used)
-                px = f"{float(t.price):,.2f}" if t.price is not None else "—"
-                return f"#{t.id} {t.trade_date} · 買 {t.quantity:,} @ {px}（剩 {remain:,}）· {getattr(t,'user', '') or '—'}"
-
-            # 多選（支援全選/清空）
-            if "batch_sell_ids" not in st.session_state:
-                st.session_state["batch_sell_ids"] = []
-            if "batch_buy_ids" not in st.session_state:
-                st.session_state["batch_buy_ids"] = []
-
-            c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-            with c1:
-                if st.button("賣出全選", key="batch_sell_all"):
-                    st.session_state["batch_sell_ids"] = [t.id for t in batch_sells if (t.quantity - sell_used[t.id]) > 0]
-                    st.rerun()
-            with c2:
-                if st.button("賣出清空", key="batch_sell_none"):
-                    st.session_state["batch_sell_ids"] = []
-                    st.rerun()
-            with c3:
-                if st.button("買進全選", key="batch_buy_all"):
-                    st.session_state["batch_buy_ids"] = [t.id for t in batch_buys if (t.quantity - buy_used[t.id]) > 0]
-                    st.rerun()
-            with c4:
-                if st.button("買進清空", key="batch_buy_none"):
-                    st.session_state["batch_buy_ids"] = []
-                    st.rerun()
-
-            sell_id_opts = [t.id for t in sorted(batch_sells, key=lambda x: (x.trade_date, x.id))]
-            buy_id_opts = [t.id for t in sorted(batch_buys, key=lambda x: (x.trade_date, x.id))]
-
-            batch_sell_ids = st.multiselect(
-                "選擇賣出（可多選）",
-                options=sell_id_opts,
-                default=[i for i in st.session_state["batch_sell_ids"] if i in sell_id_opts],
-                format_func=lambda tid: _sell_label(trade_by_id.get(tid)),
-                key="batch_sell_ids_widget",
-            )
-            batch_buy_ids = st.multiselect(
-                "選擇買進（可多選）",
-                options=buy_id_opts,
-                default=[i for i in st.session_state["batch_buy_ids"] if i in buy_id_opts],
-                format_func=lambda tid: _buy_label(trade_by_id.get(tid)),
-                key="batch_buy_ids_widget",
-            )
-            st.session_state["batch_sell_ids"] = batch_sell_ids
-            st.session_state["batch_buy_ids"] = batch_buy_ids
-
-            alloc_mode = st.radio(
-                "分配方式",
-                [
-                    "自動分配：FIFO（買進 舊→新）",
-                    "自動分配：LIFO（買進 新→舊）",
-                    "自動分配：買價 低→高",
-                    "自動分配：買價 高→低",
-                    "自動分配：依剩餘股數比例分攤",
-                ],
-                horizontal=True,
-                key="batch_alloc_mode",
-            )
-
-            # 產生配對計畫（預覽）
-            plan_rows = []
-            if batch_sell_ids and batch_buy_ids:
-                sell_trades = [trade_by_id[i] for i in batch_sell_ids if i in trade_by_id]
-                buy_trades = [trade_by_id[i] for i in batch_buy_ids if i in trade_by_id]
-                sell_trades = sorted(sell_trades, key=lambda t: (t.trade_date, t.id))
-                # 依分配策略決定買進順序（比例分攤另行處理）
-                if "LIFO" in alloc_mode:
-                    buy_trades = sorted(buy_trades, key=lambda t: (t.trade_date, t.id), reverse=True)
-                elif "買價 低→高" in alloc_mode:
-                    buy_trades = sorted(buy_trades, key=lambda t: (float(t.price) if t.price is not None else float("inf"), t.trade_date, t.id))
-                elif "買價 高→低" in alloc_mode:
-                    buy_trades = sorted(buy_trades, key=lambda t: (float(t.price) if t.price is not None else float("-inf"), t.trade_date, t.id), reverse=True)
-                else:
-                    buy_trades = sorted(buy_trades, key=lambda t: (t.trade_date, t.id))
-
-                buy_remaining = {t.id: max(0, t.quantity - buy_used[t.id]) for t in buy_trades}
-                for s in sell_trades:
-                    s_rem = max(0, s.quantity - sell_used[s.id])
-                    if s_rem <= 0:
-                        continue
-                    eligible_buys = [b for b in buy_trades if b.trade_date <= s.trade_date and buy_remaining.get(b.id, 0) > 0]
-                    if not eligible_buys:
-                        continue
-                    if "比例分攤" in alloc_mode:
-                        # 依剩餘股數比例分攤（四捨五入後以買進順序補足餘數）
-                        total_rem = sum(buy_remaining.get(b.id, 0) for b in eligible_buys)
-                        if total_rem <= 0:
-                            continue
-                        # 先給 floor 配額
-                        allocs = []
-                        given = 0
-                        for b in eligible_buys:
-                            b_rem = int(buy_remaining.get(b.id, 0) or 0)
-                            if b_rem <= 0:
-                                continue
-                            qty = int((s_rem * b_rem) // total_rem)
-                            qty = min(qty, b_rem)
-                            if qty > 0:
-                                allocs.append((b, qty))
-                                given += qty
-                        # 補足剩餘（按 eligible_buys 順序）
-                        left = s_rem - given
-                        if left > 0:
-                            for b in eligible_buys:
-                                if left <= 0:
-                                    break
-                                b_rem = int(buy_remaining.get(b.id, 0) or 0)
-                                already = next((q for bb, q in allocs if bb.id == b.id), 0)
-                                cap = b_rem - already
-                                if cap <= 0:
-                                    continue
-                                add = min(left, cap)
-                                if add <= 0:
-                                    continue
-                                # 更新/加入
-                                found = False
-                                for ii in range(len(allocs)):
-                                    if allocs[ii][0].id == b.id:
-                                        allocs[ii] = (allocs[ii][0], allocs[ii][1] + add)
-                                        found = True
-                                        break
-                                if not found:
-                                    allocs.append((b, add))
-                                left -= add
-                        # 寫入配對
-                        for b, qty in allocs:
-                            if qty <= 0:
-                                continue
-                            plan_rows.append({
-                                "賣出ID": s.id,
-                                "賣出日": str(s.trade_date),
-                                "買進ID": b.id,
-                                "買進日": str(b.trade_date),
-                                "沖銷股數": int(qty),
-                                "買賣人": getattr(s, "user", "") or "",
-                            })
-                            buy_remaining[b.id] = int(buy_remaining.get(b.id, 0) or 0) - int(qty)
-                    else:
-                        # 依買進順序貪婪分配（FIFO/LIFO/買價排序）
-                        for b in eligible_buys:
-                            if s_rem <= 0:
-                                break
-                            b_rem = int(buy_remaining.get(b.id, 0) or 0)
-                            if b_rem <= 0:
-                                continue
-                            qty = min(int(s_rem), b_rem)
-                            if qty <= 0:
-                                continue
-                            plan_rows.append({
-                                "賣出ID": s.id,
-                                "賣出日": str(s.trade_date),
-                                "買進ID": b.id,
-                                "買進日": str(b.trade_date),
-                                "沖銷股數": int(qty),
-                                "買賣人": getattr(s, "user", "") or "",
-                            })
-                            s_rem -= qty
-                            buy_remaining[b.id] = b_rem - qty
-
-            if plan_rows:
-                df_plan = pd.DataFrame(plan_rows)
-                st.markdown("**預覽：將新增/累加的規則**")
-                st.dataframe(df_plan.style.format({"沖銷股數": "{:,.0f}"}), use_container_width=True, hide_index=True)
-
-                total_qty = int(df_plan["沖銷股數"].sum())
-                st.caption(f"本次預計配對總股數：**{total_qty:,}**")
-
-                if st.button("套用批次配對", type="primary", key="batch_apply"):
-                    sessw = get_session()
-                    try:
-                        for _, r in df_plan.iterrows():
-                            sid = int(r["賣出ID"])
-                            bid = int(r["買進ID"])
-                            qty = int(r["沖銷股數"])
-                            if qty <= 0:
-                                continue
-                            existing = sessw.query(CustomMatchRule).filter(
-                                CustomMatchRule.sell_trade_id == sid,
-                                CustomMatchRule.buy_trade_id == bid,
-                            ).first()
-                            if existing:
-                                existing.matched_qty = int(existing.matched_qty) + qty
-                            else:
-                                sessw.add(CustomMatchRule(sell_trade_id=sid, buy_trade_id=bid, matched_qty=qty))
-                        sessw.commit()
-                        st.success(f"已套用批次配對：新增/更新 {len(df_plan)} 筆規則")
-                        st.rerun()
-                    except OperationalError:
-                        sessw.rollback()
-                        st.error("無法寫入資料庫（目前環境可能唯讀）")
-                    except Exception as e:
-                        sessw.rollback()
-                        st.error(f"套用失敗：{e}")
-                    finally:
-                        sessw.close()
-            else:
-                st.caption("請先選擇至少 1 筆賣出與 1 筆買進；或目前沒有可分配的剩餘股數。")
-
     # 賣出：先選股票（可選「全部」或指定股票），再展開可排序表格 + 單選
     st.markdown("**1. 選擇「賣出」交易**")
     # 選單：篩選要針對哪隻股票（僅顯示該股票的賣出）
@@ -378,20 +143,19 @@ else:
             df_sells = df_sells.sort_values("剩餘可配", ascending=False)
         df_sells = df_sells.reset_index(drop=True)
     sell_indices = list(range(len(df_sells)))
-    # 用 session_state 記住選中的列，預設第一筆
-    if "add_sell_idx" not in st.session_state:
-        st.session_state["add_sell_idx"] = 0
-    sell_idx = st.session_state["add_sell_idx"]
-    if sell_idx >= len(sell_indices):
-        sell_idx = 0
-        st.session_state["add_sell_idx"] = 0
+    # 多選：用 session_state 記住勾選的賣出交易ID（同時保留一筆 active 賣出供下方預覽）
+    if "add_sell_ids" not in st.session_state:
+        st.session_state["add_sell_ids"] = []
+    if "active_sell_id" not in st.session_state:
+        st.session_state["active_sell_id"] = None
     sell_id = None
     sell_trade = None
     if df_sells.empty:
         st.caption("目前沒有可顯示的賣出交易（請取消「僅顯示有剩餘配額的股票」或選擇其他股票）。")
     else:
         df_sells_display = df_sells.copy()
-        df_sells_display.insert(0, "勾選", [i == sell_idx for i in sell_indices])
+        selected_ids = set(int(x) for x in (st.session_state.get("add_sell_ids") or []) if str(x).isdigit())
+        df_sells_display.insert(0, "勾選", [int(df_sells.iloc[i]["交易ID"]) in selected_ids for i in sell_indices])
         # 股數相關欄位以千分位字串顯示（>1000 顯示 1,000）
         for col in ("賣出股數", "已配", "剩餘可配"):
             if col in df_sells_display.columns:
@@ -416,15 +180,13 @@ else:
             },
             disabled=["買賣人", "交易ID", "股票", "日期", "賣出價格", "當沖", "賣出股數", "已配", "剩餘可配"],
         )
-        # 從編輯結果取回選中的列（只保留一個勾選）
-        checked = edited_sell.index[edited_sell["勾選"]].tolist()
-        if len(checked) == 1:
-            st.session_state["add_sell_idx"] = int(checked[0])
-            sell_idx = int(checked[0])
-        elif len(checked) > 1:
-            st.session_state["add_sell_idx"] = int(checked[-1])
-            sell_idx = int(checked[-1])
-        sell_id = int(df_sells.iloc[sell_idx]["交易ID"]) if sell_indices else None
+        # 從編輯結果取回勾選的賣出交易ID（允許多選）
+        checked_rows = edited_sell.index[edited_sell["勾選"]].tolist()
+        sell_ids = [int(df_sells.iloc[i]["交易ID"]) for i in checked_rows] if checked_rows else []
+        st.session_state["add_sell_ids"] = sell_ids
+        # active 賣出：用最後一次勾到的那筆（若全取消則為 None）
+        st.session_state["active_sell_id"] = sell_ids[-1] if sell_ids else None
+        sell_id = st.session_state["active_sell_id"]
         sell_trade = trade_by_id.get(sell_id) if sell_id else None
     if sell_trade:
         # 同股票、且交易日在賣出日當天或之前的買進
@@ -658,6 +420,20 @@ else:
                         preview_已配 = sell_used[sell_id] + temp_alloc
                         preview_剩餘 = sell_trade.quantity - preview_已配
                         st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%s** · 已配 **%s** · 剩餘配額 **%s**" % (sell_trade.trade_date, f"{sell_trade.quantity:,}", f"{preview_已配:,}", f"{max(0, preview_剩餘):,}"))
+                        selected_sell_ids = list(st.session_state.get("add_sell_ids") or [])
+                        if len(selected_sell_ids) > 1:
+                            st.info("你目前勾選了多筆「賣出」。按下「確定沖銷」會把下方勾選的買進，依分配策略自動分配到所有勾選的賣出（依賣出日由舊到新）。")
+                            alloc_mode_multi = st.selectbox(
+                                "多賣出分配策略",
+                                [
+                                    "FIFO（買進 舊→新）",
+                                    "LIFO（買進 新→舊）",
+                                    "買價 低→高",
+                                    "買價 高→低",
+                                    "依剩餘股數比例分攤",
+                                ],
+                                key="multi_sell_alloc_mode",
+                            )
                         # 勾選單一筆時連動下方「選擇買進」表格
                         if not checked.empty and buy_id_to_idx:
                             one_checked = [r for _, r in checked.iterrows() if _is_int_buy_id(r.get("買進ID"))]
@@ -667,42 +443,158 @@ else:
                                     st.session_state["add_buy_idx"] = buy_id_to_idx[bid]
                                     st.session_state["panel_selected_buy_id"] = bid
                         if st.button("確定沖銷", type="primary", key="confirm_offset_btn"):
-                            to_add = []
-                            for _, row in checked.iterrows():
-                                if not _is_int_buy_id(row.get("買進ID")):
-                                    continue
-                                bid = int(row["買進ID"])
-                                qty = int(row.get("沖銷股數", 0)) or 0
-                                rem_buy = int(row.get("剩餘可配", 0))
-                                if qty <= 0 or qty > rem_buy or qty > sell_remain:
-                                    continue
-                                existing = next((r for r in rules if r.sell_trade_id == sell_id and r.buy_trade_id == bid), None)
-                                if existing:
-                                    continue
-                                to_add.append((bid, qty))
-                            if not to_add:
-                                st.warning("請至少勾選一筆有效買進並設定沖銷股數（且該買進尚無規則）。")
-                            else:
-                                total_qty = sum(q for _, q in to_add)
-                                if total_qty > sell_remain:
-                                    st.warning("勾選的沖銷股數總和不得超過賣出剩餘配額 **%s**。" % f"{sell_remain:,}")
+                            selected_sell_ids = list(st.session_state.get("add_sell_ids") or [])
+                            # 取「被勾選的買進ID」作為候選池（多賣出模式用自動分配；單賣出模式沿用手動 qty）
+                            selected_buy_ids = []
+                            if not checked.empty:
+                                for _, row in checked.iterrows():
+                                    if _is_int_buy_id(row.get("買進ID")):
+                                        selected_buy_ids.append(int(row.get("買進ID")))
+
+                            if len(selected_sell_ids) > 1:
+                                if not selected_buy_ids:
+                                    st.warning("請至少勾選 1 筆買進，才能對多筆賣出自動分配。")
                                 else:
-                                    try:
-                                        for bid, qty in to_add:
-                                            sess.add(CustomMatchRule(sell_trade_id=sell_id, buy_trade_id=bid, matched_qty=qty))
-                                        sess.commit()
-                                        if "rec_panel_state" in st.session_state and sell_id in st.session_state["rec_panel_state"]:
-                                            del st.session_state["rec_panel_state"][sell_id]
-                                        st.success("已新增 %d 筆沖銷規則。" % len(to_add))
-                                        st.rerun()
-                                    except OperationalError:
-                                        sess.rollback()
-                                        st.error("無法寫入資料庫（目前環境可能唯讀）")
-                                    except Exception as e:
-                                        sess.rollback()
-                                        st.error("新增失敗：%s" % e)
-                                    finally:
-                                        sess.close()
+                                    sell_trades_multi = [trade_by_id[i] for i in selected_sell_ids if i in trade_by_id]
+                                    sell_trades_multi = sorted(sell_trades_multi, key=lambda t: (t.trade_date, t.id))
+                                    buy_trades_multi = [trade_by_id[i] for i in selected_buy_ids if i in trade_by_id]
+                                    mode = st.session_state.get("multi_sell_alloc_mode", "FIFO（買進 舊→新）")
+                                    if "LIFO" in str(mode):
+                                        buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id), reverse=True)
+                                    elif "買價 低→高" in str(mode):
+                                        buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("inf"), t.trade_date, t.id))
+                                    elif "買價 高→低" in str(mode):
+                                        buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (float(t.price) if t.price is not None else float("-inf"), t.trade_date, t.id), reverse=True)
+                                    else:
+                                        buy_trades_multi = sorted(buy_trades_multi, key=lambda t: (t.trade_date, t.id))
+
+                                    buy_remaining = {t.id: max(0, t.quantity - buy_used[t.id]) for t in buy_trades_multi}
+                                    plan = []
+                                    for s in sell_trades_multi:
+                                        s_rem = max(0, s.quantity - sell_used[s.id])
+                                        if s_rem <= 0:
+                                            continue
+                                        eligible = [b for b in buy_trades_multi if b.trade_date <= s.trade_date and buy_remaining.get(b.id, 0) > 0]
+                                        if not eligible:
+                                            continue
+                                        if "比例分攤" in str(mode):
+                                            total_rem = sum(buy_remaining.get(b.id, 0) for b in eligible)
+                                            if total_rem <= 0:
+                                                continue
+                                            allocs = []
+                                            given = 0
+                                            for b in eligible:
+                                                b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                                if b_rem <= 0:
+                                                    continue
+                                                qty = int((s_rem * b_rem) // total_rem)
+                                                qty = min(qty, b_rem)
+                                                if qty > 0:
+                                                    allocs.append((b, qty))
+                                                    given += qty
+                                            left = s_rem - given
+                                            if left > 0:
+                                                for b in eligible:
+                                                    if left <= 0:
+                                                        break
+                                                    b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                                    already = next((q for bb, q in allocs if bb.id == b.id), 0)
+                                                    cap = b_rem - already
+                                                    if cap <= 0:
+                                                        continue
+                                                    add = min(left, cap)
+                                                    if add <= 0:
+                                                        continue
+                                                    found = False
+                                                    for ii in range(len(allocs)):
+                                                        if allocs[ii][0].id == b.id:
+                                                            allocs[ii] = (allocs[ii][0], allocs[ii][1] + add)
+                                                            found = True
+                                                            break
+                                                    if not found:
+                                                        allocs.append((b, add))
+                                                    left -= add
+                                            for b, qty in allocs:
+                                                if qty <= 0:
+                                                    continue
+                                                plan.append((s.id, b.id, int(qty)))
+                                                buy_remaining[b.id] = int(buy_remaining.get(b.id, 0) or 0) - int(qty)
+                                        else:
+                                            for b in eligible:
+                                                if s_rem <= 0:
+                                                    break
+                                                b_rem = int(buy_remaining.get(b.id, 0) or 0)
+                                                if b_rem <= 0:
+                                                    continue
+                                                qty = min(int(s_rem), b_rem)
+                                                if qty <= 0:
+                                                    continue
+                                                plan.append((s.id, b.id, int(qty)))
+                                                s_rem -= qty
+                                                buy_remaining[b.id] = b_rem - qty
+
+                                    if not plan:
+                                        st.warning("目前無可分配的股數（可能賣出/買進剩餘配額已用完，或買進日期晚於賣出日）。")
+                                    else:
+                                        sessw = get_session()
+                                        try:
+                                            for sid, bid, qty in plan:
+                                                existing = sessw.query(CustomMatchRule).filter(
+                                                    CustomMatchRule.sell_trade_id == sid,
+                                                    CustomMatchRule.buy_trade_id == bid,
+                                                ).first()
+                                                if existing:
+                                                    existing.matched_qty = int(existing.matched_qty) + int(qty)
+                                                else:
+                                                    sessw.add(CustomMatchRule(sell_trade_id=sid, buy_trade_id=bid, matched_qty=int(qty)))
+                                            sessw.commit()
+                                            st.success(f"已新增/更新 {len(plan)} 筆沖銷規則（多賣出自動分配）")
+                                            st.rerun()
+                                        except OperationalError:
+                                            sessw.rollback()
+                                            st.error("無法寫入資料庫（目前環境可能唯讀）")
+                                        except Exception as e:
+                                            sessw.rollback()
+                                            st.error(f"新增失敗：{e}")
+                                        finally:
+                                            sessw.close()
+                            else:
+                                to_add = []
+                                for _, row in checked.iterrows():
+                                    if not _is_int_buy_id(row.get("買進ID")):
+                                        continue
+                                    bid = int(row["買進ID"])
+                                    qty = int(row.get("沖銷股數", 0)) or 0
+                                    rem_buy = int(row.get("剩餘可配", 0))
+                                    if qty <= 0 or qty > rem_buy or qty > sell_remain:
+                                        continue
+                                    existing = next((r for r in rules if r.sell_trade_id == sell_id and r.buy_trade_id == bid), None)
+                                    if existing:
+                                        continue
+                                    to_add.append((bid, qty))
+                                if not to_add:
+                                    st.warning("請至少勾選一筆有效買進並設定沖銷股數（且該買進尚無規則）。")
+                                else:
+                                    total_qty = sum(q for _, q in to_add)
+                                    if total_qty > sell_remain:
+                                        st.warning("勾選的沖銷股數總和不得超過賣出剩餘配額 **%s**。" % f"{sell_remain:,}")
+                                    else:
+                                        try:
+                                            for bid, qty in to_add:
+                                                sess.add(CustomMatchRule(sell_trade_id=sell_id, buy_trade_id=bid, matched_qty=qty))
+                                            sess.commit()
+                                            if "rec_panel_state" in st.session_state and sell_id in st.session_state["rec_panel_state"]:
+                                                del st.session_state["rec_panel_state"][sell_id]
+                                            st.success("已新增 %d 筆沖銷規則。" % len(to_add))
+                                            st.rerun()
+                                        except OperationalError:
+                                            sess.rollback()
+                                            st.error("無法寫入資料庫（目前環境可能唯讀）")
+                                        except Exception as e:
+                                            sess.rollback()
+                                            st.error("新增失敗：%s" % e)
+                                        finally:
+                                            sess.close()
             st.markdown("**2. 選擇「買進」交易（與上列賣出沖銷）**")
             sort_buy = st.selectbox(
                 "買進列表排序",
