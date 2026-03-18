@@ -384,11 +384,30 @@ else:
 
                                 if "rec_panel_state" not in st.session_state:
                                     st.session_state["rec_panel_state"] = {}
+                                # 讓推薦買進表（只會顯示 active sell）也能立刻反映策略結果：
+                                # - per-sell: 保留完整 plan
+                                # - active sell: 存「彙總後」的勾選/沖銷股數（每個買進ID加總）
+                                if "multi_sell_strategy_plan" not in st.session_state:
+                                    st.session_state["multi_sell_strategy_plan"] = {}
+                                st.session_state["multi_sell_strategy_plan"][(tuple(sorted(selected_sell_ids)), str(mode))] = list(plan)
+
                                 # 先清掉本次多選賣出的既有勾選（避免殘留）
                                 for sid_ in selected_sell_ids:
                                     st.session_state["rec_panel_state"][sid_] = {}
                                 for sid_, bid_, qty_ in plan:
                                     st.session_state["rec_panel_state"][sid_][int(bid_)] = {"勾選": True, "沖銷股數": int(qty_)}
+
+                                # 彙總到 active sell（表格使用的 rec_state_sell）
+                                active_sid = sell_id
+                                if active_sid is None and selected_sell_ids:
+                                    active_sid = selected_sell_ids[-1]
+                                    st.session_state["active_sell_id"] = active_sid
+                                agg = {}
+                                for sid_, bid_, qty_ in plan:
+                                    agg[int(bid_)] = agg.get(int(bid_), 0) + int(qty_)
+                                st.session_state["rec_panel_state"][active_sid] = {
+                                    int(bid_): {"勾選": True, "沖銷股數": int(qty_)} for bid_, qty_ in agg.items()
+                                }
                                 st.rerun()
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
