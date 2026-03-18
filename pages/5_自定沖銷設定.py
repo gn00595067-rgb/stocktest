@@ -1048,12 +1048,13 @@ else:
                 new_qty = st.number_input("股數", min_value=1, max_value=max_new_qty, value=min(cur, max_new_qty), key=key_qty, label_visibility="collapsed")
             with c11: st.caption(is_dt)
             with c12:
-                if st.button("確認", key=key_mod, type="primary"):
-                    if new_qty != cur:
+                # 只有「有修改」才顯示確認鍵，避免誤會每列都要按
+                if int(new_qty) != int(cur):
+                    if st.button("確定修改", key=key_mod, type="primary"):
                         try:
-                            r.matched_qty = new_qty
+                            r.matched_qty = int(new_qty)
                             sess2.commit()
-                            st.success(f"已修改沖銷股數為 **{new_qty:,}** 股")
+                            st.success(f"已修改沖銷股數為 **{int(new_qty):,}** 股")
                             st.rerun()
                         except OperationalError:
                             sess2.rollback()
