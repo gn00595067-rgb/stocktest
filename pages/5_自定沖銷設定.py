@@ -163,6 +163,7 @@ else:
                 st.rerun()
         with a2:
             if st.button("取消選擇", key="sell_select_none", help="取消所有已勾選的賣出交易"):
+                # 只清除「賣出勾選」，不影響上方「選擇股票」篩選狀態
                 st.session_state["add_sell_ids"] = []
                 st.session_state["active_sell_id"] = None
                 st.rerun()
