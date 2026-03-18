@@ -5,7 +5,7 @@ import io
 import os
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, date
 from collections import defaultdict
 
 import streamlit as st
@@ -47,6 +47,48 @@ with st.expander("⚠️ 清空所有資料", expanded=False):
     if st.session_state.get("clear_all_done"):
         st.success(st.session_state["clear_all_done"])
         st.session_state.pop("clear_all_done", None)
+
+    st.markdown("---")
+    st.caption("也可只清空「指定日期／區間」的交易（會同步刪除引用這些交易的自定沖銷規則）。")
+    cdp1, cdp2, cdp3 = st.columns([2, 2, 1], vertical_alignment="center")
+    with cdp1:
+        clear_from = st.date_input("起始日期", value=date.today(), key="clear_range_from")
+    with cdp2:
+        clear_to = st.date_input("結束日期", value=date.today(), key="clear_range_to")
+    with cdp3:
+        st.write("")  # 對齊
+        do_clear_range = st.button("清空此區間", type="secondary", key="clear_range_btn")
+
+    if do_clear_range:
+        if clear_from is None or clear_to is None:
+            st.warning("請選擇起始與結束日期。")
+        else:
+            start_d = min(clear_from, clear_to)
+            end_d = max(clear_from, clear_to)
+            sess = get_session()
+            try:
+                trade_ids = [
+                    int(tid) for (tid,) in sess.query(Trade.id)
+                    .filter(Trade.trade_date >= start_d, Trade.trade_date <= end_d)
+                    .all()
+                ]
+                if not trade_ids:
+                    st.info(f"{start_d} ～ {end_d} 沒有任何交易可刪除。")
+                else:
+                    # 先刪除引用到這些交易的自定沖銷規則
+                    n_rules = sess.query(CustomMatchRule).filter(
+                        (CustomMatchRule.sell_trade_id.in_(trade_ids)) | (CustomMatchRule.buy_trade_id.in_(trade_ids))
+                    ).delete(synchronize_session=False)
+                    # 再刪除交易
+                    n_trades = sess.query(Trade).filter(Trade.id.in_(trade_ids)).delete(synchronize_session=False)
+                    sess.commit()
+                    st.success(f"已刪除 {start_d} ～ {end_d} 的 {n_trades} 筆交易，並同步刪除 {n_rules} 筆自定沖銷規則。")
+                    st.rerun()
+            except Exception as e:
+                sess.rollback()
+                st.error(f"清空指定區間失敗：{e}")
+            finally:
+                sess.close()
 
 # ========== 一、券商 CSV / Excel 交易紀錄 ==========
 st.subheader("一、券商 CSV / Excel 交易紀錄")
