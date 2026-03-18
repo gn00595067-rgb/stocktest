@@ -271,15 +271,66 @@ else:
             dl_df.to_csv(buf, index=False, encoding="utf-8-sig")
             buf.seek(0)
             st.download_button("下載解析結果 CSV（唯讀環境可於本機匯入）", data=buf.getvalue(), file_name="trades_parsed.csv", mime="text/csv", key="dl_parsed_trades")
+            auto_daytrade_match = st.checkbox(
+                "匯入時自動當沖配對（建立自定沖銷規則）",
+                value=True,
+                key="import_auto_daytrade_match",
+                help="會針對同日、同股票、同買賣人的 BUY/SELL 進行保守配對（先配完最明確的股數），並建立自定沖銷規則。若只有單邊或股數不足則不會硬配。",
+            )
             if st.button("確認匯入", type="primary", key="do_import"):
                 sess = get_session()
                 try:
+                    created = []
                     for r in parsed:
-                        sess.add(Trade(
+                        t = Trade(
                             user=r["user"], stock_id=r["stock_id"], trade_date=r["trade_date"], side=r["side"],
                             price=r["price"], quantity=r["quantity"], is_daytrade=r.get("is_daytrade", False),
                             fee=r.get("fee"), tax=r.get("tax"), note=r.get("note"),
-                        ))
+                        )
+                        sess.add(t)
+                        sess.flush()
+                        created.append(t)
+
+                    # 自動當沖配對：同日/同股/同買賣人 的 BUY/SELL 以股數做保守配對，寫入 CustomMatchRule
+                    if auto_daytrade_match and created:
+                        by_key = defaultdict(list)
+                        for t in created:
+                            k = (str(getattr(t, "user", "") or ""), str(getattr(t, "stock_id", "") or ""), getattr(t, "trade_date", None))
+                            by_key[k].append(t)
+
+                        def _is_buy(t):
+                            return (getattr(t, "side", "") or "").upper() == "BUY"
+
+                        for (u, sid, d), ts in by_key.items():
+                            buys = [t for t in ts if _is_buy(t)]
+                            sells = [t for t in ts if not _is_buy(t)]
+                            if not buys or not sells:
+                                continue
+                            # 依建立順序（id）做 FIFO；同日無更細時間就用此作為保守順序
+                            buys = sorted(buys, key=lambda x: x.id)
+                            sells = sorted(sells, key=lambda x: x.id)
+                            buy_rem = {t.id: int(getattr(t, "quantity", 0) or 0) for t in buys}
+                            sell_rem = {t.id: int(getattr(t, "quantity", 0) or 0) for t in sells}
+                            for s in sells:
+                                sr = sell_rem.get(s.id, 0)
+                                if sr <= 0:
+                                    continue
+                                for b in buys:
+                                    br = buy_rem.get(b.id, 0)
+                                    if sr <= 0:
+                                        break
+                                    if br <= 0:
+                                        continue
+                                    qty = min(sr, br)
+                                    if qty <= 0:
+                                        continue
+                                    sess.add(CustomMatchRule(sell_trade_id=int(s.id), buy_trade_id=int(b.id), matched_qty=int(qty)))
+                                    # 標記為當沖（可選）：兩邊都有配對就算當沖
+                                    s.is_daytrade = True
+                                    b.is_daytrade = True
+                                    sr -= qty
+                                    buy_rem[b.id] = br - qty
+                                sell_rem[s.id] = sr
                     sess.commit()
                     st.success(f"已成功匯入 {len(parsed)} 筆交易。可至「交易輸入」「個股明細」「投資績效」檢視。")
                 except OperationalError as e:
