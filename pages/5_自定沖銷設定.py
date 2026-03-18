@@ -274,6 +274,44 @@ else:
                         else:
                             s_txt = f"{lo:,.2f}～{hi:,.2f}"
                         st.markdown("要賣股票的**賣出價格**：**%s**" % s_txt)
+                    # 多賣出：將分配策略移到推薦買進面板上方
+                    if len(selected_sell_ids) > 1:
+                        st.selectbox(
+                            "多賣出分配策略",
+                            [
+                                "FIFO（買進 舊→新）",
+                                "LIFO（買進 新→舊）",
+                                "買價 低→高",
+                                "買價 高→低",
+                                "依剩餘股數比例分攤",
+                            ],
+                            key="multi_sell_alloc_mode",
+                            help="勾選多筆賣出時，按「確定沖銷」會把你勾的買進依此策略分配到所有賣出（依賣出日由舊到新）。",
+                        )
+                        # 顯示目前勾選的賣出摘要
+                        rows_sel = []
+                        for tid in selected_sell_ids:
+                            t = trade_by_id.get(tid)
+                            if not t:
+                                continue
+                            used = sell_used.get(t.id, 0)
+                            rem = max(0, (t.quantity or 0) - used)
+                            rows_sel.append({
+                                "交易ID": int(t.id),
+                                "日期": str(t.trade_date),
+                                "賣出價格": float(t.price) if t.price is not None else None,
+                                "賣出股數": int(t.quantity or 0),
+                                "已配": int(used),
+                                "剩餘可配": int(rem),
+                                "買賣人": getattr(t, "user", "") or "",
+                            })
+                        if rows_sel:
+                            df_sel = pd.DataFrame(rows_sel).sort_values(["日期", "交易ID"])
+                            st.dataframe(
+                                df_sel.style.format({"賣出價格": "{:,.2f}", "賣出股數": "{:,.0f}", "已配": "{:,.0f}", "剩餘可配": "{:,.0f}"}),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
                     # 勾選的賣出（已配/剩餘配額在表格與確定沖銷區下方動態顯示）
                     if pos and pos["qty"] and pos["qty"] > 0:
                         avg_cost = pos["cost"] / pos["qty"]
@@ -439,6 +477,15 @@ else:
                             except (TypeError, ValueError):
                                 return False
                         checked = edited_rec[edited_rec["勾選"] == True] if "勾選" in edited_rec.columns else pd.DataFrame()
+                        # 有選擇時，下方直接顯示勾選結果（買進勾選 + 沖銷股數）
+                        if not checked.empty:
+                            show_cols = [c for c in ["分類", "買進ID", "買價", "剩餘可配", "沖銷股數"] if c in checked.columns]
+                            st.markdown("**已勾選的買進（將用於配對）**")
+                            st.dataframe(
+                                checked[show_cols].style,
+                                use_container_width=True,
+                                hide_index=True,
+                            )
                         temp_alloc = 0
                         if not checked.empty:
                             for _, row in checked.iterrows():
@@ -449,19 +496,6 @@ else:
                         preview_剩餘 = sell_trade.quantity - preview_已配
                         st.caption("勾選的賣出：交易日期 **%s** · 賣出股數 **%s** · 已配 **%s** · 剩餘配額 **%s**" % (sell_trade.trade_date, f"{sell_trade.quantity:,}", f"{preview_已配:,}", f"{max(0, preview_剩餘):,}"))
                         selected_sell_ids = list(st.session_state.get("add_sell_ids") or [])
-                        if len(selected_sell_ids) > 1:
-                            st.info("你目前勾選了多筆「賣出」。按下「確定沖銷」會把下方勾選的買進，依分配策略自動分配到所有勾選的賣出（依賣出日由舊到新）。")
-                            alloc_mode_multi = st.selectbox(
-                                "多賣出分配策略",
-                                [
-                                    "FIFO（買進 舊→新）",
-                                    "LIFO（買進 新→舊）",
-                                    "買價 低→高",
-                                    "買價 高→低",
-                                    "依剩餘股數比例分攤",
-                                ],
-                                key="multi_sell_alloc_mode",
-                            )
                         # 勾選單一筆時連動下方「選擇買進」表格
                         if not checked.empty and buy_id_to_idx:
                             one_checked = [r for _, r in checked.iterrows() if _is_int_buy_id(r.get("買進ID"))]
