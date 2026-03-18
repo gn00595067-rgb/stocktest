@@ -274,6 +274,17 @@ else:
                         else:
                             s_txt = f"{lo:,.2f}～{hi:,.2f}"
                         st.markdown("要賣股票的**賣出價格**：**%s**" % s_txt)
+                    # 多筆賣出：顯示總剩餘配額（未被規則占用的可配股數總和）
+                    if selected_sell_ids:
+                        total_remain = 0
+                        for tid in selected_sell_ids:
+                            t = trade_by_id.get(tid)
+                            if not t:
+                                continue
+                            used = sell_used.get(t.id, 0)
+                            total_remain += max(0, int(t.quantity or 0) - int(used))
+                        if len(selected_sell_ids) > 1:
+                            st.caption(f"總剩餘配額：**{total_remain:,}**")
                     # 多賣出：將分配策略移到推薦買進面板上方
                     if len(selected_sell_ids) > 1:
                         s1, s2 = st.columns([4, 1], vertical_alignment="center")
