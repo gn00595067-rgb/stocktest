@@ -412,6 +412,10 @@ else:
                                 st.session_state["rec_panel_state"][active_sid] = {
                                     int(bid_): {"勾選": True, "沖銷股數": int(qty_)} for bid_, qty_ in agg.items()
                                 }
+                                # 另外存一份「策略彙總」供推薦買進表直接渲染（避免 widget 狀態干擾）
+                                st.session_state["strategy_active_sell_id"] = int(active_sid) if active_sid is not None else None
+                                st.session_state["strategy_active_alloc_mode"] = str(mode)
+                                st.session_state["strategy_active_agg"] = dict(agg)
                                 # 讓推薦買進表真正以新策略結果重置（避免 data_editor 沿用舊勾選/股數狀態）
                                 st.session_state["rec_editor_key_v"] = int(st.session_state.get("rec_editor_key_v", 0)) + 1
                                 st.rerun()
@@ -442,25 +446,42 @@ else:
                         if pct >= -5: return "小賠"
                         if pct >= -20: return "中賠"
                         return "大賠"
-                    # 動態沖銷股數：被勾選的列維持不變；剩餘配額 = 賣出剩餘 - 勾選列沖銷總和；未勾選列若 > 剩餘配額則改為剩餘配額
+                    # 動態沖銷股數：
+                    # - 策略已確認時：以策略結果為準（顯示自動勾選與股數）
+                    # - 否則：維持手動勾選/填股數的行為
                     rec_state = st.session_state.get("rec_panel_state") or {}
                     rec_state_sell = rec_state.get(sell_id) or {}
+                    strategy_agg = st.session_state.get("strategy_active_agg") or {}
+                    strategy_sid = st.session_state.get("strategy_active_sell_id")
+                    strategy_applied_here = (strategy_sid is not None and int(strategy_sid) == int(sell_id) and len(selected_sell_ids) > 1)
                     # 先算勾選列沖銷總和，若超過賣出剩餘則依表格順序從勾選列壓縮
                     total_checked = 0
                     for t, rem in buys_with_remain:
-                        prev = rec_state_sell.get(t.id) or {}
-                        if prev.get("勾選"):
-                            total_checked += int(prev.get("沖銷股數", 0) or 0)
-                    if total_checked > sell_remain:
-                        remaining = sell_remain
-                        capped_checked = {}
-                        for t, rem in buys_with_remain:
+                        if strategy_applied_here:
+                            q = int(strategy_agg.get(int(t.id), 0) or 0)
+                            if q > 0:
+                                total_checked += q
+                        else:
                             prev = rec_state_sell.get(t.id) or {}
                             if prev.get("勾選"):
-                                want = int(prev.get("沖銷股數", 0) or 0)
-                                qty = min(want, rem, remaining)
-                                capped_checked[t.id] = qty
-                                remaining -= qty
+                                total_checked += int(prev.get("沖銷股數", 0) or 0)
+                    if total_checked > sell_remain_effective:
+                        remaining = sell_remain_effective
+                        capped_checked = {}
+                        for t, rem in buys_with_remain:
+                            if strategy_applied_here:
+                                want = int(strategy_agg.get(int(t.id), 0) or 0)
+                                if want > 0:
+                                    qty = min(want, rem, remaining)
+                                    capped_checked[int(t.id)] = qty
+                                    remaining -= qty
+                            else:
+                                prev = rec_state_sell.get(t.id) or {}
+                                if prev.get("勾選"):
+                                    want = int(prev.get("沖銷股數", 0) or 0)
+                                    qty = min(want, rem, remaining)
+                                    capped_checked[t.id] = qty
+                                    remaining -= qty
                         remaining_sell = 0
                     else:
                         capped_checked = None
@@ -469,17 +490,25 @@ else:
                     for t, rem in buys_with_remain:
                         pnl_amt = (current_price - t.price) * rem
                         pnl_pct = ((current_price - t.price) / t.price * 100) if t.price else 0
-                        prev = rec_state_sell.get(t.id) or {}
-                        checked = prev.get("勾選", False)
-                        if checked:
+                        if strategy_applied_here:
+                            want = int(strategy_agg.get(int(t.id), 0) or 0)
+                            checked = want > 0
                             if capped_checked is not None:
-                                qty = capped_checked.get(t.id, 0)
+                                qty = int(capped_checked.get(int(t.id), 0) or 0)
                             else:
-                                qty = min(int(prev.get("沖銷股數", 0) or 0), rem)
+                                qty = min(want, rem)
                         else:
-                            # 未勾選：<= 剩餘配額不變，> 的改為剩餘配額
-                            want = int(prev.get("沖銷股數", rem) or rem)
-                            qty = min(want, remaining_sell, rem)
+                            prev = rec_state_sell.get(t.id) or {}
+                            checked = prev.get("勾選", False)
+                            if checked:
+                                if capped_checked is not None:
+                                    qty = capped_checked.get(t.id, 0)
+                                else:
+                                    qty = min(int(prev.get("沖銷股數", 0) or 0), rem)
+                            else:
+                                # 未勾選：<= 剩餘配額不變，> 的改為剩餘配額
+                                want = int(prev.get("沖銷股數", rem) or rem)
+                                qty = min(want, remaining_sell, rem)
                         # 避免出現「勾選但沖銷股數=0」的視覺噪音：策略/自動分配只勾選 qty>0
                         checked_final = bool(checked) and int(qty) > 0
                         recs.append({
