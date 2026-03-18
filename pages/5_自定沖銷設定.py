@@ -13,7 +13,7 @@ ensure_google_sheet_loaded()
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from sqlalchemy.exc import OperationalError
-from services.price_service import get_quote_cached
+from services.price_service import get_quote_cached, fetch_stock_list_cached
 from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="自定沖銷設定", layout="wide")
@@ -51,6 +51,26 @@ custom_users = sorted(set(t.user for t in trades if getattr(t, "user", None)))
 sells = [t for t in trades if (t.side or "").upper() == "SELL"]
 buys = [t for t in trades if (t.side or "").upper() == "BUY"]
 
+# 顯示用：股票代號 -> 名稱（優先 StockMaster，缺漏時用台股清單快取補齊）
+_stock_name_cache = {}
+for sid, m in (masters or {}).items():
+    if m and getattr(m, "name", None):
+        _stock_name_cache[str(sid).strip()] = str(m.name).strip()
+try:
+    full_list = fetch_stock_list_cached(ttl_seconds=3600)
+    for s in full_list or []:
+        sid = str(s.get("stock_id") or "").strip()
+        nm = str(s.get("name") or "").strip()
+        if sid and nm and sid not in _stock_name_cache:
+            _stock_name_cache[sid] = nm
+except Exception:
+    pass
+
+def _stock_label(sid: str) -> str:
+    sid = str(sid).strip()
+    nm = _stock_name_cache.get(sid, "")
+    return f"{sid} {nm}".strip()
+
 # 買賣人篩選（不影響規則儲存，僅篩選顯示的賣出/買進列表）
 custom_user_opts = ["全部"] + custom_users
 custom_user_idx = st.selectbox("買賣人", range(len(custom_user_opts)), format_func=lambda i: custom_user_opts[i], key="custom_filter_user")
@@ -81,8 +101,7 @@ else:
     for t in sells:
         if t.stock_id not in seen_stock:
             seen_stock.add(t.stock_id)
-            name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
-            stock_options.append((f"{t.stock_id} {name}".strip(), t.stock_id))
+            stock_options.append((_stock_label(t.stock_id), t.stock_id))
     # 有剩餘可配的股票：至少一筆賣出 剩餘可配 > 0
     stocks_with_sell_remain = {t.stock_id for t in sells if (t.quantity - sell_used[t.id]) > 0}
     filter_has_remain = st.checkbox(
@@ -114,12 +133,12 @@ else:
         remain = max(0, t.quantity - used)
         if filter_has_remain and remain <= 0:
             continue
-        name = (masters.get(t.stock_id).name if masters.get(t.stock_id) else "") or ""
+        name = _stock_name_cache.get(str(t.stock_id).strip(), "") or ""
         sell_price = round(float(t.price), 2) if t.price is not None else None
         rows_sell.append({
             "買賣人": getattr(t, "user", None) or "",
             "交易ID": t.id,
-            "股票": f"{t.stock_id} {name}".strip(),
+            "股票": f"{str(t.stock_id).strip()} {name}".strip(),
             "日期": str(t.trade_date),
             "賣出價格": sell_price,
             "當沖": bool(getattr(t, "is_daytrade", False)),
@@ -954,8 +973,7 @@ else:
             sid = (st_t.stock_id if st_t else (buy_t.stock_id if buy_t else None))
             if sid and sid not in seen_paired:
                 seen_paired.add(sid)
-                name = (masters.get(sid).name if masters.get(sid) else "") or ""
-                paired_stock_options.append((f"{sid} {name}".strip(), sid))
+                paired_stock_options.append((_stock_label(sid), sid))
         filter_paired_idx = st.selectbox(
             "選擇股票",
             range(len(paired_stock_options)),
