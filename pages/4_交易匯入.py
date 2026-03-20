@@ -169,6 +169,13 @@ def _infer_side(cell):
     return "SELL" if n >= 0 else "BUY"
 
 
+def _is_bonus_share_side(raw_side: str, note: str = "") -> bool:
+    s = str(raw_side or "")
+    n = str(note or "")
+    keys = ["配股", "無償", "增資配股", "股票股利"]
+    return any(k in s for k in keys) or any(k in n for k in keys)
+
+
 def build_name_to_stock_id(session):
     masters = session.query(StockMaster).all()
     name2id = {}
@@ -225,10 +232,6 @@ def parse_upload_to_rows(df, name2id):
         if quantity <= 0:
             errors.append((idx + 2, "成交股數應大於 0"))
             continue
-        price = _parse_number(row.get(col_price, 0))
-        if price <= 0:
-            errors.append((idx + 2, "成交價應大於 0"))
-            continue
         side = _infer_side(row.get(col_net)) if col_net else "BUY"
         if col_side:
             raw_side = str(row.get(col_side, "")).strip()
@@ -236,6 +239,8 @@ def parse_upload_to_rows(df, name2id):
                 side = "SELL"
             elif "買" in raw_side:
                 side = "BUY"
+            elif _is_bonus_share_side(raw_side):
+                side = "配股"
         user = str(row.get(col_account, "")).strip() if col_account else "匯入"
         if not user or user == "nan":
             user = "匯入"
@@ -244,6 +249,15 @@ def parse_upload_to_rows(df, name2id):
         note = str(row.get(col_note, "")).strip() if col_note else None
         if note == "nan" or note == "":
             note = None
+        price = _parse_number(row.get(col_price, 0))
+        # 成交價=0：若為配股，允許匯入並標記 side=配股；否則維持原本檢核
+        if price <= 0:
+            if _is_bonus_share_side(side, note) or (price == 0 and side == "BUY"):
+                side = "配股"
+                price = 0
+            else:
+                errors.append((idx + 2, "成交價應大於 0（配股可為 0）"))
+                continue
         rows.append({
             "user": user[:50],
             "stock_id": stock_id,
@@ -341,7 +355,7 @@ else:
                             by_key[k].append(t)
 
                         def _is_buy(t):
-                            return (getattr(t, "side", "") or "").upper() == "BUY"
+                            return (getattr(t, "side", "") or "").strip().upper() in ("BUY", "配股")
 
                         for (u, sid, d), ts in by_key.items():
                             buys = [t for t in ts if _is_buy(t)]

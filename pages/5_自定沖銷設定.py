@@ -57,8 +57,8 @@ except Exception:
 # 依交易 ID 查詢
 trade_by_id = {t.id: t for t in trades}
 custom_users = sorted(set(t.user for t in trades if getattr(t, "user", None)))
-sells = [t for t in trades if (t.side or "").upper() == "SELL"]
-buys = [t for t in trades if (t.side or "").upper() == "BUY"]
+sells = [t for t in trades if (t.side or "").strip().upper() == "SELL"]
+buys = [t for t in trades if (t.side or "").strip().upper() in ("BUY", "配股")]
 
 # 顯示用：股票代號 -> 名稱（優先 StockMaster，缺漏時用台股清單快取補齊）
 _stock_name_cache = {}

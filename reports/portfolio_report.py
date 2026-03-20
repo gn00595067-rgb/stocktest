@@ -26,7 +26,7 @@ from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 
 def _is_buy(t) -> bool:
     """與投資績效、daily_detail、stock_detail 一致：買/賣不區分大小寫。"""
-    return (getattr(t, "side", None) or "").strip().upper() == "BUY"
+    return (getattr(t, "side", None) or "").strip().upper() in ("BUY", "配股")
 
 
 def compute_position_and_cost_by_stock(trades, custom_rules: Optional[List[Tuple[int, int, int]]] = None, policy: str = "CUSTOM"):

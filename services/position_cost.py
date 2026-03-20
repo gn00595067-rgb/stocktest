@@ -11,7 +11,7 @@ from services.pnl_engine import Lot, compute_matches
 
 def _is_buy(t) -> bool:
     """買/賣不區分大小寫，與 portfolio_report 一致。"""
-    return (getattr(t, "side", None) or "").strip().upper() == "BUY"
+    return (getattr(t, "side", None) or "").strip().upper() in ("BUY", "配股")
 
 
 def compute_position_and_cost_by_stock(

@@ -23,7 +23,7 @@ def build_daily_detail_df(trades, masters, policy: str = "CUSTOM", filter_date=N
     sells_by_stock = defaultdict(list)
     for t in trades:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
-        if (t.side or "").upper() == "BUY":
+        if (t.side or "").strip().upper() in ("BUY", "配股"):
             buys_by_stock[t.stock_id].append(lot)
         else:
             sells_by_stock[t.stock_id].append(lot)
@@ -38,14 +38,15 @@ def build_daily_detail_df(trades, masters, policy: str = "CUSTOM", filter_date=N
 
     rows = []
     for t in sorted(trades, key=lambda x: (x.trade_date, x.stock_id, x.id)):
-        side_cht = "買" if (t.side or "").upper() == "BUY" else "賣"
+        raw_side = (t.side or "").strip().upper()
+        side_cht = "配股" if raw_side == "配股" else ("買" if raw_side == "BUY" else "賣")
         price = float(t.price or 0)
         qty = int(t.quantity or 0)
         fee = float(t.fee or 0)
         tax = float(t.tax or 0)
         gross = price * qty  # 成交金額
 
-        if side_cht == "買":
+        if side_cht in ("買", "配股"):
             net = -(gross + fee)  # 淨付出
             pnl = None  # 買入無損益
         else:

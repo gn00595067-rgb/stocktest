@@ -16,7 +16,8 @@ def build_daily_summary_pivot(trades, pivot_by: str, masters=None):
     rows = []
     for t in trades:
         # 買＝正數、賣＝負數，彙總後可看出淨買賣
-        sign = 1 if (getattr(t, "side", "") or "").upper() == "BUY" else -1
+        side = (getattr(t, "side", "") or "").strip().upper()
+        sign = 1 if side in ("BUY", "配股") else -1
         signed_qty = sign * t.quantity
         rows.append({
             "date": str(t.trade_date),

@@ -195,7 +195,7 @@ def _pl_realized_unrealized_for_trades(trades_list, _start, _end, _custom_rules,
     _sells = defaultdict(list)
     for t in _tr:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
-        if (t.side or "").upper() == "BUY":
+        if (t.side or "").strip().upper() in ("BUY", "配股"):
             _buys[t.stock_id].append(lot)
         else:
             _sells[t.stock_id].append(lot)
@@ -235,7 +235,7 @@ buys_by_stock = defaultdict(list)
 sells_by_stock = defaultdict(list)
 for t in trades_in_range:
     lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
-    if (t.side or "").upper() == "BUY":
+    if (t.side or "").strip().upper() in ("BUY", "配股"):
         buys_by_stock[t.stock_id].append(lot)
     else:
         sells_by_stock[t.stock_id].append(lot)

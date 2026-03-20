@@ -15,7 +15,7 @@ def build_stock_sold_df(stock_id: str, trades, masters, policy: str, custom_rule
     """
     masters = masters or {}
     trades = [t for t in trades if t.stock_id == stock_id]
-    buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if (t.side or "").upper() == "BUY"]
+    buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if (t.side or "").strip().upper() in ("BUY", "配股")]
     sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if (t.side or "").upper() == "SELL"]
     if not buys or not sells:
         return pd.DataFrame(), 0.0
@@ -70,7 +70,7 @@ def build_stock_inventory_df(stock_id: str, trades, masters, policy: str, custom
     """
     masters = masters or {}
     trades = [t for t in trades if t.stock_id == stock_id]
-    buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if (t.side or "").upper() == "BUY"]
+    buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if (t.side or "").strip().upper() in ("BUY", "配股")]
     sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if (t.side or "").upper() == "SELL"]
     if not buys:
         return pd.DataFrame(), {"庫存股數": 0, "原始成本": 0, "原始均價": 0}

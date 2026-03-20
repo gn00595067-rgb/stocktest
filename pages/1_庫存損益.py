@@ -866,8 +866,13 @@ if selected_id:
 
     if not price_df.empty:
         # 交易明細 df（日期、買賣、股數、價格）
+        def _side_label(t):
+            s = (t.side or "").strip().upper()
+            if s == "配股":
+                return "配股"
+            return "買" if s == "BUY" else "賣"
         trades_for_chart = pd.DataFrame([
-            {"日期": str(t.trade_date), "買賣": "買" if (t.side or "").upper() == "BUY" else "賣", "股數": t.quantity, "價格": float(t.price)}
+            {"日期": str(t.trade_date), "買賣": _side_label(t), "股數": t.quantity, "價格": float(t.price)}
             for t in stock_trades
         ])
         latest_price = price_df["股價"].iloc[-1]
