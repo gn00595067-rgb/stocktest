@@ -189,9 +189,20 @@ def build_name_to_stock_id(session):
     return name2id
 
 
+def _extract_stock_id_from_text(text):
+    if text is None:
+        return None
+    s = str(text).strip()
+    if not s or s.lower() == "nan":
+        return None
+    m = re.search(r"(\d{4,6})", s)
+    return m.group(1) if m else None
+
+
 def parse_upload_to_rows(df, name2id):
     rows = []
     errors = []
+    stock_ids = set(str(v) for v in name2id.values() if v is not None)
     col_account = _find_column(df, COL_ACCOUNT)
     col_stock = _find_column(df, COL_STOCK_NAME)
     col_date = _find_column(df, COL_DATE)
@@ -215,10 +226,34 @@ def parse_upload_to_rows(df, name2id):
         if not stock_name or stock_name == "nan":
             errors.append((idx + 2, "股名為空"))
             continue
-        stock_id = name2id.get(stock_name)
+
+        # 1) 先吃字串中的代號（例如「7708 全家餐飲」），避免被模糊股名誤配到別檔
+        stock_id = None
+        code_in_name = _extract_stock_id_from_text(stock_name)
+        if code_in_name:
+            if code_in_name in stock_ids:
+                stock_id = code_in_name
+            else:
+                errors.append((idx + 2, f"股票代號不在主檔：{code_in_name}（股名：{stock_name}）"))
+                continue
+
+        # 2) 沒代號才用名稱對照（精準 -> 模糊）
+        if not stock_id:
+            stock_id = name2id.get(stock_name)
+        if not stock_id:
+            stock_name_compact = re.sub(r"\s+", "", stock_name)
+            for k, sid in name2id.items():
+                kk = str(k)
+                kk_compact = re.sub(r"\s+", "", kk)
+                if kk == stock_name or kk_compact == stock_name_compact:
+                    stock_id = sid
+                    break
         if not stock_id:
             for k, sid in name2id.items():
-                if k in stock_name or stock_name in k:
+                kk = str(k)
+                kk_compact = re.sub(r"\s+", "", kk)
+                stock_name_compact = re.sub(r"\s+", "", stock_name)
+                if kk in stock_name or stock_name in kk or kk_compact in stock_name_compact or stock_name_compact in kk_compact:
                     stock_id = sid
                     break
         if not stock_id:
