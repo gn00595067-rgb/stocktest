@@ -16,6 +16,7 @@ from db.models import Trade, StockMaster
 st.set_page_config(page_title="當日交易明細", layout="wide")
 st.title("當日交易明細")
 st.caption("以「每日」為主體列出當日全部原始買賣，並加總交割應收/應付，協助核對交割金額。")
+st.caption("計算口徑：當日列表之賣出損益已扣買進手續費、賣出手續費、證交稅；交割加總則依當日收付金額（含手續費/證交稅）估算。")
 
 try:
     sess = get_session()

@@ -16,6 +16,7 @@ from reports.stock_detail_report import build_stock_detail
 
 st.set_page_config(page_title="個股明細", layout="wide")
 st.title("個股明細表")
+st.caption("計算口徑：**已出售（已實現）** 欄位中的單筆/累計損益已扣買進手續費、賣出手續費、證交稅；**庫存（未實現）** 不預扣未來賣出費稅。")
 
 try:
     sess = get_session()

@@ -25,6 +25,7 @@ from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
 st.title("損益總覽與投資績效")
+st.caption("計算口徑：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。")
 
 # ---------- 篩選條件：快速區間按鈕 + 日期框（與所選區間連動）、自訂可手動改日期 ----------
 today = date.today()

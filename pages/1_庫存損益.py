@@ -436,6 +436,7 @@ st.set_page_config(page_title="庫存損益", layout="wide")
 _inject_page_style()
 
 st.title("庫存損益")
+st.caption("計算口徑：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。")
 
 # ----- 1. 篩選條件 -----
 with st.container():
