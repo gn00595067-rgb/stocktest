@@ -96,19 +96,41 @@ COL_ACCOUNT = ["帳戶", "戶名", "買賣人", "帳號"]
 COL_STOCK_NAME = ["股名", "股票名稱", "名稱", "股票", "公司"]
 COL_DATE = ["日期", "交易日期", "成交日", "買賣日"]
 COL_QUANTITY = ["成交股數", "股數", "數量"]
-COL_NET_AMOUNT = ["淨收付金額", "淨收付", "買賣", "方向"]
-COL_SIDE = ["買賣", "方向", "多空"]
-COL_PRICE = ["成交價", "價格", "單價", "股價"]
-COL_FEE = ["手續費", "佣金", "手續費率"]
-COL_TAX = ["交易稅", "證交稅", "稅"]
+COL_NET_AMOUNT = ["淨收付金額", "淨收付", "應收付", "應收應付", "收付金額", "買賣", "方向"]
+COL_SIDE = ["買賣", "買賣別", "交易別", "方向", "多空"]
+COL_PRICE = ["成交單價", "成交價", "股價", "單價", "價格"]
+COL_FEE = ["手續費", "手續費(元)", "佣金", "手續費率"]
+COL_TAX = ["交易稅", "證交稅", "稅款", "稅"]
 COL_NOTE = ["備註", "備註欄", "說明"]
 
 
-def _find_column(df, candidates):
+def _norm_col_name(s: str) -> str:
+    return re.sub(r"\s+", "", str(s or "").strip()).lower()
+
+
+def _find_column(df, candidates, exclude_keywords=None):
     cols = [str(c).strip() for c in df.columns]
+    norm_cols = {_norm_col_name(c): c for c in cols}
+    exclude_keywords = exclude_keywords or []
+    norm_ex = [_norm_col_name(x) for x in exclude_keywords if x]
+
+    # 1) 先精準比對（忽略空白/大小寫）
     for cand in candidates:
+        nc = _norm_col_name(cand)
+        if nc in norm_cols:
+            col = norm_cols[nc]
+            ncol = _norm_col_name(col)
+            if not any(x in ncol for x in norm_ex):
+                return col
+
+    # 2) 再做包含比對（同樣避開 exclude）
+    for cand in candidates:
+        nc = _norm_col_name(cand)
         for col in cols:
-            if cand == col or cand in col:
+            ncol = _norm_col_name(col)
+            if any(x in ncol for x in norm_ex):
+                continue
+            if nc and nc in ncol:
                 return col
     return None
 
@@ -209,7 +231,8 @@ def parse_upload_to_rows(df, name2id):
     col_qty = _find_column(df, COL_QUANTITY)
     col_net = _find_column(df, COL_NET_AMOUNT)
     col_side = _find_column(df, COL_SIDE)
-    col_price = _find_column(df, COL_PRICE)
+    # 價格欄避免抓到「成交價金/金額/淨收付」
+    col_price = _find_column(df, COL_PRICE, exclude_keywords=["價金", "金額", "淨收付", "應收付", "成本"])
     col_fee = _find_column(df, COL_FEE)
     col_tax = _find_column(df, COL_TAX)
     col_note = _find_column(df, COL_NOTE)
