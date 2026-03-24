@@ -518,26 +518,46 @@ def _find_header_row(rows, required_cols, from_row=0):
     return None, {}
 
 
+def _find_optional_col(header_cells, aliases):
+    for ci, c in enumerate(header_cells):
+        if c is None:
+            continue
+        cc = str(c).strip()
+        for a in aliases:
+            if cc == a or a in cc:
+                return ci
+    return None
+
+
 def _parse_sold_section(rows, stock_id, user, from_row=0):
     required = ["買賣日", "股數", "股價", "出售日", "賣價"]
     header_row_idx, col_map = _find_header_row(rows, required, from_row)
     if header_row_idx is None or not col_map:
-        return [], [], [f"找不到已出售表頭（需含：{', '.join(required)}）"]
+        return [], [], [f"找不到已出售表頭（需含：{', '.join(required)}）"], []
     header_cells = rows[header_row_idx]
-    for label in ["手續費", "證交稅"]:
-        for ci, c in enumerate(header_cells):
-            if c is not None and label in str(c):
-                if label == "手續費":
-                    if "手續費" not in col_map:
-                        col_map["手續費"] = ci
-                    else:
-                        col_map["手續費賣"] = ci
-                elif label not in col_map:
-                    col_map[label] = ci
-                break
+    fee_cols = []
+    tax_cols = []
+    for ci, c in enumerate(header_cells):
+        if c is None:
+            continue
+        cc = str(c).strip()
+        if "手續費" in cc:
+            fee_cols.append(ci)
+        if "證交稅" in cc:
+            tax_cols.append(ci)
+    # 已出售區塊通常會有兩個「手續費」：第一個屬買進、第二個屬賣出
+    if fee_cols:
+        col_map["手續費"] = fee_cols[0]
+        if len(fee_cols) >= 2:
+            col_map["手續費賣"] = fee_cols[1]
+    if tax_cols:
+        col_map["證交稅"] = tax_cols[0]
+    i_user = _find_optional_col(header_cells, ["帳戶", "戶名", "買賣人", "帳號"])
+    i_note = _find_optional_col(header_cells, ["備註", "說明", "其他備註"])
     trades = []
     rules = []
     errors = []
+    audits = []
     i_buy_date = col_map["買賣日"]
     i_qty = col_map["股數"]
     i_price = col_map["股價"]
@@ -570,25 +590,65 @@ def _parse_sold_section(rows, stock_id, user, from_row=0):
         if "小計" in str(row[1] if ncol > 1 else ""):
             break
         fee_buy = _parse_num(row[i_fee_buy]) if i_fee_buy is not None and i_fee_buy < ncol else None
-        fee_sell = _parse_num(row[i_fee_sell]) if i_fee_sell is not None and i_fee_sell < ncol else (_parse_num(row[i_fee_buy + 4]) if i_fee_buy is not None and i_fee_buy + 4 < ncol else None)
+        fee_sell = _parse_num(row[i_fee_sell]) if i_fee_sell is not None and i_fee_sell < ncol else None
         tax_sell = _parse_num(row[i_tax]) if i_tax is not None and i_tax < ncol else None
+        row_user = str(row[i_user]).strip() if i_user is not None and i_user < ncol and row[i_user] is not None else ""
+        row_user = row_user if row_user and row_user.lower() != "nan" else user
+        row_note = str(row[i_note]).strip() if i_note is not None and i_note < ncol and row[i_note] is not None else ""
+        if not row_note or row_note.lower() == "nan":
+            row_note = None
         is_daytrade = buy_date == sell_date
-        trades.append({"user": user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price_buy, 2), "quantity": qty, "is_daytrade": is_daytrade, "fee": round(fee_buy, 2) if fee_buy is not None else None, "tax": None, "note": "Excel沖銷庫存-已出售"})
-        trades.append({"user": user, "stock_id": stock_id, "trade_date": sell_date, "side": "SELL", "price": round(price_sell, 2), "quantity": qty, "is_daytrade": is_daytrade, "fee": round(fee_sell, 2) if fee_sell is not None else None, "tax": round(tax_sell, 2) if tax_sell is not None else None, "note": "Excel沖銷庫存-已出售"})
+        note_buy = "Excel沖銷庫存-已出售" if row_note is None else f"Excel沖銷庫存-已出售｜{row_note}"
+        note_sell = "Excel沖銷庫存-已出售" if row_note is None else f"Excel沖銷庫存-已出售｜{row_note}"
+        trades.append({"user": row_user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price_buy, 2), "quantity": qty, "is_daytrade": is_daytrade, "fee": round(fee_buy, 2) if fee_buy is not None else None, "tax": None, "note": note_buy})
+        trades.append({"user": row_user, "stock_id": stock_id, "trade_date": sell_date, "side": "SELL", "price": round(price_sell, 2), "quantity": qty, "is_daytrade": is_daytrade, "fee": round(fee_sell, 2) if fee_sell is not None else None, "tax": round(tax_sell, 2) if tax_sell is not None else None, "note": note_sell})
         rules.append({"qty": qty})
-    return trades, rules, errors
+        gross_buy = float(price_buy) * int(qty)
+        gross_sell = float(price_sell) * int(qty)
+        buy_fee_v = float(fee_buy or 0)
+        sell_fee_v = float(fee_sell or 0)
+        tax_v = float(tax_sell or 0)
+        pnl_net = gross_sell - sell_fee_v - tax_v - gross_buy - buy_fee_v
+        audits.append({
+            "分頁": "",
+            "區塊": "已出售",
+            "買賣人_原始": row_user,
+            "買賣人_解析": row_user,
+            "股票": stock_id,
+            "買賣日": str(buy_date),
+            "出售日": str(sell_date),
+            "股數_原始": int(qty),
+            "股數_解析": int(qty),
+            "買價_原始": round(float(price_buy), 2),
+            "買價_解析": round(float(price_buy), 2),
+            "賣價_原始": round(float(price_sell), 2),
+            "賣價_解析": round(float(price_sell), 2),
+            "買手續費_原始": round(buy_fee_v, 2),
+            "買手續費_解析": round(buy_fee_v, 2),
+            "賣手續費_原始": round(sell_fee_v, 2),
+            "賣手續費_解析": round(sell_fee_v, 2),
+            "證交稅_原始": round(tax_v, 2),
+            "證交稅_解析": round(tax_v, 2),
+            "單筆損益_試算": round(pnl_net, 2),
+            "差異欄位數": 0,
+        })
+    return trades, rules, errors, audits
 
 
 def _parse_inventory_section(rows, stock_id, user, from_row=0):
     required = ["買賣日", "股數", "股價"]
     header_row_idx, col_map = _find_header_row(rows, required, from_row)
     if header_row_idx is None or not col_map:
-        return [], []
+        return [], [], []
     trades = []
+    audits = []
     i_buy_date = col_map["買賣日"]
     i_qty = col_map["股數"]
     i_price = col_map["股價"]
     i_fee = col_map.get("手續費")
+    header_cells = rows[header_row_idx]
+    i_user = _find_optional_col(header_cells, ["帳戶", "戶名", "買賣人", "帳號"])
+    i_note = _find_optional_col(header_cells, ["備註", "說明", "其他備註"])
     for ri in range(header_row_idx + 1, len(rows)):
         row = rows[ri]
         if not row or len(row) <= max(i_buy_date, i_qty, i_price):
@@ -605,8 +665,35 @@ def _parse_inventory_section(rows, stock_id, user, from_row=0):
             continue
         qty = int(qty)
         fee = _parse_num(row[i_fee]) if i_fee is not None and i_fee < len(row) else None
-        trades.append({"user": user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price, 2), "quantity": qty, "is_daytrade": False, "fee": round(fee, 2) if fee is not None else None, "tax": None, "note": "Excel沖銷庫存-庫存"})
-    return trades, []
+        row_user = str(row[i_user]).strip() if i_user is not None and i_user < len(row) and row[i_user] is not None else ""
+        row_user = row_user if row_user and row_user.lower() != "nan" else user
+        row_note = str(row[i_note]).strip() if i_note is not None and i_note < len(row) and row[i_note] is not None else ""
+        note_val = "Excel沖銷庫存-庫存" if (not row_note or row_note.lower() == "nan") else f"Excel沖銷庫存-庫存｜{row_note}"
+        trades.append({"user": row_user, "stock_id": stock_id, "trade_date": buy_date, "side": "BUY", "price": round(price, 2), "quantity": qty, "is_daytrade": False, "fee": round(fee, 2) if fee is not None else None, "tax": None, "note": note_val})
+        audits.append({
+            "分頁": "",
+            "區塊": "庫存",
+            "買賣人_原始": row_user,
+            "買賣人_解析": row_user,
+            "股票": stock_id,
+            "買賣日": str(buy_date),
+            "出售日": None,
+            "股數_原始": int(qty),
+            "股數_解析": int(qty),
+            "買價_原始": round(float(price), 2),
+            "買價_解析": round(float(price), 2),
+            "賣價_原始": None,
+            "賣價_解析": None,
+            "買手續費_原始": round(float(fee or 0), 2),
+            "買手續費_解析": round(float(fee or 0), 2),
+            "賣手續費_原始": None,
+            "賣手續費_解析": None,
+            "證交稅_原始": None,
+            "證交稅_解析": None,
+            "單筆損益_試算": None,
+            "差異欄位數": 0,
+        })
+    return trades, [], audits
 
 
 def _locate_sections(rows):
@@ -643,16 +730,23 @@ def parse_partner_excel(path, sheet_name, user="匯入"):
     all_trades = []
     all_rules = []
     all_errors = []
+    all_audits = []
     if sections["已出售"] is not None:
-        t, r, e = _parse_sold_section(rows, stock_id, user, sections["已出售"])
+        t, r, e, a = _parse_sold_section(rows, stock_id, user, sections["已出售"])
         all_trades.extend(t)
         all_rules.extend(r)
         all_errors.extend(e)
+        for x in a:
+            x["分頁"] = sheet_name
+        all_audits.extend(a)
     if sections["庫存股票"] is not None:
-        t, e = _parse_inventory_section(rows, stock_id, user, sections["庫存股票"])
+        t, e, a = _parse_inventory_section(rows, stock_id, user, sections["庫存股票"])
         all_trades.extend(t)
         all_errors.extend(e)
-    return all_trades, all_rules, all_errors
+        for x in a:
+            x["分頁"] = sheet_name
+        all_audits.extend(a)
+    return all_trades, all_rules, all_errors, all_audits
 
 
 user_default = st.text_input("買賣人／帳戶名稱", value="匯入", key="partner_import_user")
@@ -687,12 +781,14 @@ else:
                 all_trades = []
                 all_rules = []
                 all_errors = []
+                all_audits = []
                 by_sheet = []
                 for sn in selected_sheets:
-                    t, r, e = parse_partner_excel(path, sn, user_default)
+                    t, r, e, a = parse_partner_excel(path, sn, user_default)
                     all_trades.extend(t)
                     all_rules.extend(r)
                     all_errors.extend(e)
+                    all_audits.extend(a)
                     by_sheet.append((sn, len(t), len(r), e))
                 if all_errors:
                     st.warning("解析過程有下列問題：")
@@ -724,6 +820,64 @@ else:
                     st.dataframe(_pr_df.style.format(_fmt_pr, na_rep="—"), use_container_width=True, hide_index=True)
                     if len(all_trades) > 50:
                         st.caption(f"僅顯示前 50 筆，共 {len(all_trades)} 筆交易、{len(all_rules)} 筆沖銷配對。")
+                    if all_audits:
+                        st.markdown("#### 🔍 匯入前後差異檢查（逐筆）")
+                        st.caption("比對欄位：買賣人、股數、買價、賣價、買手續費、賣手續費、證交稅。`差異欄位數 > 0` 代表該筆有不一致。")
+                        audit_df = pd.DataFrame(all_audits)
+                        cmp_pairs = [
+                            ("買賣人_原始", "買賣人_解析"),
+                            ("股數_原始", "股數_解析"),
+                            ("買價_原始", "買價_解析"),
+                            ("賣價_原始", "賣價_解析"),
+                            ("買手續費_原始", "買手續費_解析"),
+                            ("賣手續費_原始", "賣手續費_解析"),
+                            ("證交稅_原始", "證交稅_解析"),
+                        ]
+                        diff_counts = []
+                        for _, rr in audit_df.iterrows():
+                            d = 0
+                            for c1, c2 in cmp_pairs:
+                                v1 = rr.get(c1)
+                                v2 = rr.get(c2)
+                                n1 = None if pd.isna(v1) else v1
+                                n2 = None if pd.isna(v2) else v2
+                                if str(n1) != str(n2):
+                                    d += 1
+                            diff_counts.append(d)
+                        audit_df["差異欄位數"] = diff_counts
+                        bad_cnt = int((audit_df["差異欄位數"] > 0).sum())
+                        if bad_cnt > 0:
+                            st.warning(f"偵測到 {bad_cnt} 筆存在欄位差異，建議先檢查再匯入。")
+                        else:
+                            st.success("差異檢查完成：目前未發現逐筆欄位差異。")
+                        show_cols = [
+                            "分頁", "區塊", "股票", "買賣日", "出售日",
+                            "買賣人_原始", "買賣人_解析",
+                            "股數_原始", "股數_解析",
+                            "買價_原始", "買價_解析",
+                            "賣價_原始", "賣價_解析",
+                            "買手續費_原始", "買手續費_解析",
+                            "賣手續費_原始", "賣手續費_解析",
+                            "證交稅_原始", "證交稅_解析",
+                            "單筆損益_試算", "差異欄位數",
+                        ]
+                        show_cols = [c for c in show_cols if c in audit_df.columns]
+                        fmt_audit = {
+                            "股數_原始": "{:,.0f}", "股數_解析": "{:,.0f}",
+                            "買價_原始": "{:,.2f}", "買價_解析": "{:,.2f}",
+                            "賣價_原始": "{:,.2f}", "賣價_解析": "{:,.2f}",
+                            "買手續費_原始": "{:,.2f}", "買手續費_解析": "{:,.2f}",
+                            "賣手續費_原始": "{:,.2f}", "賣手續費_解析": "{:,.2f}",
+                            "證交稅_原始": "{:,.2f}", "證交稅_解析": "{:,.2f}",
+                            "單筆損益_試算": "{:,.2f}",
+                            "差異欄位數": "{:,.0f}",
+                        }
+                        st.dataframe(
+                            audit_df[show_cols].style.format({k: v for k, v in fmt_audit.items() if k in show_cols}, na_rep="—"),
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(520, 80 + min(len(audit_df), 12) * 36),
+                        )
                     sess = get_session()
                     try:
                         existing_ids = {m.stock_id for m in sess.query(StockMaster.stock_id).all()}

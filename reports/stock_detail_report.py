@@ -35,6 +35,8 @@ def build_stock_sold_df(stock_id: str, trades, masters, policy: str, custom_rule
         if not buy_t or not sell_t:
             continue
         buy_fee = float(buy_t.fee or 0) * (qty / buy_t.quantity) if buy_t.quantity else 0
+        sell_fee = float(sell_t.fee or 0) * (qty / sell_t.quantity) if sell_t.quantity else 0
+        sell_tax = float(sell_t.tax or 0) * (qty / sell_t.quantity) if sell_t.quantity else 0
         pay = qty * buy_price
         buy_expense = pay + buy_fee
         sell_amount = qty * sell_price
@@ -55,6 +57,8 @@ def build_stock_sold_df(stock_id: str, trades, masters, policy: str, custom_rule
             "賣價": round(sell_price, 2),
             "賣出股數": qty,
             "賣出金額": round(sell_amount, 0),
+            "賣出手續費": round(sell_fee, 0),
+            "證交稅": round(sell_tax, 0),
             "單筆損益": round(pnl, 0),
             "累計損益": round(cum_pnl, 0),
         })
