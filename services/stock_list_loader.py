@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """從 Google Sheet 載入股票清單並寫入 stock_master，供 app 啟動與主檔設定頁使用。"""
 import io
+import time
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -128,9 +129,41 @@ def ensure_google_sheet_loaded() -> None:
     供 app.py 與各 pages 在載入時呼叫，使「左側欄一出現」就會自動載入，無需點進主檔設定。
     """
     import streamlit as st
-    if "gs_auto_loaded" not in st.session_state:
+    from db.database import get_session
+    from db.models import StockMaster
+
+    # 以短間隔節流，避免每次 rerun 都重打 Google Sheet。
+    now = time.time()
+    last_at = float(st.session_state.get("gs_auto_loaded_at", 0) or 0)
+    last_ok = bool(st.session_state.get("gs_auto_loaded_ok", False))
+    min_retry_sec = 20
+    if (now - last_at) < min_retry_sec and last_ok:
+        return
+
+    # 若主檔已有資料且曾成功同步，就不重複同步。
+    stock_count = 0
+    try:
+        sess = get_session()
+        stock_count = int(sess.query(StockMaster).count())
+    except Exception:
+        stock_count = 0
+    finally:
         try:
-            sync_google_sheet_to_db()
-            st.session_state["gs_auto_loaded"] = True
+            sess.close()
         except Exception:
-            st.session_state["gs_auto_loaded"] = True
+            pass
+
+    if stock_count > 0 and last_ok:
+        st.session_state["gs_auto_loaded_at"] = now
+        return
+
+    # 失敗過也會在後續頁面自動重試（不需要回主檔設定手動按）。
+    try:
+        ok, _n, err = sync_google_sheet_to_db()
+        st.session_state["gs_auto_loaded_at"] = now
+        st.session_state["gs_auto_loaded_ok"] = bool(ok)
+        st.session_state["gs_auto_loaded_err"] = None if ok else (err or "unknown error")
+    except Exception as e:
+        st.session_state["gs_auto_loaded_at"] = now
+        st.session_state["gs_auto_loaded_ok"] = False
+        st.session_state["gs_auto_loaded_err"] = f"{type(e).__name__}: {e}"
