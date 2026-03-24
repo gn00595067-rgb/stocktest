@@ -483,11 +483,40 @@ def _stock_id_from_sheet_name(name):
     return m.group(1) if m else None
 
 
+def _is_all_sheet_name(name: str) -> bool:
+    s = str(name or "").strip().lower()
+    return s in ("all", "全部", "總表", "總覽")
+
+
 def _stock_id_from_company_cell(cell):
     if cell is None or (isinstance(cell, float) and pd.isna(cell)):
         return None
     m = re.match(r"^(\d{4})", str(cell).strip())
     return m.group(1) if m else None
+
+
+def _infer_stock_id_from_table_company(rows, from_row=0):
+    """
+    只從「有明確表頭」的區塊推斷 stock_id，避免抓到表格外備註雜訊（例如 0419 起日成交表）。
+    """
+    header_row_idx, col_map = _find_header_row(rows, ["公司", "買賣日", "股數", "股價"], from_row)
+    if header_row_idx is None:
+        return None
+    i_company = col_map.get("公司")
+    if i_company is None:
+        return None
+    for ri in range(header_row_idx + 1, len(rows)):
+        row = rows[ri]
+        if not row:
+            continue
+        if any("小計" in str(c) for c in row if c is not None):
+            continue
+        if i_company >= len(row):
+            continue
+        sid = _stock_id_from_company_cell(row[i_company])
+        if sid:
+            return sid
+    return None
 
 
 def _read_sheet_rows(path, sheet_name):
@@ -714,18 +743,14 @@ def _locate_sections(rows):
 
 def parse_partner_excel(path, sheet_name, user="匯入"):
     rows = _read_sheet_rows(path, sheet_name)
+    if _is_all_sheet_name(sheet_name):
+        # all 分頁只做比對，不作為正式匯入來源，避免和各分頁重複。
+        return [], [], [], []
     stock_id = _stock_id_from_sheet_name(sheet_name)
     if not stock_id:
-        for row in rows:
-            for cell in row:
-                sid = _stock_id_from_company_cell(cell)
-                if sid:
-                    stock_id = sid
-                    break
-            if stock_id:
-                break
+        stock_id = _infer_stock_id_from_table_company(rows, 0)
     if not stock_id:
-        return [], [], [f"分頁「{sheet_name}」無法取得股票代號"]
+        return [], [], [f"分頁「{sheet_name}」無法取得股票代號"], []
     sections = _locate_sections(rows)
     all_trades = []
     all_rules = []
@@ -747,6 +772,75 @@ def parse_partner_excel(path, sheet_name, user="匯入"):
             x["分頁"] = sheet_name
         all_audits.extend(a)
     return all_trades, all_rules, all_errors, all_audits
+
+
+def parse_all_sheet_for_compare(path, sheet_name, user="匯入"):
+    """
+    解析 all 分頁（僅供比對，不匯入 DB）：
+    - 僅抓「有明確表頭」的區塊
+    - 只抓表格內資料，忽略表格外雜訊數字/文字
+    """
+    rows = _read_sheet_rows(path, sheet_name)
+    sections = _locate_sections(rows)
+    if sections["已出售"] is None:
+        return [], [f"all 分頁「{sheet_name}」找不到已出售區塊，略過比對。"]
+    header_row_idx, col_map = _find_header_row(rows, ["公司", "買賣日", "股數", "股價", "出售日", "賣價"], sections["已出售"])
+    if header_row_idx is None:
+        return [], [f"all 分頁「{sheet_name}」找不到已出售表頭，略過比對。"]
+
+    header_cells = rows[header_row_idx]
+    i_company = col_map.get("公司")
+    i_buy_date = col_map.get("買賣日")
+    i_qty = col_map.get("股數")
+    i_buy_price = col_map.get("股價")
+    i_sell_date = col_map.get("出售日")
+    i_sell_price = col_map.get("賣價")
+    i_user = _find_optional_col(header_cells, ["帳戶", "戶名", "買賣人", "帳號"])
+    fee_cols = [ci for ci, c in enumerate(header_cells) if c is not None and "手續費" in str(c)]
+    tax_cols = [ci for ci, c in enumerate(header_cells) if c is not None and "證交稅" in str(c)]
+    i_buy_fee = fee_cols[0] if fee_cols else None
+    i_sell_fee = fee_cols[1] if len(fee_cols) >= 2 else None
+    i_tax = tax_cols[0] if tax_cols else None
+
+    audits = []
+    for ri in range(header_row_idx + 1, len(rows)):
+        row = rows[ri]
+        if not row:
+            continue
+        if any("小計" in str(c) for c in row if c is not None):
+            continue
+        ncol = len(row)
+        need_idx = [i for i in [i_company, i_buy_date, i_qty, i_buy_price, i_sell_date, i_sell_price] if i is not None]
+        if not need_idx or max(need_idx) >= ncol:
+            continue
+        sid = _stock_id_from_company_cell(row[i_company]) if i_company is not None else None
+        buy_date = _parse_roc_date(row[i_buy_date] if i_buy_date is not None else None)
+        sell_date = _parse_roc_date(row[i_sell_date] if i_sell_date is not None else None)
+        qty = _parse_num(row[i_qty] if i_qty is not None else None)
+        buy_price = _parse_num(row[i_buy_price] if i_buy_price is not None else None)
+        sell_price = _parse_num(row[i_sell_price] if i_sell_price is not None else None)
+        if not sid or not buy_date or not sell_date or qty is None or qty <= 0 or buy_price is None or sell_price is None:
+            continue
+        row_user = str(row[i_user]).strip() if i_user is not None and i_user < ncol and row[i_user] is not None else ""
+        row_user = row_user if row_user and row_user.lower() != "nan" else user
+        buy_fee = _parse_num(row[i_buy_fee]) if i_buy_fee is not None and i_buy_fee < ncol else None
+        sell_fee = _parse_num(row[i_sell_fee]) if i_sell_fee is not None and i_sell_fee < ncol else None
+        tax = _parse_num(row[i_tax]) if i_tax is not None and i_tax < ncol else None
+        audits.append({
+            "分頁": sheet_name,
+            "區塊": "all-已出售",
+            "買賣人_原始": row_user,
+            "股票": str(sid),
+            "買賣日": str(buy_date),
+            "出售日": str(sell_date),
+            "股數_原始": int(qty),
+            "買價_原始": round(float(buy_price), 2),
+            "賣價_原始": round(float(sell_price), 2),
+            "買手續費_原始": round(float(buy_fee or 0), 2),
+            "賣手續費_原始": round(float(sell_fee or 0), 2),
+            "證交稅_原始": round(float(tax or 0), 2),
+        })
+    return audits, []
 
 
 user_default = st.text_input("買賣人／帳戶名稱", value="匯入", key="partner_import_user")
@@ -778,12 +872,21 @@ else:
             if not selected_sheets:
                 st.warning("請至少選擇一個分頁")
             else:
+                all_sheets_in_file = [sn for sn in sheet_names if _is_all_sheet_name(sn)]
+                selected_all_sheets = [sn for sn in selected_sheets if _is_all_sheet_name(sn)]
+                import_sheets = [sn for sn in selected_sheets if not _is_all_sheet_name(sn)]
+                if selected_all_sheets:
+                    st.info("已偵測到 `all` 分頁：將只拿來做比對，不會重複匯入。")
+                if not import_sheets:
+                    st.warning("目前只選到 `all` 分頁，沒有可正式匯入的個股分頁。")
+                    st.stop()
+
                 all_trades = []
                 all_rules = []
                 all_errors = []
                 all_audits = []
                 by_sheet = []
-                for sn in selected_sheets:
+                for sn in import_sheets:
                     t, r, e, a = parse_partner_excel(path, sn, user_default)
                     all_trades.extend(t)
                     all_rules.extend(r)
@@ -878,6 +981,54 @@ else:
                             hide_index=True,
                             height=min(520, 80 + min(len(audit_df), 12) * 36),
                         )
+                    # all 分頁對照：檢查「all 已出售」與各分頁已出售是否一致（僅比對，不匯入）
+                    if all_sheets_in_file:
+                        all_compare_rows = []
+                        all_compare_errs = []
+                        for sn_all in all_sheets_in_file:
+                            rows_cmp, errs_cmp = parse_all_sheet_for_compare(path, sn_all, user_default)
+                            all_compare_rows.extend(rows_cmp)
+                            all_compare_errs.extend(errs_cmp)
+                        if all_compare_errs:
+                            for msg in all_compare_errs[:5]:
+                                st.caption(f"• {msg}")
+
+                        if all_compare_rows:
+                            st.markdown("#### 🧪 all 分頁一致性比對（僅比對，不匯入）")
+                            df_all_cmp = pd.DataFrame(all_compare_rows)
+                            df_sheet_cmp = pd.DataFrame([x for x in all_audits if str(x.get("區塊", "")).startswith("已出售")])
+
+                            def _mk_key(df_cmp, cols):
+                                if df_cmp is None or df_cmp.empty:
+                                    return []
+                                out = []
+                                for _, rr in df_cmp.iterrows():
+                                    out.append(tuple(str(rr.get(c, "")) for c in cols))
+                                return out
+
+                            key_cols_all = ["股票", "買賣日", "出售日", "買賣人_原始", "股數_原始", "買價_原始", "賣價_原始", "買手續費_原始", "賣手續費_原始", "證交稅_原始"]
+                            key_cols_sheet = ["股票", "買賣日", "出售日", "買賣人_原始", "股數_原始", "買價_原始", "賣價_原始", "買手續費_原始", "賣手續費_原始", "證交稅_原始"]
+                            keys_all = set(_mk_key(df_all_cmp, key_cols_all))
+                            keys_sheet = set(_mk_key(df_sheet_cmp, key_cols_sheet))
+                            only_in_all = keys_all - keys_sheet
+                            only_in_sheet = keys_sheet - keys_all
+
+                            ccmp1, ccmp2, ccmp3 = st.columns(3)
+                            ccmp1.metric("all 已出售筆數", f"{len(keys_all):,}")
+                            ccmp2.metric("分頁已出售筆數", f"{len(keys_sheet):,}")
+                            ccmp3.metric("差異筆數", f"{len(only_in_all) + len(only_in_sheet):,}")
+
+                            if not only_in_all and not only_in_sheet:
+                                st.success("all 分頁與各分頁已出售資料一致。")
+                            else:
+                                st.warning("偵測到 all 與各分頁有差異，請檢查下表。")
+                                diff_rows = []
+                                for k in list(only_in_all)[:100]:
+                                    diff_rows.append({"來源": "只在 all", "股票": k[0], "買賣日": k[1], "出售日": k[2], "買賣人": k[3], "股數": k[4], "買價": k[5], "賣價": k[6], "買手續費": k[7], "賣手續費": k[8], "證交稅": k[9]})
+                                for k in list(only_in_sheet)[:100]:
+                                    diff_rows.append({"來源": "只在個股分頁", "股票": k[0], "買賣日": k[1], "出售日": k[2], "買賣人": k[3], "股數": k[4], "買價": k[5], "賣價": k[6], "買手續費": k[7], "賣手續費": k[8], "證交稅": k[9]})
+                                if diff_rows:
+                                    st.dataframe(pd.DataFrame(diff_rows), use_container_width=True, hide_index=True, height=min(420, 80 + len(diff_rows) * 28))
                     sess = get_session()
                     try:
                         existing_ids = {m.stock_id for m in sess.query(StockMaster.stock_id).all()}
