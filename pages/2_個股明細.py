@@ -62,8 +62,13 @@ with c_stock:
     selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), format_func=lambda x: stock_options.get(x, x))
 with c_user:
     user_opts = ["全部"] + detail_users
-    user_idx = st.selectbox("買賣人", range(len(user_opts)), format_func=lambda i: user_opts[i], key="detail_filter_user")
-    detail_filter_users = None if user_idx == 0 else [user_opts[user_idx]]
+    picked_users = st.multiselect(
+        "買賣人",
+        options=user_opts,
+        default=["全部"],
+        key="detail_filter_user_multi",
+    )
+    detail_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users
 
 trades_for_detail = trades if detail_filter_users is None else [t for t in trades if t.user in detail_filter_users]
 sold_df, sold_revenue, inv_df, inv_summary = build_stock_detail(selected_id, trades_for_detail, masters, policy, custom_rules=custom_rules_list)

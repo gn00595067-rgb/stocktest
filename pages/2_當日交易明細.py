@@ -203,11 +203,12 @@ with tab_day:
     with f2:
         stock_label_day = st.selectbox("股票", options=stock_opts, key="daily_page_stock")
     with f3:
-        user_day = st.selectbox("買賣人", options=user_opts, key="daily_page_user")
+        picked_users_day = st.multiselect("買賣人", options=user_opts, default=["全部"], key="daily_page_user_multi")
     sid_filter_day = _label_to_sid(stock_label_day)
     daily = [t for t in trades if getattr(t, "trade_date", None) == day]
-    if user_day != "全部":
-        daily = [t for t in daily if (getattr(t, "user", None) or "").strip() == user_day]
+    selected_users_day = [] if (not picked_users_day or "全部" in picked_users_day) else picked_users_day
+    if selected_users_day:
+        daily = [t for t in daily if (getattr(t, "user", None) or "").strip() in selected_users_day]
     if sid_filter_day:
         daily = [t for t in daily if str(getattr(t, "stock_id", "")).strip() == sid_filter_day]
     st.caption(f"當日筆數：**{len(daily)}**")
@@ -225,13 +226,14 @@ with tab_range:
     with r3:
         stock_label_range = st.selectbox("股票", options=stock_opts, key="range_page_stock")
     with r4:
-        user_range = st.selectbox("買賣人", options=user_opts, key="range_page_user")
+        picked_users_range = st.multiselect("買賣人", options=user_opts, default=["全部"], key="range_page_user_multi")
     if start_day > end_day:
         start_day, end_day = end_day, start_day
     sid_filter_range = _label_to_sid(stock_label_range)
     ranged = [t for t in trades if start_day <= getattr(t, "trade_date", start_day) <= end_day]
-    if user_range != "全部":
-        ranged = [t for t in ranged if (getattr(t, "user", None) or "").strip() == user_range]
+    selected_users_range = [] if (not picked_users_range or "全部" in picked_users_range) else picked_users_range
+    if selected_users_range:
+        ranged = [t for t in ranged if (getattr(t, "user", None) or "").strip() in selected_users_range]
     if sid_filter_range:
         ranged = [t for t in ranged if str(getattr(t, "stock_id", "")).strip() == sid_filter_range]
     st.caption(f"區間筆數：**{len(ranged)}**（{start_day} ～ {end_day}）")

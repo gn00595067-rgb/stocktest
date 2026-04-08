@@ -537,13 +537,13 @@ with st.container():
         )
     with col_f4:
         filter_user_options = ["全部"] + portfolio_users
-        filter_user_idx = st.selectbox(
+        selected_users = st.multiselect(
             "買賣人",
-            range(len(filter_user_options)),
-            format_func=lambda i: filter_user_options[i],
-            key="portfolio_filter_user",
+            options=filter_user_options,
+            default=["全部"],
+            key="portfolio_filter_user_multi",
         )
-        portfolio_filter_users = None if filter_user_idx == 0 else [filter_user_options[filter_user_idx]]
+        portfolio_filter_users = None if (not selected_users or "全部" in selected_users) else selected_users
     _inject_range_button_highlight(_range_active_index(start_date, end_date, today))
     st.caption("持倉與損益會先套用 **自定沖銷** 規則；若選擇「未定沖銷部分」策略，則會對尚未被規則覆蓋的部分自動補配。")
     st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")

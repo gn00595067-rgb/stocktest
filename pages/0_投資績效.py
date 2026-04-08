@@ -111,8 +111,13 @@ with col_m:
     )
 with col_u:
     pl_user_opts = ["全部"] + pl_users
-    pl_user_idx = st.selectbox("買賣人", range(len(pl_user_opts)), format_func=lambda i: pl_user_opts[i], key="pl_filter_user")
-    pl_filter_users = None if pl_user_idx == 0 else [pl_user_opts[pl_user_idx]]
+    picked_users = st.multiselect(
+        "買賣人",
+        options=pl_user_opts,
+        default=["全部"],
+        key="pl_filter_user_multi",
+    )
+    pl_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
 
