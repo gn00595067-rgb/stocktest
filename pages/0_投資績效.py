@@ -248,6 +248,7 @@ for t in trades_in_range:
 realized_by_stock = defaultdict(float)
 match_pnls = []
 matches_with_sell_date = []
+realized_cost_sum = 0.0
 for sid, sells in sells_by_stock.items():
     buys = [Lot(b.trade_id, b.qty, b.price, b.date) for b in buys_by_stock.get(sid, [])]
     sell_lots = [Lot(s.trade_id, s.qty, s.price, s.date) for s in sells]
@@ -255,7 +256,13 @@ for sid, sells in sells_by_stock.items():
         net_pnl = net_pnl_for_match(m, trade_by_id)
         realized_by_stock[sid] += net_pnl
         match_pnls.append(net_pnl)
-        buy_id, sell_id, _qty, _bp, _sp, _ = m
+        buy_id, sell_id, qty, buy_price, _sp, _ = m
+        # 已實現報酬率分母：已沖銷的買進成本（股數*買價 + 對應買進手續費分攤）
+        buy_t = trade_by_id.get(buy_id)
+        buy_fee_alloc = 0.0
+        if buy_t and getattr(buy_t, "quantity", 0):
+            buy_fee_alloc = float(getattr(buy_t, "fee", None) or 0) * (qty / buy_t.quantity)
+        realized_cost_sum += (qty * buy_price + buy_fee_alloc)
         sell_t = trade_by_id.get(sell_id)
         if sell_t:
             matches_with_sell_date.append((str(sell_t.trade_date), net_pnl))
@@ -271,11 +278,13 @@ quote_source_by_sid = {}
 last_price_by_sid = {}
 industry_exposure = defaultdict(float)
 industry_pnl = defaultdict(float)
+unrealized_cost_sum = 0.0
 for sid, p in position.items():
     qty = max(0, p["qty"])
     if qty <= 0:
         continue
     avg = p["cost"] / qty if qty else 0
+    unrealized_cost_sum += float(p.get("cost", 0) or 0)
     q = get_quote_cached(sid)
     if q and q.get("price") is not None:
         last = float(q["price"])
@@ -317,6 +326,8 @@ pnl_col = display_mode
 total_pnl = df[pnl_col].sum()
 realized_sum = df["已實現"].sum()
 unrealized_sum = df["未實現"].sum()
+realized_ret_pct = (realized_sum / realized_cost_sum * 100) if realized_cost_sum > 0 else None
+unrealized_ret_pct = (unrealized_sum / unrealized_cost_sum * 100) if unrealized_cost_sum > 0 else None
 win_stocks = (df[pnl_col] > 0).sum()
 loss_stocks = (df[pnl_col] < 0).sum()
 total_count = win_stocks + loss_stocks
@@ -390,6 +401,16 @@ def fmt_pct(val):
         return safe_text(val)
 
 
+def fmt_pct_signed(val):
+    """百分比保留 2 位小數，含正負號。"""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "—"
+    try:
+        return f"{float(val):+.2f}%"
+    except Exception:
+        return safe_text(val)
+
+
 def pnl_class(val):
     """正值回傳 portfolio-kpi-value--positive，負值 portfolio-kpi-value--negative（與庫存損益字卡一致）"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -424,12 +445,14 @@ with r1_2:
     <div class="portfolio-kpi-card">
         <div class="portfolio-kpi-label">已實現</div>
         <div class="portfolio-kpi-value {pnl_class(realized_sum)}">{fmt_money_compact(realized_sum)}</div>
+        <div class="portfolio-kpi-meta">報酬率 {fmt_pct_signed(realized_ret_pct)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_3:
     st.markdown(f"""
     <div class="portfolio-kpi-card">
         <div class="portfolio-kpi-label">未實現</div>
         <div class="portfolio-kpi-value {pnl_class(unrealized_sum)}">{fmt_money_compact(unrealized_sum)}</div>
+        <div class="portfolio-kpi-meta">報酬率 {fmt_pct_signed(unrealized_ret_pct)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_4:
     st.markdown(f"""
@@ -570,7 +593,11 @@ with st.expander("📐 計算邏輯說明", expanded=False):
         {"項目": "目前有持倉的股票數", "數值": n_stocks_position},
         {"項目": "總損益（本頁）", "數值": f"{_fmt_big(total_pnl)} （{pnl_col}）"},
         {"項目": "已實現加總", "數值": _fmt_big(realized_sum)},
+        {"項目": "已實現成本（報酬率分母）", "數值": _fmt_big(realized_cost_sum)},
+        {"項目": "已實現報酬率", "數值": fmt_pct_signed(realized_ret_pct)},
         {"項目": "未實現加總", "數值": _fmt_big(unrealized_sum)},
+        {"項目": "未實現成本（報酬率分母）", "數值": _fmt_big(unrealized_cost_sum)},
+        {"項目": "未實現報酬率", "數值": fmt_pct_signed(unrealized_ret_pct)},
         {"項目": "未實現現價來源", "數值": f"API現價 {n_quote_api} 檔、持倉均價(無報價) {n_quote_fallback} 檔"},
     ])
     st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
