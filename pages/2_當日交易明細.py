@@ -186,7 +186,14 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("交割應收（賣出淨入帳）", f"{total_in:,.0f}")
 c2.metric("交割應付（買進含手續費）", f"{total_out:,.0f}")
 c3.metric("淨交割（應收－應付）", f"{net:,.0f}")
-c4.metric("當日已實現損益", f"{realized_day:,.0f}")
+realized_cls = "#c62828" if realized_day >= 0 else "#2e7d32"
+c4.markdown(
+    f"""
+    <div style="font-size:0.95rem;color:#6b7280;margin-bottom:0.25rem;">當日已實現損益</div>
+    <div style="font-size:1.9rem;font-weight:700;color:{realized_cls};">{realized_day:+,.0f}</div>
+    """,
+    unsafe_allow_html=True,
+)
 
 st.caption("提醒：此處以交易金額 ± 手續費/證交稅估算交割收付；若券商另有其他費用/利息，請以帳單為準。")
 
