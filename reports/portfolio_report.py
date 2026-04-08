@@ -99,15 +99,17 @@ def compute_position_and_cost_by_stock(trades, custom_rules: Optional[List[Tuple
 
 
 def get_realized_pnl_by_stock(trades, start_date: date, end_date: date, policy: str, custom_rules: Optional[List[Tuple[int, int, int]]] = None):
-    """依時間區間內的買賣計算已實現損益（依股票），淨損益（扣手續費與證交稅）。"""
-    in_range = [t for t in trades if start_date <= t.trade_date <= end_date]
+    """依「賣出日落在區間」計算已實現損益（依股票），淨損益（扣手續費與證交稅）。"""
+    sells_in_range = [t for t in trades if (start_date <= t.trade_date <= end_date) and (not _is_buy(t))]
     buys_by_stock = defaultdict(list)
     sells_by_stock = defaultdict(list)
-    for t in in_range:
+    for t in trades:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
         if _is_buy(t):
             buys_by_stock[t.stock_id].append(lot)
-        else:
+    for t in sells_in_range:
+        lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
+        if not _is_buy(t):
             sells_by_stock[t.stock_id].append(lot)
     trade_by_id = {t.id: t for t in trades}
     realized = defaultdict(float)
@@ -138,19 +140,21 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             sells_by_stock_user[t.stock_id][t.user].append(lot)
 
     in_range = [t for t in trades if start_date <= t.trade_date <= end_date]
-    buys_range = defaultdict(list)
+    buys_all = defaultdict(list)
     sells_range = defaultdict(list)
-    for t in in_range:
+    for t in trades:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
         if _is_buy(t):
-            buys_range[t.stock_id].append(lot)
-        else:
+            buys_all[t.stock_id].append(lot)
+    for t in in_range:
+        if not _is_buy(t):
+            lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
             sells_range[t.stock_id].append(lot)
 
     realized = defaultdict(float)
     trade_by_id = {t.id: t for t in trades}
     for sid, sells in sells_range.items():
-        matches = compute_matches(buys_range.get(sid, []), sells, policy, custom_rules=custom_rules)
+        matches = compute_matches(buys_all.get(sid, []), sells, policy, custom_rules=custom_rules)
         for m in matches:
             realized[sid] += net_pnl_for_match(m, trade_by_id)
 
@@ -285,9 +289,9 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
         last_price = quote["price"] if quote else avg_cost
         mv = qty * last_price
         unrealized = (last_price - avg_cost) * qty
-        in_range_buys = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and _is_buy(t)]
+        all_buys_user = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in trades if t.stock_id == sid and t.user == user and _is_buy(t)]
         in_range_sells = [Lot(t.id, t.quantity, t.price, str(t.trade_date)) for t in in_range if t.stock_id == sid and t.user == user and not _is_buy(t)]
-        real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(in_range_buys, in_range_sells, policy, custom_rules=custom_rules))
+        real = sum(net_pnl_for_match(m, trade_by_id) for m in compute_matches(all_buys_user, in_range_sells, policy, custom_rules=custom_rules))
         m = masters.get(sid)
         main_rows.append({
             "買賣人": user,

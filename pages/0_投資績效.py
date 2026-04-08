@@ -190,15 +190,16 @@ all_trades_full = list(all_trades)
 
 def _pl_realized_unrealized_for_trades(trades_list, _start, _end, _custom_rules, _masters, _policy="CUSTOM"):
     """給定交易列表與區間，回傳 (已實現加總, 未實現加總)。"""
-    _tr = [t for t in trades_list if _start <= t.trade_date <= _end]
     _trade_by_id = {t.id: t for t in trades_list}
     _buys = defaultdict(list)
     _sells = defaultdict(list)
-    for t in _tr:
+    for t in trades_list:
         lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
         if (t.side or "").strip().upper() in ("BUY", "配股"):
             _buys[t.stock_id].append(lot)
-        else:
+    for t in trades_list:
+        if _start <= t.trade_date <= _end and (t.side or "").strip().upper() not in ("BUY", "配股"):
+            lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
             _sells[t.stock_id].append(lot)
     _realized = defaultdict(float)
     for sid, sells in _sells.items():
@@ -234,11 +235,13 @@ trades_in_range = [t for t in all_trades if start_date <= t.trade_date <= end_da
 trade_by_id = {t.id: t for t in all_trades}
 buys_by_stock = defaultdict(list)
 sells_by_stock = defaultdict(list)
-for t in trades_in_range:
+for t in all_trades:
     lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
     if (t.side or "").strip().upper() in ("BUY", "配股"):
         buys_by_stock[t.stock_id].append(lot)
-    else:
+for t in trades_in_range:
+    if (t.side or "").strip().upper() not in ("BUY", "配股"):
+        lot = Lot(t.id, t.quantity, t.price, str(t.trade_date))
         sells_by_stock[t.stock_id].append(lot)
 
 # 已實現：區間內沖銷，並收集每筆配對損益與賣出日（供盈虧比、回撤、累積曲線）
@@ -550,7 +553,7 @@ with st.expander("📐 計算邏輯說明", expanded=False):
     st.markdown("""
     | 項目 | 損益總覽與投資績效 | 庫存損益 |
     |------|-------------------|------------|
-    | 已實現 | 區間內交易 → 依 stock_id 分組買/賣 → 每檔 `compute_matches(buys, sells, custom_rules)` → 每筆配對 `net_pnl_for_match` 加總。**「全部」時**：區間 = 全部交易（無日期過濾）。 | `in_range = trades` 落在 start_date～end_date → 同上 per stock。**「全部」時**：start=2000-01-01、end=今天，故 in_range = 全部交易。 |
+    | 已實現 | 以**賣出日落在區間**為準：區間內賣出 + 歷史全部買進做配對；每筆配對以 `net_pnl_for_match`（已扣費稅）加總。**「全部」時**：等同全期間。 | `sells_in_range = trades where sell_date in [start,end]`，`buys_all = all buys`，逐檔 `compute_matches(buys_all, sells_in_range, ...)`。 |
     | 未實現 | **全部交易** → 每檔持倉成本與股數 → (現價 − 均價) × 股數；現價 = API 或持倉均價。 | 同上：持倉與成本用 **全部** 交易，未實現 = (現價 − 均價) × 股數。 |
     | 沖銷 | 自定沖銷：`custom_rules` (sell_id, buy_id, qty)，`_custom_match` 依規則配對，`min(rule_qty, sl.qty, bl.qty)` 且會扣減 lot 剩餘。 | 同一套 `compute_matches` / `custom_rules`。 |
     """)
