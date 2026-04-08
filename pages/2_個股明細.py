@@ -124,6 +124,14 @@ def _fmt_num(val):
         return str(val)
 
 
+def _style_subset_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Styler.apply 相容寫法（避免部分環境無 applymap）。"""
+    out = pd.DataFrame("", index=df.index, columns=df.columns)
+    for c in df.columns:
+        out[c] = df[c].map(_style_signed)
+    return out
+
+
 # ---------- 已出售 ----------
 st.subheader("已出售")
 st.caption(f"**{company_label}** · 以下為已沖銷的「買→賣」明細，每列一筆沖銷；**買/賣** 欄為「買→賣」表示該列為買進後賣出，實際賣出資訊見 **出售日、賣價、賣出金額**。")
@@ -135,7 +143,7 @@ else:
     style_sold = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
     if style_sold:
         st.dataframe(
-            sold_df.style.format(fmt_sold).applymap(_style_signed, subset=style_sold),
+            sold_df.style.format(fmt_sold).apply(_style_subset_df, axis=None, subset=style_sold),
             use_container_width=True,
             hide_index=True,
         )
@@ -156,7 +164,7 @@ else:
     style_inv = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
     if style_inv:
         st.dataframe(
-            inv_df.style.format(fmt_inv).applymap(_style_signed, subset=style_inv),
+            inv_df.style.format(fmt_inv).apply(_style_subset_df, axis=None, subset=style_inv),
             use_container_width=True,
             hide_index=True,
         )
