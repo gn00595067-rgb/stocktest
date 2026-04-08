@@ -21,6 +21,7 @@ from db.models import Trade, StockMaster, CustomMatchRule
 from reports.portfolio_report import build_portfolio_df
 from reports.stock_detail_report import build_stock_detail
 from services.price_service import get_quote_cached, fetch_daily_prices
+from services.pnl_engine import Lot, compute_matches
 
 # ---------------------------------------------------------------------------
 # 圖表視覺常數（統一 theme）
@@ -136,6 +137,16 @@ def _fmt_pct(x):
         return str(x)
 
 
+def _fmt_pct_signed(x):
+    """百分比格式化（小數 2 位，含正負號）"""
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return "—"
+    try:
+        return f"{float(x):+.2f}%"
+    except Exception:
+        return str(x)
+
+
 def _fmt_big(val):
     """大數字改為 萬/億 顯示，避免被截斷"""
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -154,7 +165,7 @@ def _fmt_big(val):
 # ---------------------------------------------------------------------------
 # KPI 摘要區
 # ---------------------------------------------------------------------------
-def build_portfolio_kpi_cards(df: pd.DataFrame) -> None:
+def build_portfolio_kpi_cards(df: pd.DataFrame, realized_ret_pct=None, unrealized_ret_pct=None) -> None:
     """持倉市值、未實現損益、已實現損益、總報酬率。正數紅/負數綠。"""
     if df.empty:
         st.caption("尚無持倉，無法計算 KPI。")
@@ -179,6 +190,7 @@ def build_portfolio_kpi_cards(df: pd.DataFrame) -> None:
         <div class="portfolio-kpi-card">
             <div class="portfolio-kpi-label">未實現損益</div>
             <div class="portfolio-kpi-value {cls}">{_fmt_num(total_unrealized)}</div>
+            <div class="portfolio-kpi-meta">報酬率 {_fmt_pct_signed(unrealized_ret_pct)}</div>
         </div>""", unsafe_allow_html=True)
     with c3:
         cls = _pnl_color(total_realized)
@@ -186,6 +198,7 @@ def build_portfolio_kpi_cards(df: pd.DataFrame) -> None:
         <div class="portfolio-kpi-card">
             <div class="portfolio-kpi-label">已實現損益</div>
             <div class="portfolio-kpi-value {cls}">{_fmt_num(total_realized)}</div>
+            <div class="portfolio-kpi-meta">報酬率 {_fmt_pct_signed(realized_ret_pct)}</div>
         </div>""", unsafe_allow_html=True)
     with c4:
         cls = _pnl_color(total_return_pct)
@@ -547,7 +560,46 @@ if df.empty:
 
 # ----- 2. KPI 摘要 -----
 st.markdown("---")
-build_portfolio_kpi_cards(df)
+# 報酬率分母（與投資績效頁一致口徑）
+trades_for_kpi = all_trades if portfolio_filter_users is None else [t for t in all_trades if t.user in portfolio_filter_users]
+trade_by_id = {t.id: t for t in trades_for_kpi}
+realized_cost_sum = 0.0
+bucket = {}
+for t in trades_for_kpi:
+    k = (str(getattr(t, "stock_id", "")), str(getattr(t, "user", "") or ""))
+    if k not in bucket:
+        bucket[k] = {"buys": [], "sells": []}
+    side_u = (getattr(t, "side", "") or "").strip().upper()
+    lot = Lot(t.id, int(getattr(t, "quantity", 0) or 0), float(getattr(t, "price", 0) or 0), str(getattr(t, "trade_date", "")))
+    if side_u in ("BUY", "配股"):
+        bucket[k]["buys"].append(lot)
+    elif start_date <= getattr(t, "trade_date", start_date) <= end_date:
+        bucket[k]["sells"].append(lot)
+for _k, vv in bucket.items():
+    buys = vv["buys"]
+    sells = vv["sells"]
+    if not buys or not sells:
+        continue
+    matches = compute_matches(
+        [Lot(b.trade_id, b.qty, b.price, b.date) for b in buys],
+        [Lot(s.trade_id, s.qty, s.price, s.date) for s in sells],
+        policy,
+        custom_rules=custom_rules,
+    )
+    for m in matches:
+        buy_id, _sell_id, qty, buy_price, _sp, _ = m
+        bt = trade_by_id.get(buy_id)
+        buy_fee_alloc = 0.0
+        if bt and getattr(bt, "quantity", 0):
+            buy_fee_alloc = float(getattr(bt, "fee", None) or 0) * (qty / bt.quantity)
+        realized_cost_sum += qty * buy_price + buy_fee_alloc
+
+total_unrealized = float(df["未實現損益"].sum()) if "未實現損益" in df.columns else 0.0
+total_realized = float(df["已實現損益"].sum()) if "已實現損益" in df.columns else 0.0
+unrealized_cost_sum = float((df["市值"] - df["未實現損益"]).sum()) if ("市值" in df.columns and "未實現損益" in df.columns) else 0.0
+realized_ret_pct = (total_realized / realized_cost_sum * 100) if realized_cost_sum > 0 else None
+unrealized_ret_pct = (total_unrealized / unrealized_cost_sum * 100) if unrealized_cost_sum > 0 else None
+build_portfolio_kpi_cards(df, realized_ret_pct=realized_ret_pct, unrealized_ret_pct=unrealized_ret_pct)
 
 # ----- 3. 持倉明細表 -----
 st.markdown("---")
