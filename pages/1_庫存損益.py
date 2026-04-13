@@ -673,6 +673,14 @@ def _detail_fmt_num(val):
     except (ValueError, TypeError):
         return str(val)
 
+
+def _detail_style_subset_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Styler.apply 相容寫法（避免部分環境無 applymap）。"""
+    out = pd.DataFrame("", index=df.index, columns=df.columns)
+    for c in df.columns:
+        out[c] = df[c].map(_detail_style_signed)
+    return out
+
 if choice is not None and 0 <= choice < len(detail_rows):
     sid, name, user = detail_rows[choice]
     trades_for_row = [t for t in all_trades if str(t.stock_id).strip() == str(sid).strip() and (getattr(t, "user", None) or "") == (user or "")]
@@ -694,7 +702,11 @@ if choice is not None and 0 <= choice < len(detail_rows):
         fmt_sold = {c: _detail_fmt_num for c in cols_num}
         style_cols = [c for c in ["單筆損益", "累計損益"] if c in sold_df.columns]
         if style_cols:
-            st.dataframe(sold_df.style.format(fmt_sold).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
+            st.dataframe(
+                sold_df.style.format(fmt_sold).apply(_detail_style_subset_df, axis=None, subset=style_cols),
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
             st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
         st.caption(f"總賣出金額：{sold_revenue:,.0f}" if sold_revenue else "0")
@@ -706,7 +718,11 @@ if choice is not None and 0 <= choice < len(detail_rows):
         fmt_inv = {c: _detail_fmt_num for c in cols_num}
         style_cols = [c for c in ["單筆損益", "累計損益"] if c in inv_df.columns]
         if style_cols:
-            st.dataframe(inv_df.style.format(fmt_inv).applymap(_detail_style_signed, subset=style_cols), use_container_width=True, hide_index=True)
+            st.dataframe(
+                inv_df.style.format(fmt_inv).apply(_detail_style_subset_df, axis=None, subset=style_cols),
+                use_container_width=True,
+                hide_index=True,
+            )
         else:
             st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
         st.caption(f"庫存股數 {inv_summary.get('庫存股數', 0):,} · 原始成本 {inv_summary.get('原始成本', 0):,.0f} · 均價 {inv_summary.get('原始均價', 0):.2f}")
