@@ -17,6 +17,7 @@ except Exception:
     pass
 from db.database import get_session
 from db.models import StockMaster
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 from db.seed_data import run_seed
 from db.mock_data import generate_mock_trades
 from services.price_service import fetch_stock_list_finmind
@@ -29,6 +30,12 @@ from services.stock_list_loader import (
 from sqlalchemy.exc import OperationalError, IntegrityError
 
 ensure_google_sheet_loaded()
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
+if not is_admin():
+    st.error("此頁僅管理者可使用。")
+    st.stop()
 
 
 def _save_stock_list_cache(items: list) -> bool:

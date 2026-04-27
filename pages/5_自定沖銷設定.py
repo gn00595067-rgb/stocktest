@@ -15,8 +15,15 @@ from db.models import Trade, StockMaster, CustomMatchRule
 from sqlalchemy.exc import OperationalError
 from services.price_service import get_quote_cached, fetch_stock_list_cached
 from services.position_cost import compute_position_and_cost_by_stock
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 
 st.set_page_config(page_title="自定沖銷設定", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
+if not is_admin():
+    st.error("此頁僅管理者可使用。")
+    st.stop()
 st.title("自定沖銷設定")
 st.caption("可指定「某筆賣出」與「某筆買進」的沖銷股數；在 庫存損益、投資績效、個股明細等頁面選擇「自定沖銷」時會依此規則計算損益。")
 

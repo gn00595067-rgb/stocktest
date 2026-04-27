@@ -18,6 +18,7 @@ except Exception:
 from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
 from reports.portfolio_report import build_portfolio_df
 from reports.stock_detail_report import build_stock_detail
 from services.price_service import get_quote_cached, fetch_daily_prices
@@ -446,6 +447,9 @@ def build_distribution_pie(df: pd.DataFrame, name_col: str, value_col: str = "�
 # 頁面主流程
 # ===========================================================================
 st.set_page_config(page_title="庫存損益", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
 _inject_page_style()
 
 st.title("庫存損益")
@@ -510,6 +514,7 @@ with st.container():
         masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
         custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
         sess.close()
+        all_trades = filter_trades_by_permission(all_trades)
     except OperationalError:
         st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
         st.stop()

@@ -23,8 +23,15 @@ except Exception:
     pass
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 
 st.set_page_config(page_title="交易匯入", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
+if not is_admin():
+    st.error("此頁僅管理者可使用。")
+    st.stop()
 st.title("交易匯入")
 st.caption("本頁提供兩種匯入方式：**一、券商 CSV/Excel 交易紀錄**；**二、Excel 沖銷庫存資料**（已出售＋庫存，每分頁一家公司）。")
 

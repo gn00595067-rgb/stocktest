@@ -10,6 +10,7 @@ load_dotenv(os.path.join(_project_root, ".env"))
 
 import streamlit as st
 from sqlalchemy.exc import OperationalError
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 
 # Streamlit Cloud 的 Secrets 不會自動變成 os.environ，報價與試算表後端讀 os.environ，所以要同步
 try:
@@ -39,6 +40,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
+
 # 左側欄一出現就自動從 Google Sheet 載入股票清單（每 session 只執行一次；任一頁面載入都會觸發）
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
@@ -67,7 +72,7 @@ except Exception:
 # 左側欄：產生模擬數據按鈕（2024/1/1～今天，2000 筆）
 st.sidebar.markdown("---")
 st.sidebar.caption("🔧 開發用")
-if st.sidebar.button("產生模擬數據"):
+if is_admin() and st.sidebar.button("產生模擬數據"):
     try:
         from db.mock_data import generate_mock_trades
         n = generate_mock_trades(
@@ -84,7 +89,7 @@ if st.sidebar.button("產生模擬數據"):
 # 左側欄：清空所有庫存資料（刪除全部交易與沖銷規則）
 st.sidebar.markdown("---")
 st.sidebar.caption("⚠️ 資料管理")
-if st.session_state.get("show_clear_confirm"):
+if is_admin() and st.session_state.get("show_clear_confirm"):
     st.sidebar.warning("即將刪除**所有交易**與**自定沖銷規則**，此操作無法復原。")
     if st.sidebar.button("確認清空", type="primary", key="confirm_clear_btn"):
         try:
@@ -109,7 +114,7 @@ if st.session_state.get("show_clear_confirm"):
     if st.sidebar.button("取消", key="cancel_clear_btn"):
         del st.session_state["show_clear_confirm"]
         st.rerun()
-else:
+elif is_admin():
     if st.sidebar.button("清空所有庫存資料"):
         st.session_state["show_clear_confirm"] = True
         st.rerun()

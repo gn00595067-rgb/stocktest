@@ -13,8 +13,12 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from reports.stock_detail_report import build_stock_detail
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
 
 st.set_page_config(page_title="個股明細", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
 st.title("個股明細表")
 st.caption("計算口徑：**已出售（已實現）** 欄位中的單筆/累計損益已扣買進手續費、賣出手續費、證交稅；**庫存（未實現）** 不預扣未來賣出費稅。")
 
@@ -24,6 +28,7 @@ try:
     masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
     custom_rules_list = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
     sess.close()
+    trades = filter_trades_by_permission(trades)
 except OperationalError:
     st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
     st.stop()

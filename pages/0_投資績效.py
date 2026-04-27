@@ -19,11 +19,22 @@ except Exception:
 from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
+from services.auth_service import (
+    ensure_bootstrap_admin,
+    login_guard,
+    render_auth_sidebar,
+    filter_trades_by_permission,
+    is_admin,
+    get_allowed_traders,
+)
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.price_service import get_quote_cached
 from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
 st.title("損益總覽與投資績效")
 st.caption("計算口徑：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。")
 
@@ -75,9 +86,12 @@ if btn_all:
 
 # 先查詢買賣人列表（供篩選用）
 try:
-    _sess = get_session()
-    pl_users = sorted(set(u[0] for u in _sess.query(Trade.user).distinct().all() if u[0]))
-    _sess.close()
+    if is_admin():
+        _sess = get_session()
+        pl_users = sorted(set(u[0] for u in _sess.query(Trade.user).distinct().all() if u[0]))
+        _sess.close()
+    else:
+        pl_users = get_allowed_traders() or []
 except OperationalError:
     pl_users = []
     st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
@@ -188,6 +202,7 @@ all_trades = sess.query(Trade).all()
 masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
 custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
 sess.close()
+all_trades = filter_trades_by_permission(all_trades)
 
 # 保留未篩選交易（供「依買賣人加總」使用）
 all_trades_full = list(all_trades)

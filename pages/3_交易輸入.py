@@ -22,8 +22,20 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster
 from services.price_service import get_quote_cached, fetch_stock_list_cached, clear_quote_cache, get_finmind_debug
+from services.auth_service import (
+    ensure_bootstrap_admin,
+    login_guard,
+    render_auth_sidebar,
+    is_admin,
+    get_allowed_traders,
+    can_access_trader,
+    filter_trades_by_permission,
+)
 
 st.set_page_config(page_title="交易輸入", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
 st.title("交易輸入（仿奇摩）")
 
 session = None
@@ -132,7 +144,16 @@ with col_left:
         index=default_idx,
         format_func=lambda x: stock_options.get(x, x),
     )
-    user = st.text_input("買賣人", value=st.session_state.get("last_user", ""))
+    allowed_traders = get_allowed_traders()
+    if is_admin():
+        user = st.text_input("買賣人", value=st.session_state.get("last_user", ""))
+    else:
+        if not allowed_traders:
+            st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
+            st.stop()
+        last_user = st.session_state.get("last_user")
+        default_idx = allowed_traders.index(last_user) if last_user in allowed_traders else 0
+        user = st.selectbox("買賣人", options=allowed_traders, index=default_idx)
     trade_date = st.date_input("日期", value=st.session_state.get("last_date", date.today()))
     side = st.radio("買/賣", ["BUY", "SELL"], horizontal=True)
     quote = get_quote_cached(stock_key) if stock_key else None
@@ -142,6 +163,9 @@ with col_left:
     is_daytrade = st.checkbox("是否當沖", value=False)
     note = st.text_input("備註", value="")
     if st.button("送出"):
+        if not can_access_trader(user):
+            st.error("你沒有操作此買賣人的權限。")
+            st.stop()
         sess = get_session()
         t = Trade(
             user=user,
@@ -199,6 +223,7 @@ with col_right:
 st.subheader("今日交易列表")
 sess = get_session()
 today_trades = sess.query(Trade).filter(Trade.trade_date == trade_date).order_by(Trade.id).all()
+today_trades = filter_trades_by_permission(today_trades)
 if today_trades:
     import pandas as pd
     data = [
@@ -218,9 +243,15 @@ if today_trades:
     st.data_editor(df, use_container_width=True, disabled=["id"], hide_index=True)
     del_id = st.number_input("要刪除的交易 ID", min_value=0, value=0, step=1, key="del_trade_id")
     if st.button("刪除該筆交易") and del_id:
-        sess.query(Trade).filter(Trade.id == int(del_id)).delete()
-        sess.commit()
-        st.success("已刪除")
+        target = sess.query(Trade).filter(Trade.id == int(del_id)).first()
+        if not target:
+            st.warning("找不到該交易。")
+        elif not can_access_trader(target.user):
+            st.error("你沒有刪除此交易的權限。")
+        else:
+            sess.query(Trade).filter(Trade.id == int(del_id)).delete()
+            sess.commit()
+            st.success("已刪除")
         st.rerun()
 else:
     st.info("本日尚無交易")

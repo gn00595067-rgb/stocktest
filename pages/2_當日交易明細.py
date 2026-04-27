@@ -14,8 +14,12 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
 st.title("當日交易明細")
 st.caption("以「每日」為主體列出當日全部原始買賣，並加總交割應收/應付，協助核對交割金額。")
 st.caption("計算口徑：當日列表之賣出損益已扣買進手續費、賣出手續費、證交稅；交割加總則依當日收付金額（含手續費/證交稅）估算。")
@@ -26,6 +30,7 @@ try:
     masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
     custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
     sess.close()
+    trades = filter_trades_by_permission(trades)
 except OperationalError:
     st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
     st.stop()

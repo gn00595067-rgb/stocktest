@@ -62,3 +62,22 @@ class CustomMatchRule(Base):
     buy_trade_id = Column(Integer, ForeignKey("trades.id"), primary_key=True)
     matched_qty = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
+
+
+class UserAccount(Base):
+    __tablename__ = "user_accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    username = Column(String(50), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default="user")  # admin / user
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class UserTraderBinding(Base):
+    __tablename__ = "user_trader_bindings"
+
+    user_id = Column(Integer, ForeignKey("user_accounts.id"), primary_key=True)
+    trader_name = Column(String(50), primary_key=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
