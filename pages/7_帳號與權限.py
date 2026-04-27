@@ -2,7 +2,7 @@
 """管理者頁：帳號與買賣人權限綁定"""
 import streamlit as st
 
-from db.database import get_session
+from db.database import get_session, get_engine
 from db.models import Trade, UserAccount, UserTraderBinding
 from services.auth_service import (
     ROLE_ADMIN,
@@ -13,6 +13,17 @@ from services.auth_service import (
     is_admin,
     hash_password,
 )
+
+
+def _sync_to_sheet_after_auth_change() -> tuple[bool, str | None]:
+    """帳號/權限變更後立即強制同步，避免重啟後遺失。"""
+    try:
+        from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
+        if not is_google_sheet_enabled():
+            return True, None
+        return sync_db_to_sheet(get_engine())
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
 
 st.set_page_config(page_title="帳號與權限", layout="wide")
 ensure_bootstrap_admin()
@@ -62,8 +73,12 @@ if create_submitted:
                     )
                 )
                 sess.commit()
-                st.success("帳號建立成功。")
-                st.rerun()
+                ok, err = _sync_to_sheet_after_auth_change()
+                if ok:
+                    st.success("帳號建立成功，且已同步到 Google Sheet。")
+                    st.rerun()
+                else:
+                    st.error(f"帳號已建立，但同步到 Google Sheet 失敗：{err}")
         finally:
             sess.close()
 
@@ -103,8 +118,12 @@ for u in users:
                         if new_pwd.strip():
                             target.password_hash = hash_password(new_pwd.strip())
                         sess2.commit()
-                        st.success(f"已更新 {u.username}")
-                        st.rerun()
+                        ok, err = _sync_to_sheet_after_auth_change()
+                        if ok:
+                            st.success(f"已更新 {u.username}，且已同步到 Google Sheet。")
+                            st.rerun()
+                        else:
+                            st.error(f"已更新 {u.username}，但同步到 Google Sheet 失敗：{err}")
                 finally:
                     sess2.close()
 
@@ -122,7 +141,11 @@ for u in users:
                     for name in selected:
                         sess3.add(UserTraderBinding(user_id=int(u.id), trader_name=name))
                     sess3.commit()
-                    st.success(f"已更新 {u.username} 綁定買賣人。")
-                    st.rerun()
+                    ok, err = _sync_to_sheet_after_auth_change()
+                    if ok:
+                        st.success(f"已更新 {u.username} 綁定買賣人，且已同步到 Google Sheet。")
+                        st.rerun()
+                    else:
+                        st.error(f"已更新 {u.username} 綁定，但同步到 Google Sheet 失敗：{err}")
                 finally:
                     sess3.close()

@@ -50,6 +50,14 @@ def ensure_bootstrap_admin() -> None:
             )
         )
         sess.commit()
+        # 首次建立 admin 後，若啟用 Google Sheet，立即落盤避免重啟遺失。
+        try:
+            from db.database import get_engine
+            from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
+            if is_google_sheet_enabled():
+                sync_db_to_sheet(get_engine())
+        except Exception:
+            pass
     finally:
         sess.close()
 
