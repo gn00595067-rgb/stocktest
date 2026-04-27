@@ -18,7 +18,14 @@ except Exception:
 from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
-from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.auth_service import (
+    ensure_bootstrap_admin,
+    login_guard,
+    render_auth_sidebar,
+    filter_trades_by_permission,
+    is_admin,
+    get_allowed_traders,
+)
 from reports.portfolio_report import build_portfolio_df
 from reports.stock_detail_report import build_stock_detail
 from services.price_service import get_quote_cached, fetch_daily_prices
@@ -510,11 +517,14 @@ with st.container():
     try:
         sess = get_session()
         all_trades = sess.query(Trade).all()
-        portfolio_users = sorted(set(t.user for t in all_trades))
         masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
         custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
         sess.close()
         all_trades = filter_trades_by_permission(all_trades)
+        if is_admin():
+            portfolio_users = sorted(set(t.user for t in all_trades if getattr(t, "user", None)))
+        else:
+            portfolio_users = get_allowed_traders() or []
     except OperationalError:
         st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
         st.stop()
@@ -541,14 +551,26 @@ with st.container():
             key="portfolio_policy",
         )
     with col_f4:
-        filter_user_options = ["全部"] + portfolio_users
-        selected_users = st.multiselect(
-            "買賣人",
-            options=filter_user_options,
-            default=["全部"],
-            key="portfolio_filter_user_multi",
-        )
-        portfolio_filter_users = None if (not selected_users or "全部" in selected_users) else selected_users
+        if is_admin():
+            filter_user_options = ["全部"] + portfolio_users
+            selected_users = st.multiselect(
+                "買賣人",
+                options=filter_user_options,
+                default=["全部"],
+                key="portfolio_filter_user_multi",
+            )
+            portfolio_filter_users = None if (not selected_users or "全部" in selected_users) else selected_users
+        else:
+            if not portfolio_users:
+                st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
+                st.stop()
+            selected_users = st.multiselect(
+                "買賣人",
+                options=portfolio_users,
+                default=portfolio_users,
+                key="portfolio_filter_user_multi",
+            )
+            portfolio_filter_users = selected_users if selected_users else []
     _inject_range_button_highlight(_range_active_index(start_date, end_date, today))
     st.caption("持倉與損益會先套用 **自定沖銷** 規則；若選擇「未定沖銷部分」策略，則會對尚未被規則覆蓋的部分自動補配。")
     st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")

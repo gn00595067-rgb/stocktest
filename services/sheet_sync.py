@@ -18,10 +18,14 @@ except ImportError:
 # 試算表內工作表名稱
 SHEET_TRADES = "trades"
 SHEET_RULES = "custom_match_rules"
+SHEET_USERS = "user_accounts"
+SHEET_USER_BINDINGS = "user_trader_bindings"
 
 # 欄位順序（與 DB 對應）
 TRADES_HEADERS = ["id", "user", "stock_id", "trade_date", "side", "price", "quantity", "is_daytrade", "fee", "tax", "note"]
 RULES_HEADERS = ["sell_trade_id", "buy_trade_id", "matched_qty", "created_at"]
+USERS_HEADERS = ["id", "username", "password_hash", "role", "is_active", "created_at"]
+USER_BINDINGS_HEADERS = ["user_id", "trader_name", "created_at"]
 
 # 需寫入試算表時用的範圍（Scopes）
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
@@ -138,7 +142,7 @@ def _parse_bool(v) -> bool:
 
 def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
     """
-    從 Google 試算表讀取「交易」「自定沖銷規則」並寫入 DB（覆寫現有資料）。
+    從 Google 試算表讀取「交易」「自定沖銷規則」「帳號」「權限綁定」並寫入 DB（覆寫現有資料）。
     回傳 (True, None) 成功；(False, error_msg) 失敗。
     """
     if not _HAS_GSPREAD:
@@ -148,7 +152,7 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
         return False, err
 
     from sqlalchemy import text
-    from db.models import Trade, CustomMatchRule
+    from db.models import Trade, CustomMatchRule, UserAccount, UserTraderBinding
 
     try:
         # --- 讀取 trades ---
@@ -165,7 +169,23 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
         except gspread.WorksheetNotFound:
             rows_rules = []
 
+        # --- 讀取 user_accounts ---
+        try:
+            ws_users = spread.worksheet(SHEET_USERS)
+            rows_users = ws_users.get_all_records()
+        except gspread.WorksheetNotFound:
+            rows_users = []
+
+        # --- 讀取 user_trader_bindings ---
+        try:
+            ws_user_bindings = spread.worksheet(SHEET_USER_BINDINGS)
+            rows_user_bindings = ws_user_bindings.get_all_records()
+        except gspread.WorksheetNotFound:
+            rows_user_bindings = []
+
         with engine.connect() as conn:
+            conn.execute(text("DELETE FROM user_trader_bindings"))
+            conn.execute(text("DELETE FROM user_accounts"))
             conn.execute(text("DELETE FROM custom_match_rules"))
             conn.execute(text("DELETE FROM trades"))
             conn.commit()
@@ -232,11 +252,67 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                     })
                 conn.commit()
 
+        # 插入 user_accounts（保留 id）
+        if rows_users:
+            with engine.connect() as conn:
+                for r in rows_users:
+                    uid = r.get("id")
+                    if uid is None or (isinstance(uid, str) and not uid.strip()):
+                        continue
+                    try:
+                        uid = int(float(uid))
+                    except (ValueError, TypeError):
+                        continue
+                    username = str(r.get("username") or "").strip()
+                    password_hash = str(r.get("password_hash") or "").strip()
+                    role = str(r.get("role") or "user").strip().lower()
+                    if role not in ("admin", "user"):
+                        role = "user"
+                    if not username or not password_hash:
+                        continue
+                    is_active = _parse_bool(r.get("is_active"))
+                    created_at = _parse_datetime(r.get("created_at"))
+                    conn.execute(text("""
+                        INSERT INTO user_accounts (id, username, password_hash, role, is_active, created_at)
+                        VALUES (:id, :username, :password_hash, :role, :is_active, :created_at)
+                    """), {
+                        "id": uid,
+                        "username": username,
+                        "password_hash": password_hash,
+                        "role": role,
+                        "is_active": is_active,
+                        "created_at": created_at,
+                    })
+                conn.commit()
+
+        # 插入 user_trader_bindings
+        if rows_user_bindings:
+            with engine.connect() as conn:
+                for r in rows_user_bindings:
+                    try:
+                        user_id = int(float(r.get("user_id") or 0))
+                    except (ValueError, TypeError):
+                        continue
+                    trader_name = str(r.get("trader_name") or "").strip()
+                    created_at = _parse_datetime(r.get("created_at"))
+                    if user_id <= 0 or not trader_name:
+                        continue
+                    conn.execute(text("""
+                        INSERT INTO user_trader_bindings (user_id, trader_name, created_at)
+                        VALUES (:user_id, :trader_name, :created_at)
+                    """), {
+                        "user_id": user_id,
+                        "trader_name": trader_name,
+                        "created_at": created_at,
+                    })
+                conn.commit()
+
         # 讓 SQLite 下次自動 id 從 max(id)+1 開始（無交易時 sqlite_sequence 可能尚不存在，略過即可）
         if engine.dialect.name == "sqlite":
             try:
                 with engine.connect() as conn:
                     conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM trades) WHERE name = 'trades'"))
+                    conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM user_accounts) WHERE name = 'user_accounts'"))
                     conn.commit()
             except Exception:
                 pass
@@ -248,7 +324,7 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
 
 def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
     """
-    將 DB 的「交易」「自定沖銷規則」寫回 Google 試算表（整表覆寫）。
+    將 DB 的「交易」「自定沖銷規則」「帳號」「權限綁定」寫回 Google 試算表（整表覆寫）。
     回傳 (True, None) 成功；(False, error_msg) 失敗。
     """
     if not _HAS_GSPREAD:
@@ -268,6 +344,16 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
             r_rules = conn.execute(text("""
                 SELECT sell_trade_id, buy_trade_id, matched_qty, created_at
                 FROM custom_match_rules
+            """)).fetchall()
+            r_users = conn.execute(text("""
+                SELECT id, username, password_hash, role, is_active, created_at
+                FROM user_accounts
+                ORDER BY id
+            """)).fetchall()
+            r_user_bindings = conn.execute(text("""
+                SELECT user_id, trader_name, created_at
+                FROM user_trader_bindings
+                ORDER BY user_id, trader_name
             """)).fetchall()
 
         def _date_str(v):
@@ -300,6 +386,18 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                 _datetime_str(r[3]),
             ]
 
+        def row_user(r):
+            return [
+                r[0], r[1], r[2], r[3],
+                bool(r[4]) if r[4] is not None else False,
+                _datetime_str(r[5]),
+            ]
+
+        def row_user_binding(r):
+            return [
+                r[0], r[1], _datetime_str(r[2]),
+            ]
+
         # 寫入 trades 工作表
         try:
             ws_trades = spread.worksheet(SHEET_TRADES)
@@ -319,6 +417,26 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         if rules_data:
             ws_rules.clear()
             ws_rules.update(rules_data, value_input_option="USER_ENTERED")
+
+        # 寫入 user_accounts 工作表
+        try:
+            ws_users = spread.worksheet(SHEET_USERS)
+        except gspread.WorksheetNotFound:
+            ws_users = spread.add_worksheet(title=SHEET_USERS, rows=500, cols=len(USERS_HEADERS))
+        users_data = [USERS_HEADERS] + [row_user(r) for r in r_users]
+        if users_data:
+            ws_users.clear()
+            ws_users.update(users_data, value_input_option="USER_ENTERED")
+
+        # 寫入 user_trader_bindings 工作表
+        try:
+            ws_user_bindings = spread.worksheet(SHEET_USER_BINDINGS)
+        except gspread.WorksheetNotFound:
+            ws_user_bindings = spread.add_worksheet(title=SHEET_USER_BINDINGS, rows=1000, cols=len(USER_BINDINGS_HEADERS))
+        user_bindings_data = [USER_BINDINGS_HEADERS] + [row_user_binding(r) for r in r_user_bindings]
+        if user_bindings_data:
+            ws_user_bindings.clear()
+            ws_user_bindings.update(user_bindings_data, value_input_option="USER_ENTERED")
 
         return True, None
     except Exception as e:

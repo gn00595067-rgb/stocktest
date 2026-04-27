@@ -124,14 +124,26 @@ with col_m:
         format_func=lambda x: {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(x, x),
     )
 with col_u:
-    pl_user_opts = ["全部"] + pl_users
-    picked_users = st.multiselect(
-        "買賣人",
-        options=pl_user_opts,
-        default=["全部"],
-        key="pl_filter_user_multi",
-    )
-    pl_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users
+    if is_admin():
+        pl_user_opts = ["全部"] + pl_users
+        picked_users = st.multiselect(
+            "買賣人",
+            options=pl_user_opts,
+            default=["全部"],
+            key="pl_filter_user_multi",
+        )
+        pl_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users
+    else:
+        if not pl_users:
+            st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
+            st.stop()
+        picked_users = st.multiselect(
+            "買賣人",
+            options=pl_users,
+            default=pl_users,
+            key="pl_filter_user_multi",
+        )
+        pl_filter_users = picked_users if picked_users else []
 st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
 
 
