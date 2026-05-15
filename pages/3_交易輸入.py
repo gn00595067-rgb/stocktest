@@ -134,15 +134,19 @@ col_left, col_right = st.columns([1, 1])
 with col_left:
     st.subheader("交易表單")
     options = list(stock_options.keys())
-    default_idx = 0
-    if st.session_state.get("selected_stock_id") and st.session_state["selected_stock_id"] in options:
-        default_idx = options.index(st.session_state["selected_stock_id"])
-        st.session_state.pop("selected_stock_id", None)
+    if options and "trade_stock_id" not in st.session_state:
+        st.session_state["trade_stock_id"] = options[0]
+    if st.session_state.get("selected_stock_id"):
+        sid = st.session_state.pop("selected_stock_id")
+        if sid in options:
+            st.session_state["trade_stock_id"] = sid
+    elif st.session_state.get("trade_stock_id") not in options and options:
+        st.session_state["trade_stock_id"] = options[0]
     stock_key = st.selectbox(
         "股票代號",
         options=options,
-        index=default_idx,
         format_func=lambda x: stock_options.get(x, x),
+        key="trade_stock_id",
     )
     allowed_traders = get_allowed_traders()
     if is_admin():
