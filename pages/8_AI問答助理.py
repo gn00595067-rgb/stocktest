@@ -101,22 +101,45 @@ def _twse_price(code: str) -> dict | None:
             if r.status_code != 200:
                 continue
             items = r.json().get("msgArray", [])
-            if not items or not items[0].get("n"):
+            if not items:
                 continue
-            d       = items[0]
-            prev_f  = _f(d.get("y"))
-            price_f = _f(d.get("z"), prev_f)
-            if price_f <= 0 and prev_f <= 0:
+            d    = items[0]
+            name = d.get("n", "").strip()
+            if not name:
                 continue
-            price_f    = price_f or prev_f
-            is_rt      = d.get("z", "-") not in ("-", "", None)
-            chg_pct    = round((price_f - prev_f) / prev_f * 100, 2) if prev_f else 0
+
+            z_raw  = d.get("z", "-")    # 即時成交價（盤中）
+            pz_raw = d.get("pz", "")    # 最後成交價（盤後最準確）
+            prev_f = _f(d.get("y"))     # 昨日收盤
+            pz_f   = _f(pz_raw)
+
+            is_rt = z_raw not in ("-", "", None)
+            if is_rt:
+                price_f    = _f(z_raw)
+                price_type = "realtime"
+            elif pz_f > 0:
+                price_f    = pz_f
+                price_type = "close"
+            else:
+                price_f    = prev_f
+                price_type = "prev_close"
+
+            if price_f <= 0:
+                continue
+
+            chg_pct = round((price_f - prev_f) / prev_f * 100, 2) if prev_f else 0
             return {
-                "name": d.get("n", code), "price": price_f,
-                "prev_close": prev_f, "change_pct": chg_pct,
-                "open": _f(d.get("o")), "high": _f(d.get("h")),
-                "low": _f(d.get("l")), "volume_k": d.get("v", "-"),
-                "exchange": ex.upper(), "is_realtime": is_rt,
+                "name":        name,
+                "price":       price_f,
+                "prev_close":  prev_f,
+                "change_pct":  chg_pct,
+                "open":        _f(d.get("o")),
+                "high":        _f(d.get("h")),
+                "low":         _f(d.get("l")),
+                "volume_k":    d.get("v", "-"),
+                "exchange":    ex.upper(),
+                "is_realtime": is_rt,
+                "price_type":  price_type,
             }
         except Exception:
             continue
@@ -420,8 +443,9 @@ def _fetch_stock_context(code: str) -> str:
 
     price = _twse_price(code)
     if price:
-        rt    = "即時" if price["is_realtime"] else "昨收（盤後）"
-        sign  = "▲" if price["change_pct"] >= 0 else "▼"
+        _lbl = {"realtime": "即時", "close": "收盤（盤後）", "prev_close": "昨收"}
+        rt   = _lbl.get(price.get("price_type", ""), "盤後")
+        sign = "▲" if price["change_pct"] >= 0 else "▼"
         lines.append(
             f"股票名稱：{price['name']}  股價（{rt}）：${price['price']}"
             f"（{sign}{abs(price['change_pct']):.2f}%）"
