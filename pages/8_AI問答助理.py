@@ -66,7 +66,7 @@ _TIMEOUT  = 10
 # ═══════════════════════════════════════════════════════════════
 
 def _twse_price(code: str) -> dict | None:
-    """TWSE MIS 即時報價（上市 → 上櫃 fallback）"""
+    """TWSE MIS 即時報價（上市 → 上櫃 fallback）；盤後用昨收價"""
     for ex in ("tse", "otc"):
         try:
             url = (
@@ -79,22 +79,43 @@ def _twse_price(code: str) -> dict | None:
             items = r.json().get("msgArray", [])
             if not items:
                 continue
-            d     = items[0]
-            z     = d.get("z", "-")
-            prev  = float(d.get("y") or 0)
-            price = float(z) if z not in ("-", "") else prev
-            if price <= 0:
+            d = items[0]
+            # 名稱欄位不存在代表股票代號有誤
+            if not d.get("n"):
                 continue
-            chg_pct = round((price - prev) / prev * 100, 2) if prev else 0
+            z    = d.get("z", "-")          # 現價（盤中）
+            prev = d.get("y", "")           # 昨收
+            h    = d.get("h", "-")          # 今日最高
+            lo   = d.get("l", "-")          # 今日最低
+
+            # 安全轉 float
+            def _f(v, default=0.0):
+                try:
+                    return float(v) if v not in (None, "-", "") else default
+                except (TypeError, ValueError):
+                    return default
+
+            prev_f  = _f(prev)
+            price_f = _f(z, prev_f)         # 盤中用現價，盤後 z="-" 則用昨收
+
+            # 完全沒有價格資料才放棄
+            if price_f <= 0 and prev_f <= 0:
+                continue
+
+            price_f = price_f or prev_f
+            chg_pct = round((price_f - prev_f) / prev_f * 100, 2) if prev_f else 0
+            is_realtime = z not in ("-", "", None)
+
             return {
-                "name":       d.get("n", code),
-                "price":      price,
-                "prev_close": prev,
-                "change_pct": chg_pct,
-                "high":       d.get("h", "-"),
-                "low":        d.get("l", "-"),
-                "volume_k":   d.get("v", "-"),   # 千股
-                "exchange":   ex.upper(),
+                "name":        d.get("n", code),
+                "price":       price_f,
+                "prev_close":  prev_f,
+                "change_pct":  chg_pct,
+                "high":        h,
+                "low":         lo,
+                "volume_k":    d.get("v", "-"),
+                "exchange":    ex.upper(),
+                "is_realtime": is_realtime,   # False = 盤後，顯示的是昨收
             }
         except Exception:
             continue
@@ -208,14 +229,15 @@ def _fetch_stock_context(code: str) -> str:
 
     price = _twse_price(code)
     if price:
-        sign  = "▲" if price["change_pct"] >= 0 else "▼"
+        sign      = "▲" if price["change_pct"] >= 0 else "▼"
+        rt_label  = "即時" if price["is_realtime"] else "昨收（盤後）"
         lines.append(
-            f"股價：${price['price']}（{sign}{abs(price['change_pct']):.2f}%）"
-            f"  高{price['high']} / 低{price['low']}  交易所：{price['exchange']}"
+            f"股價（{rt_label}）：${price['price']}（{sign}{abs(price['change_pct']):.2f}%）"
+            f"  高{price['high']} / 低{price['low']}  {price['exchange']}"
         )
-        lines.append(f"股票名稱（TWSE）：{price['name']}")
+        lines.append(f"股票名稱：{price['name']}（{price['exchange']}）")
     else:
-        lines.append("股價：TWSE 查無資料（可能代號有誤）")
+        lines.append("股價：TWSE/OTC 查無資料（請確認股票代號是否正確）")
 
     fin = _financial_statements(code)
     if fin:
