@@ -48,6 +48,7 @@ from services.trade_entry_service import (
     preview_avg_cost_after_buy,
     realized_pnl_for_sell_plan,
     compute_realized_in_range,
+    safe_int_qty,
 )
 from services.position_cost import compute_position_and_cost_by_stock
 
@@ -85,6 +86,120 @@ def _pnl_delta_color(v):
     if v is None:
         return "off"
     return "normal" if float(v) >= 0 else "inverse"
+
+
+def _inject_trade_entry_css():
+    st.markdown(
+        """
+        <style>
+        .te-match-box {
+            border: 1px solid #dbe3ef;
+            border-radius: 10px;
+            padding: 0.85rem 1rem 0.65rem;
+            background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+            margin: 0.35rem 0 0.85rem;
+        }
+        .te-match-hdr {
+            font-size: 0.72rem;
+            color: #64748b;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            padding-bottom: 0.4rem;
+            margin-bottom: 0.15rem;
+            border-bottom: 1px solid #e8edf3;
+        }
+        div[data-testid="stNumberInput"] label { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _match_widget_key(stock_id: str, buy_id: int) -> str:
+    return f"te_mq_{stock_id}_{buy_id}"
+
+
+def _normalize_match_state(match_plan_key: str) -> dict:
+    raw = st.session_state.get(match_plan_key, {})
+    if isinstance(raw, list):
+        raw = {int(b): int(q) for b, q in raw}
+    elif not isinstance(raw, dict):
+        raw = {}
+    st.session_state[match_plan_key] = raw
+    return raw
+
+
+def _apply_match_plan(stock_id: str, match_plan_key: str, plan: list, open_lots: list) -> None:
+    plan_map = {int(b): int(q) for b, q in plan}
+    st.session_state[match_plan_key] = plan_map
+    for lot in open_lots:
+        bid = int(lot["trade_id"])
+        st.session_state[_match_widget_key(stock_id, bid)] = int(plan_map.get(bid, 0))
+
+
+def _read_match_plan(stock_id: str, open_lots: list) -> list:
+    plan = []
+    for lot in open_lots:
+        bid = int(lot["trade_id"])
+        max_q = int(lot["remaining_qty"])
+        q = min(safe_int_qty(st.session_state.get(_match_widget_key(stock_id, bid), 0)), max_q)
+        if q > 0:
+            plan.append((bid, q))
+    return plan
+
+
+def _render_match_panel(
+    stock_id: str,
+    match_plan_key: str,
+    open_lots: list,
+    sell_qty: int,
+) -> list:
+    """穩定沖銷配對 UI（number_input + session state，避免 data_editor 空值與跳動）。"""
+    st.markdown('<div class="te-match-box">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="te-match-hdr">買進ID　｜　買進日　｜　買價　｜　可沖銷　｜　本次沖銷</div>',
+        unsafe_allow_html=True,
+    )
+
+    match_dict = _normalize_match_state(match_plan_key)
+    plan_sum = 0
+    for lot in open_lots:
+        bid = int(lot["trade_id"])
+        max_q = int(lot["remaining_qty"])
+        wkey = _match_widget_key(stock_id, bid)
+        if wkey not in st.session_state:
+            st.session_state[wkey] = int(match_dict.get(bid, 0))
+
+        c0, c1, c2, c3, c4 = st.columns([0.75, 1.15, 0.85, 0.95, 1.0])
+        c0.markdown(f"`{bid}`")
+        c1.caption(str(lot["date"])[:10])
+        c2.caption(f"{float(lot['price']):.2f}")
+        c3.caption(f"{max_q:,}")
+        qty = c4.number_input(
+            "本次沖銷",
+            min_value=0,
+            max_value=max_q,
+            step=1,
+            key=wkey,
+            label_visibility="collapsed",
+        )
+        plan_sum += safe_int_qty(qty)
+
+    sell_qty = max(0, int(sell_qty))
+    if sell_qty > 0:
+        ratio = min(1.0, plan_sum / sell_qty)
+        st.progress(ratio, text=f"配對進度 {plan_sum:,} / {sell_qty:,} 股")
+        if plan_sum == sell_qty:
+            st.success("✓ 配對股數與賣出一致")
+        elif plan_sum < sell_qty:
+            st.caption(f"尚缺 **{sell_qty - plan_sum:,}** 股（可點快捷配對或手動填入）")
+        else:
+            st.warning(f"已超出賣出 **{plan_sum - sell_qty:,}** 股，請調整各列數字")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    plan = _read_match_plan(stock_id, open_lots)
+    st.session_state[match_plan_key] = {b: q for b, q in plan}
+    return plan
 
 
 def _load_data():
@@ -221,68 +336,41 @@ def _render_stock_trade_panel(
 
         match_plan_key = f"te_match_{sid}"
         open_lots = []
-        match_plan = st.session_state.get(match_plan_key, [])
+        match_plan = []
 
         if side == "SELL":
             open_lots = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
             if not open_lots:
                 st.warning("無可沖銷的買進庫存。")
             else:
-                st.markdown("**沖銷配對**（選擇此筆賣出要對應哪些買進；近 3 天波段可點「僅近3天」）")
+                st.markdown("**沖銷配對** — 指定此筆賣出對應的買進批次（空白視為 0，不會造成錯誤）")
                 b1, b2, b3, b4 = st.columns(4)
+                sell_qty = int(quantity)
                 with b1:
-                    if st.button("FIFO 自動", key=f"te_fifo_{sid}"):
-                        st.session_state[match_plan_key] = fifo_match_plan(int(quantity), open_lots)
+                    if st.button("FIFO 自動", key=f"te_fifo_{sid}", use_container_width=True):
+                        _apply_match_plan(sid, match_plan_key, fifo_match_plan(sell_qty, open_lots), open_lots)
                         st.rerun()
                 with b2:
-                    if st.button("僅近3天", key=f"te_r3_{sid}"):
-                        st.session_state[match_plan_key] = recent_days_match_plan(int(quantity), open_lots, 3)
+                    if st.button("僅近3天", key=f"te_r3_{sid}", use_container_width=True):
+                        _apply_match_plan(
+                            sid, match_plan_key, recent_days_match_plan(sell_qty, open_lots, 3), open_lots
+                        )
                         st.rerun()
                 with b3:
-                    if st.button("僅近5天", key=f"te_r5_{sid}"):
-                        st.session_state[match_plan_key] = recent_days_match_plan(int(quantity), open_lots, 5)
+                    if st.button("僅近5天", key=f"te_r5_{sid}", use_container_width=True):
+                        _apply_match_plan(
+                            sid, match_plan_key, recent_days_match_plan(sell_qty, open_lots, 5), open_lots
+                        )
                         st.rerun()
                 with b4:
-                    if st.button("清空配對", key=f"te_clr_{sid}"):
-                        st.session_state[match_plan_key] = []
+                    if st.button("清空配對", key=f"te_clr_{sid}", use_container_width=True):
+                        _apply_match_plan(sid, match_plan_key, [], open_lots)
                         st.rerun()
 
-                lot_rows = []
-                plan_map = {bid: q for bid, q in st.session_state.get(match_plan_key, [])}
-                for lot in open_lots:
-                    lot_rows.append({
-                        "買進ID": lot["trade_id"],
-                        "買進日": lot["date"],
-                        "買價": lot["price"],
-                        "可沖銷股數": lot["remaining_qty"],
-                        "本次沖銷": int(plan_map.get(lot["trade_id"], 0)),
-                    })
-                edited = st.data_editor(
-                    pd.DataFrame(lot_rows),
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "買進ID": st.column_config.NumberColumn(disabled=True),
-                        "買進日": st.column_config.TextColumn(disabled=True),
-                        "買價": st.column_config.NumberColumn(disabled=True, format="%.2f"),
-                        "可沖銷股數": st.column_config.NumberColumn(disabled=True),
-                        "本次沖銷": st.column_config.NumberColumn(min_value=0, step=1),
-                    },
-                    key=f"te_lot_editor_{sid}",
-                )
-                new_plan = []
-                for _, r in edited.iterrows():
-                    q = int(r.get("本次沖銷") or 0)
-                    if q > 0:
-                        new_plan.append((int(r["買進ID"]), q))
-                st.session_state[match_plan_key] = new_plan
-                match_plan = new_plan
-                plan_sum = sum(q for _, q in match_plan)
-                if plan_sum != int(quantity):
-                    st.caption(f"⚠️ 配對合計 **{plan_sum:,}** 股，與賣出 **{int(quantity):,}** 股不一致。")
+                match_plan = _render_match_panel(sid, match_plan_key, open_lots, sell_qty)
                 trade_by_id = {t.id: t for t in trades}
                 est_realized = realized_pnl_for_sell_plan(
-                    price, int(quantity), fee_est, tax_est, match_plan, trade_by_id
+                    price, sell_qty, fee_est, tax_est, match_plan, trade_by_id
                 )
                 st.info(f"依目前配對，預估本次賣出淨損益：**{_fmt_pnl(est_realized)}** 元（含手續費與證交稅）")
         else:
@@ -348,7 +436,7 @@ def _render_stock_trade_panel(
                             )
                         )
                 sess.commit()
-                st.session_state[match_plan_key] = []
+                _apply_match_plan(sid, match_plan_key, [], open_lots if side == "SELL" else [])
                 st.session_state["last_user"] = trader
                 st.session_state["last_date"] = trade_date
                 st.success(f"已新增 {sid} {side} {int(quantity):,} 股")
@@ -393,6 +481,7 @@ login_guard()
 render_auth_sidebar()
 
 st.title("交易輸入")
+_inject_trade_entry_css()
 st.caption(
     "仿奇摩持倉表：在持有股票列直接 Key in 買賣；含手續費/證交稅估算、買進後均價預覽、"
     "賣出時可指定沖銷配對（例如僅配近 3 天買進，不與舊庫存混算）。"

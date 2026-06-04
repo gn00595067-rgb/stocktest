@@ -1,8 +1,42 @@
 # -*- coding: utf-8 -*-
 """交易輸入頁：持倉彙總、損益、剩餘買進批次、沖銷預覽"""
+import math
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Callable, Dict, List, Optional, Tuple
+
+import pandas as pd
+
+
+def safe_int_qty(val, default: int = 0) -> int:
+    """安全轉整數：None / NaN / 空白 / 字串 none 皆回 default（避免 data_editor 空值爆錯）。"""
+    if val is None:
+        return default
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s.lower() in ("none", "nan", "-", "null"):
+            return default
+        try:
+            f = float(s)
+            if math.isnan(f):
+                return default
+            return max(0, int(f))
+        except ValueError:
+            return default
+    if isinstance(val, float) and math.isnan(val):
+        return default
+    try:
+        if pd.isna(val):
+            return default
+    except (TypeError, ValueError):
+        pass
+    try:
+        f = float(val)
+        if math.isnan(f):
+            return default
+        return max(0, int(f))
+    except (TypeError, ValueError):
+        return default
 
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.position_cost import compute_position_and_cost_by_stock, _is_buy
