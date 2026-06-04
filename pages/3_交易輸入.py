@@ -49,6 +49,7 @@ from services.trade_entry_service import (
     realized_pnl_for_sell_plan,
     compute_realized_in_range,
     safe_int_qty,
+    estimate_match_row_net_pnl,
 )
 from services.position_cost import compute_position_and_cost_by_stock
 
@@ -88,6 +89,10 @@ def _pnl_delta_color(v):
     return "normal" if float(v) >= 0 else "inverse"
 
 
+# 沖銷表欄寬（表頭與資料列必須一致）
+_MATCH_COL_WIDTHS = [0.52, 0.92, 0.58, 0.62, 0.82, 0.68, 1.08]
+
+
 def _inject_trade_entry_css():
     st.markdown(
         """
@@ -95,24 +100,77 @@ def _inject_trade_entry_css():
         .te-match-box {
             border: 1px solid #dbe3ef;
             border-radius: 10px;
-            padding: 0.85rem 1rem 0.65rem;
+            padding: 0.75rem 0.65rem 0.55rem;
             background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
             margin: 0.35rem 0 0.85rem;
         }
-        .te-match-hdr {
+        .te-match-th {
             font-size: 0.72rem;
             color: #64748b;
             font-weight: 600;
-            letter-spacing: 0.02em;
-            padding-bottom: 0.4rem;
-            margin-bottom: 0.15rem;
-            border-bottom: 1px solid #e8edf3;
+            padding: 0 0 0.45rem 0;
+            margin: 0;
+            border-bottom: 1px solid #e2e8f0;
+            line-height: 1.3;
+            text-align: left;
         }
-        div[data-testid="stNumberInput"] label { display: none; }
+        .te-match-td {
+            font-size: 0.88rem;
+            line-height: 1.35;
+            padding-top: 0.15rem;
+            min-height: 2.1rem;
+        }
+        .te-match-box div[data-testid="column"] {
+            padding-left: 0.2rem !important;
+            padding-right: 0.2rem !important;
+        }
+        .te-match-box div[data-testid="stNumberInput"] {
+            margin-top: -0.15rem;
+        }
+        .te-match-box div[data-testid="stNumberInput"] label {
+            display: none;
+        }
+        .te-match-box div[data-testid="stNumberInput"] > div {
+            padding-top: 0.1rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _html_pnl_amount(amount: float, decimals: int = 0) -> str:
+    """損益金額著色（台股：賺紅、賠綠）。"""
+    if amount > 0:
+        color = "#c62828"
+    elif amount < 0:
+        color = "#2e7d32"
+    else:
+        color = "#64748b"
+    if decimals == 0:
+        text = f"{amount:+,.0f}"
+    else:
+        text = f"{amount:+,.{decimals}f}"
+    return f'<span style="color:{color};font-weight:600">{text}</span>'
+
+
+def _html_price_diff(sell_price: float, buy_price: float) -> str:
+    """單股價差（賣價 − 買價）；台股習慣：賺紅、賠綠。"""
+    diff = round(float(sell_price) - float(buy_price), 2)
+    if diff > 0:
+        color = "#c62828"
+    elif diff < 0:
+        color = "#2e7d32"
+    else:
+        color = "#64748b"
+    return f'<span style="color:{color};font-weight:600">{diff:+.2f}</span>'
+
+
+def _render_match_table_header():
+    labels = ["買進ID", "買進日", "買價", "價差", "淨損益", "可沖銷", "本次沖銷"]
+    cols = st.columns(_MATCH_COL_WIDTHS)
+    for col, lbl in zip(cols, labels):
+        col.markdown(f'<div class="te-match-th">{lbl}</div>', unsafe_allow_html=True)
 
 
 def _match_widget_key(stock_id: str, buy_id: int) -> str:
@@ -153,49 +211,92 @@ def _render_match_panel(
     match_plan_key: str,
     open_lots: list,
     sell_qty: int,
+    sell_price: float,
+    trades: list,
+    sell_fee_est: float,
+    sell_tax_est: float,
 ) -> list:
-    """穩定沖銷配對 UI（number_input + session state，避免 data_editor 空值與跳動）。"""
-    st.markdown('<div class="te-match-box">', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="te-match-hdr">買進ID　｜　買進日　｜　買價　｜　可沖銷　｜　本次沖銷</div>',
-        unsafe_allow_html=True,
-    )
-
+    """穩定沖銷配對 UI（number_input + session state，表頭與資料列同欄寬）。"""
     match_dict = _normalize_match_state(match_plan_key)
     plan_sum = 0
-    for lot in open_lots:
-        bid = int(lot["trade_id"])
-        max_q = int(lot["remaining_qty"])
-        wkey = _match_widget_key(stock_id, bid)
-        if wkey not in st.session_state:
-            st.session_state[wkey] = int(match_dict.get(bid, 0))
+    total_gross = 0.0
+    total_net = 0.0
+    sell_price = float(sell_price)
+    sell_qty_i = max(1, int(sell_qty))
+    trade_by_id = {t.id: t for t in trades}
 
-        c0, c1, c2, c3, c4 = st.columns([0.75, 1.15, 0.85, 0.95, 1.0])
-        c0.markdown(f"`{bid}`")
-        c1.caption(str(lot["date"])[:10])
-        c2.caption(f"{float(lot['price']):.2f}")
-        c3.caption(f"{max_q:,}")
-        qty = c4.number_input(
-            "本次沖銷",
-            min_value=0,
-            max_value=max_q,
-            step=1,
-            key=wkey,
-            label_visibility="collapsed",
+    with st.container(border=True):
+        st.markdown('<div class="te-match-box">', unsafe_allow_html=True)
+        st.caption(
+            f"賣出成交價 **{sell_price:.2f}**　｜　**價差** = 賣價 − 買價　｜　"
+            f"**淨損益** = 毛損益 − 買進手續費 − 賣出手續費 − 證交稅（依表單與歷史成交估算）"
         )
-        plan_sum += safe_int_qty(qty)
+        _render_match_table_header()
 
-    sell_qty = max(0, int(sell_qty))
-    if sell_qty > 0:
-        ratio = min(1.0, plan_sum / sell_qty)
-        st.progress(ratio, text=f"配對進度 {plan_sum:,} / {sell_qty:,} 股")
-        if plan_sum == sell_qty:
-            st.success("✓ 配對股數與賣出一致")
-        elif plan_sum < sell_qty:
-            st.caption(f"尚缺 **{sell_qty - plan_sum:,}** 股（可點快捷配對或手動填入）")
-        else:
-            st.warning(f"已超出賣出 **{plan_sum - sell_qty:,}** 股，請調整各列數字")
-    st.markdown("</div>", unsafe_allow_html=True)
+        for lot in open_lots:
+            bid = int(lot["trade_id"])
+            max_q = int(lot["remaining_qty"])
+            buy_price = float(lot["price"])
+            buy_trade = trade_by_id.get(bid)
+            wkey = _match_widget_key(stock_id, bid)
+            if wkey not in st.session_state:
+                st.session_state[wkey] = int(match_dict.get(bid, 0))
+
+            c0, c1, c2, c3, c4, c5, c6 = st.columns(_MATCH_COL_WIDTHS)
+            diff_html = _html_price_diff(sell_price, buy_price)
+            c0.markdown(f'<div class="te-match-td"><code>{bid}</code></div>', unsafe_allow_html=True)
+            c1.markdown(f'<div class="te-match-td">{str(lot["date"])[:10]}</div>', unsafe_allow_html=True)
+            c2.markdown(f'<div class="te-match-td">{buy_price:.2f}</div>', unsafe_allow_html=True)
+            c3.markdown(f'<div class="te-match-td">{diff_html}</div>', unsafe_allow_html=True)
+
+            qty = c6.number_input(
+                "本次沖銷",
+                min_value=0,
+                max_value=max_q,
+                step=1,
+                key=wkey,
+                label_visibility="collapsed",
+            )
+            q = safe_int_qty(qty)
+            plan_sum += q
+
+            if q > 0:
+                row_gross, row_net = estimate_match_row_net_pnl(
+                    sell_price,
+                    buy_price,
+                    q,
+                    buy_trade,
+                    sell_fee_est,
+                    sell_tax_est,
+                    sell_qty_i,
+                )
+                total_gross += row_gross
+                total_net += row_net
+                c4.markdown(f'<div class="te-match-td">{_html_pnl_amount(row_net)}</div>', unsafe_allow_html=True)
+                c4.caption(f"毛 {_fmt_pnl(row_gross)}")
+                c3.caption(f"×{q:,} 股")
+            else:
+                c4.markdown('<div class="te-match-td" style="color:#94a3b8">—</div>', unsafe_allow_html=True)
+
+            c5.markdown(f'<div class="te-match-td">{max_q:,}</div>', unsafe_allow_html=True)
+
+        sell_qty_i = max(0, int(sell_qty))
+        if sell_qty_i > 0:
+            ratio = min(1.0, plan_sum / sell_qty_i)
+            st.progress(ratio, text=f"配對進度 {plan_sum:,} / {sell_qty_i:,} 股")
+            if plan_sum > 0:
+                st.markdown(
+                    f"配對合計　毛損益 **{_fmt_pnl(total_gross)}**　｜　"
+                    f"淨損益（含費稅） **{_fmt_pnl(total_net)}**",
+                    unsafe_allow_html=False,
+                )
+            if plan_sum == sell_qty_i:
+                st.success("✓ 配對股數與賣出一致")
+            elif plan_sum < sell_qty_i:
+                st.caption(f"尚缺 **{sell_qty_i - plan_sum:,}** 股（可點快捷配對或手動填入）")
+            else:
+                st.warning(f"已超出賣出 **{plan_sum - sell_qty_i:,}** 股，請調整各列數字")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     plan = _read_match_plan(stock_id, open_lots)
     st.session_state[match_plan_key] = {b: q for b, q in plan}
@@ -367,7 +468,16 @@ def _render_stock_trade_panel(
                         _apply_match_plan(sid, match_plan_key, [], open_lots)
                         st.rerun()
 
-                match_plan = _render_match_panel(sid, match_plan_key, open_lots, sell_qty)
+                match_plan = _render_match_panel(
+                    sid,
+                    match_plan_key,
+                    open_lots,
+                    sell_qty,
+                    float(price),
+                    trades,
+                    fee_est,
+                    tax_est,
+                )
                 trade_by_id = {t.id: t for t in trades}
                 est_realized = realized_pnl_for_sell_plan(
                     price, sell_qty, fee_est, tax_est, match_plan, trade_by_id

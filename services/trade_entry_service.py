@@ -40,6 +40,7 @@ def safe_int_qty(val, default: int = 0) -> int:
 
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.position_cost import compute_position_and_cost_by_stock, _is_buy
+from services.trade_fees import estimate_broker_fee
 
 
 def _filter_trader(trades, trader: Optional[str]):
@@ -91,6 +92,40 @@ def get_open_buy_lots(
             "fee": fee,
         })
     return lots
+
+
+def estimate_match_row_net_pnl(
+    sell_price: float,
+    buy_price: float,
+    matched_qty: int,
+    buy_trade,
+    sell_fee_est: float,
+    sell_tax_est: float,
+    sell_qty_total: int,
+) -> Tuple[float, float]:
+    """
+    單筆沖銷列的毛損益與淨損益（含費稅估算）。
+    買進手續費：trades.fee 有值則按比例；否則依費率估算。
+    賣出費稅：依表單估算的 sell_fee_est / sell_tax_est 按股數比例分攤。
+    """
+    qty = int(matched_qty)
+    if qty <= 0:
+        return 0.0, 0.0
+    gross = (float(sell_price) - float(buy_price)) * qty
+    buy_fee = 0.0
+    if buy_trade:
+        bq = int(getattr(buy_trade, "quantity", 0) or 0)
+        if bq > 0:
+            stored_fee = getattr(buy_trade, "fee", None)
+            if stored_fee is not None and float(stored_fee) > 0:
+                buy_fee = float(stored_fee) * (qty / bq)
+            else:
+                buy_fee = estimate_broker_fee(float(buy_price), bq) * (qty / bq)
+    sell_total = max(1, int(sell_qty_total))
+    sell_fee_part = float(sell_fee_est or 0) * (qty / sell_total)
+    sell_tax_part = float(sell_tax_est or 0) * (qty / sell_total)
+    net = gross - buy_fee - sell_fee_part - sell_tax_part
+    return gross, net
 
 
 def fifo_match_plan(sell_qty: int, open_lots: List[dict]) -> List[Tuple[int, int]]:
