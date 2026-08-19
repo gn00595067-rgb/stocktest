@@ -45,6 +45,8 @@ from services.trade_entry_service import (
     get_open_buy_lots,
     fifo_match_plan,
     recent_days_match_plan,
+    profit_ranked_match_plan,
+    nearest_avg_match_plan,
     preview_avg_cost_after_buy,
     realized_pnl_for_sell_plan,
     compute_realized_in_range,
@@ -466,6 +468,42 @@ def _render_stock_trade_panel(
                 with b4:
                     if st.button("清空配對", key=f"te_clr_{sid}", use_container_width=True):
                         _apply_match_plan(sid, match_plan_key, [], open_lots)
+                        st.rerun()
+
+                st.caption("依獲利快速篩選（賣價固定，賺多＝買價最低先配）")
+                f1, f2, f3 = st.columns(3)
+                with f1:
+                    if st.button(
+                        "💰 賺多優先", key=f"te_pmax_{sid}", use_container_width=True,
+                        help="優先配對買價最低（獲利最多）的批次",
+                    ):
+                        _apply_match_plan(
+                            sid, match_plan_key,
+                            profit_ranked_match_plan(sell_qty, open_lots, most_profit=True),
+                            open_lots,
+                        )
+                        st.rerun()
+                with f2:
+                    if st.button(
+                        "🪙 賺少優先", key=f"te_pmin_{sid}", use_container_width=True,
+                        help="優先配對買價最高（獲利最少）的批次",
+                    ):
+                        _apply_match_plan(
+                            sid, match_plan_key,
+                            profit_ranked_match_plan(sell_qty, open_lots, most_profit=False),
+                            open_lots,
+                        )
+                        st.rerun()
+                with f3:
+                    if st.button(
+                        "⚖️ 接近均價", key=f"te_pavg_{sid}", use_container_width=True,
+                        help="優先配對買價最接近庫存加權平均成本的批次",
+                    ):
+                        _apply_match_plan(
+                            sid, match_plan_key,
+                            nearest_avg_match_plan(sell_qty, open_lots),
+                            open_lots,
+                        )
                         st.rerun()
 
                 match_plan = _render_match_panel(

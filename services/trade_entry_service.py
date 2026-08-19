@@ -158,6 +158,51 @@ def recent_days_match_plan(sell_qty: int, open_lots: List[dict], days: int = 3) 
     return plan
 
 
+def profit_ranked_match_plan(
+    sell_qty: int, open_lots: List[dict], most_profit: bool = True
+) -> List[Tuple[int, int]]:
+    """依每股獲利排序配對。
+
+    因賣價固定，每股獲利 = 賣價 − 買價，等同以買價排序：
+    - most_profit=True（賺多優先）：買價最低者先配。
+    - most_profit=False（賺少優先）：買價最高者先配。
+    """
+    lots = sorted(
+        open_lots,
+        key=lambda x: (float(x["price"]), x["trade_id"]),
+        reverse=not most_profit,
+    )
+    plan = []
+    left = sell_qty
+    for lot in lots:
+        if left <= 0:
+            break
+        q = min(left, lot["remaining_qty"])
+        if q > 0:
+            plan.append((lot["trade_id"], q))
+            left -= q
+    return plan
+
+
+def nearest_avg_match_plan(sell_qty: int, open_lots: List[dict]) -> List[Tuple[int, int]]:
+    """先配買價最接近庫存加權平均成本的批次。"""
+    total_qty = sum(int(lot["remaining_qty"]) for lot in open_lots)
+    if total_qty <= 0:
+        return []
+    avg = sum(float(lot["price"]) * int(lot["remaining_qty"]) for lot in open_lots) / total_qty
+    lots = sorted(open_lots, key=lambda x: (abs(float(x["price"]) - avg), x["trade_id"]))
+    plan = []
+    left = sell_qty
+    for lot in lots:
+        if left <= 0:
+            break
+        q = min(left, lot["remaining_qty"])
+        if q > 0:
+            plan.append((lot["trade_id"], q))
+            left -= q
+    return plan
+
+
 def preview_avg_cost_after_buy(
     current_qty: int,
     current_cost: float,
