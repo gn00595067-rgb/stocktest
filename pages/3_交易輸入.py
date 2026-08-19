@@ -165,7 +165,12 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
         color = "#2e7d32"
     else:
         color = "#64748b"
-    return f'<span style="color:{color};font-weight:600">{diff:+.2f}</span>'
+    bp = float(buy_price)
+    pct = (diff / bp * 100) if bp else 0.0
+    return (
+        f'<span style="color:{color};font-weight:600">{diff:+.2f}</span>'
+        f'<span style="color:{color};font-size:0.82em"> ({pct:+.2f}%)</span>'
+    )
 
 
 def _render_match_table_header():
