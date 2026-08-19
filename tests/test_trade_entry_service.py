@@ -9,6 +9,7 @@ from services.trade_entry_service import (
     estimate_match_row_net_pnl,
     profit_ranked_match_plan,
     nearest_avg_match_plan,
+    sort_lots_by_strategy,
 )
 
 
@@ -81,3 +82,15 @@ def test_match_plans_never_exceed_sell_qty():
 def test_match_plans_empty_lots():
     assert profit_ranked_match_plan(1000, [], most_profit=True) == []
     assert nearest_avg_match_plan(1000, []) == []
+
+
+def test_sort_lots_by_strategy_orders():
+    ids = lambda lots: [l["trade_id"] for l in lots]
+    # 賺多優先：買價低→高
+    assert ids(sort_lots_by_strategy(_lots(), "profit_max")) == [279, 277, 276, 278]
+    # 賺少優先：買價高→低
+    assert ids(sort_lots_by_strategy(_lots(), "profit_min")) == [278, 276, 277, 279]
+    # 接近均價(363.125)：276(362.5),277(360.5),279(360.0),278(369.5)
+    assert ids(sort_lots_by_strategy(_lots(), "nearest_avg")) == [276, 277, 279, 278]
+    # 未知策略維持原順序
+    assert ids(sort_lots_by_strategy(_lots(), None)) == [276, 277, 278, 279]

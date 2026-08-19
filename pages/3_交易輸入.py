@@ -47,6 +47,7 @@ from services.trade_entry_service import (
     recent_days_match_plan,
     profit_ranked_match_plan,
     nearest_avg_match_plan,
+    sort_lots_by_strategy,
     preview_avg_cost_after_buy,
     realized_pnl_for_sell_plan,
     compute_realized_in_range,
@@ -456,34 +457,40 @@ def _render_stock_trade_panel(
                 st.markdown("**沖銷配對** — 指定此筆賣出對應的買進批次（空白視為 0，不會造成錯誤）")
                 b1, b2, b3, b4 = st.columns(4)
                 sell_qty = int(quantity)
+                sort_key = f"te_sort_{sid}"
                 with b1:
                     if st.button("FIFO 自動", key=f"te_fifo_{sid}", use_container_width=True):
+                        st.session_state[sort_key] = "fifo"
                         _apply_match_plan(sid, match_plan_key, fifo_match_plan(sell_qty, open_lots), open_lots)
                         st.rerun()
                 with b2:
                     if st.button("僅近3天", key=f"te_r3_{sid}", use_container_width=True):
+                        st.session_state[sort_key] = "recent"
                         _apply_match_plan(
                             sid, match_plan_key, recent_days_match_plan(sell_qty, open_lots, 3), open_lots
                         )
                         st.rerun()
                 with b3:
                     if st.button("僅近5天", key=f"te_r5_{sid}", use_container_width=True):
+                        st.session_state[sort_key] = "recent"
                         _apply_match_plan(
                             sid, match_plan_key, recent_days_match_plan(sell_qty, open_lots, 5), open_lots
                         )
                         st.rerun()
                 with b4:
                     if st.button("清空配對", key=f"te_clr_{sid}", use_container_width=True):
+                        st.session_state[sort_key] = None
                         _apply_match_plan(sid, match_plan_key, [], open_lots)
                         st.rerun()
 
-                st.caption("依獲利快速篩選（賣價固定，賺多＝買價最低先配）")
+                st.caption("依獲利快速篩選（賣價固定，賺多＝買價最低先配）；按下後表格會依該策略排序")
                 f1, f2, f3 = st.columns(3)
                 with f1:
                     if st.button(
                         "💰 賺多優先", key=f"te_pmax_{sid}", use_container_width=True,
-                        help="優先配對買價最低（獲利最多）的批次",
+                        help="優先配對買價最低（獲利最多）的批次，並將表格由賺多到賺少排序",
                     ):
+                        st.session_state[sort_key] = "profit_max"
                         _apply_match_plan(
                             sid, match_plan_key,
                             profit_ranked_match_plan(sell_qty, open_lots, most_profit=True),
@@ -493,8 +500,9 @@ def _render_stock_trade_panel(
                 with f2:
                     if st.button(
                         "🪙 賺少優先", key=f"te_pmin_{sid}", use_container_width=True,
-                        help="優先配對買價最高（獲利最少）的批次",
+                        help="優先配對買價最高（獲利最少）的批次，並將表格由賺少到賺多排序",
                     ):
+                        st.session_state[sort_key] = "profit_min"
                         _apply_match_plan(
                             sid, match_plan_key,
                             profit_ranked_match_plan(sell_qty, open_lots, most_profit=False),
@@ -504,14 +512,18 @@ def _render_stock_trade_panel(
                 with f3:
                     if st.button(
                         "⚖️ 接近均價", key=f"te_pavg_{sid}", use_container_width=True,
-                        help="優先配對買價最接近庫存加權平均成本的批次",
+                        help="優先配對買價最接近庫存加權平均成本的批次，並依接近程度排序",
                     ):
+                        st.session_state[sort_key] = "nearest_avg"
                         _apply_match_plan(
                             sid, match_plan_key,
                             nearest_avg_match_plan(sell_qty, open_lots),
                             open_lots,
                         )
                         st.rerun()
+
+                # 依最近按下的策略排序表格顯示（不影響股數計算）
+                open_lots = sort_lots_by_strategy(open_lots, st.session_state.get(sort_key))
 
                 match_plan = _render_match_panel(
                     sid,

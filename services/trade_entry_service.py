@@ -203,6 +203,36 @@ def nearest_avg_match_plan(sell_qty: int, open_lots: List[dict]) -> List[Tuple[i
     return plan
 
 
+def sort_lots_by_strategy(open_lots: List[dict], strategy: Optional[str]) -> List[dict]:
+    """依策略回傳排序後的買進批次（供沖銷表顯示用，不改動股數）。
+
+    strategy:
+      - "profit_max"  賺多優先：買價由低到高
+      - "profit_min"  賺少優先：買價由高到低
+      - "nearest_avg" 接近均價：與加權平均成本差距由小到大
+      - "fifo"        先進先出：買進日由舊到新
+      - "recent"      近期優先：買進日由新到舊
+      - 其他/None      維持原順序
+    """
+    lots = list(open_lots)
+    if strategy == "profit_max":
+        return sorted(lots, key=lambda x: (float(x["price"]), x["trade_id"]))
+    if strategy == "profit_min":
+        return sorted(lots, key=lambda x: (-float(x["price"]), x["trade_id"]))
+    if strategy == "nearest_avg":
+        total = sum(int(lot["remaining_qty"]) for lot in lots)
+        avg = (
+            sum(float(lot["price"]) * int(lot["remaining_qty"]) for lot in lots) / total
+            if total else 0.0
+        )
+        return sorted(lots, key=lambda x: (abs(float(x["price"]) - avg), x["trade_id"]))
+    if strategy == "fifo":
+        return sorted(lots, key=lambda x: (str(x["date"])[:10], x["trade_id"]))
+    if strategy == "recent":
+        return sorted(lots, key=lambda x: (str(x["date"])[:10], x["trade_id"]), reverse=True)
+    return lots
+
+
 def preview_avg_cost_after_buy(
     current_qty: int,
     current_cost: float,
