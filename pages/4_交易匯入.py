@@ -26,6 +26,8 @@ from db.models import Trade, StockMaster, CustomMatchRule
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 
 st.set_page_config(page_title="交易匯入", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

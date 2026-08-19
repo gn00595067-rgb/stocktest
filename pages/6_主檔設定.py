@@ -102,6 +102,8 @@ def _parse_row_to_item(row) -> dict:
 
 
 st.set_page_config(page_title="主檔/設定", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 st.title("主檔/設定")
 
 st.subheader("stock_master CSV 匯入")

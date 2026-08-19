@@ -16,6 +16,8 @@ from reports.stock_detail_report import build_stock_detail
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
 
 st.set_page_config(page_title="個股明細", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

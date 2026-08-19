@@ -454,6 +454,8 @@ def build_distribution_pie(df: pd.DataFrame, name_col: str, value_col: str = "�
 # 頁面主流程
 # ===========================================================================
 st.set_page_config(page_title="庫存損益", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

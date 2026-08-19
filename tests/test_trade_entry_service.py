@@ -4,7 +4,21 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from services.trade_entry_service import safe_int_qty, estimate_match_row_net_pnl
+from services.trade_entry_service import (
+    safe_int_qty,
+    estimate_match_row_net_pnl,
+    profit_ranked_match_plan,
+    nearest_avg_match_plan,
+)
+
+
+def _lots():
+    return [
+        {"trade_id": 276, "date": "2026-02-02", "price": 362.5, "remaining_qty": 1000},
+        {"trade_id": 277, "date": "2026-02-02", "price": 360.5, "remaining_qty": 1000},
+        {"trade_id": 278, "date": "2026-02-02", "price": 369.5, "remaining_qty": 1000},
+        {"trade_id": 279, "date": "2026-02-02", "price": 360.0, "remaining_qty": 1000},
+    ]
 
 
 def test_safe_int_qty_none_and_nan():
@@ -35,3 +49,35 @@ def test_estimate_match_row_net_pnl():
     assert gross == 1000.0  # (90-88)*500
     assert net < gross
     assert isinstance(net, float)
+
+
+def test_profit_ranked_most_profit_picks_lowest_buy_first():
+    # 賺多優先：買價最低（獲利最多）先配 → 279(360.0), 277(360.5), 276(362.5 部分)
+    plan = profit_ranked_match_plan(2500, _lots(), most_profit=True)
+    assert plan == [(279, 1000), (277, 1000), (276, 500)]
+
+
+def test_profit_ranked_least_profit_picks_highest_buy_first():
+    # 賺少優先：買價最高（獲利最少）先配 → 278(369.5), 276(362.5), 277(360.5 部分)
+    plan = profit_ranked_match_plan(2500, _lots(), most_profit=False)
+    assert plan == [(278, 1000), (276, 1000), (277, 500)]
+
+
+def test_nearest_avg_picks_closest_to_weighted_average():
+    # 加權均價 = 363.125，最接近者為 276(362.5)
+    plan = nearest_avg_match_plan(1000, _lots())
+    assert plan == [(276, 1000)]
+
+
+def test_match_plans_never_exceed_sell_qty():
+    for plan in (
+        profit_ranked_match_plan(1500, _lots(), most_profit=True),
+        profit_ranked_match_plan(1500, _lots(), most_profit=False),
+        nearest_avg_match_plan(1500, _lots()),
+    ):
+        assert sum(q for _, q in plan) == 1500
+
+
+def test_match_plans_empty_lots():
+    assert profit_ranked_match_plan(1000, [], most_profit=True) == []
+    assert nearest_avg_match_plan(1000, []) == []

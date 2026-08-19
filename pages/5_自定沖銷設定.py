@@ -18,6 +18,8 @@ from services.position_cost import compute_position_and_cost_by_stock
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 
 st.set_page_config(page_title="自定沖銷設定", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

@@ -32,6 +32,8 @@ from services.price_service import get_quote_cached
 from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

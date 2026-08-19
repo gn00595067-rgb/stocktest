@@ -17,6 +17,8 @@ from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

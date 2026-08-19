@@ -39,6 +39,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 
 ensure_bootstrap_admin()
 login_guard()

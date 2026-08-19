@@ -33,6 +33,8 @@ from db.models import Trade, StockMaster, CustomMatchRule
 
 ensure_google_sheet_loaded()
 st.set_page_config(page_title="AI 問答助理", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

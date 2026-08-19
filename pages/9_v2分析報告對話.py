@@ -51,6 +51,8 @@ from services.v2_feedback_store import (
 
 
 st.set_page_config(page_title="v2 報告對話", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()

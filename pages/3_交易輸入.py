@@ -56,6 +56,8 @@ from services.trade_entry_service import (
 from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="交易輸入", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 
 _POLICY_OPTIONS = {
     "CUSTOM_PLUS_FIFO": "自定沖銷 + 未定部分先進先出",

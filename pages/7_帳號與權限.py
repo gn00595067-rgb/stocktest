@@ -26,6 +26,8 @@ def _sync_to_sheet_after_auth_change() -> tuple[bool, str | None]:
         return False, f"{type(e).__name__}: {e}"
 
 st.set_page_config(page_title="帳號與權限", layout="wide")
+from services.mobile_ui import inject_mobile_css
+inject_mobile_css()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()
