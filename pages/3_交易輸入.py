@@ -254,25 +254,83 @@ def _render_holding_row(row: dict, sid: str, open_now: bool):
             st.rerun()
 
 
-# 逐筆交易明細欄寬（表頭與資料列一致）
-_TX_COL_WIDTHS = [1.5, 0.9, 1.0, 1.0, 1.25, 0.6]
-_TX_LABELS = ["交易日期", "買/賣", "交易股數", "交易股價", "市值", "刪除"]
-_TX_TEXT_ALIGN = ["left", "center", "right", "right", "right", "center"]
-_TX_JUSTIFY = ["flex-start", "center", "flex-end", "flex-end", "flex-end", "center"]
+def _coerce_date(v):
+    """把 data_editor 回傳的日期（date / Timestamp / 字串）統一轉成 datetime.date。"""
+    if v is None:
+        return None
+    try:
+        if isinstance(v, float) and pd.isna(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v, date) and not hasattr(v, "hour"):
+        return v
+    try:
+        return pd.to_datetime(v).date()
+    except Exception:
+        return None
 
 
-def _delete_trade(trade_id: int, trader_name: str) -> None:
-    """刪除單筆交易並連帶清除其沖銷規則（買方或賣方皆清）。"""
-    if not can_access_trader(trader_name):
-        st.error("無權限刪除。")
-        return
+def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: bool) -> None:
+    """把 data_editor 的修改（改值／新增列／刪除列）寫回資料庫。"""
     sess = get_session()
     try:
-        sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == int(trade_id)).delete()
-        sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == int(trade_id)).delete()
-        sess.query(Trade).filter(Trade.id == int(trade_id)).delete()
+        seen_ids = set()
+        for _, r in edited_df.iterrows():
+            rid = r.get("id")
+            has_id = rid is not None and not (isinstance(rid, float) and pd.isna(rid))
+            side = "BUY" if str(r.get("買/賣")) == "買入" else "SELL"
+            qty = safe_int_qty(r.get("交易股數"))
+            try:
+                price = float(r.get("交易股價") or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            tdate = _coerce_date(r.get("交易日期"))
+            is_dt = bool(r.get("當沖"))
+            if qty <= 0 or price <= 0 or tdate is None:
+                continue  # 略過尚未填完整的空白／新列
+            fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf)
+            tax = tax if side == "SELL" else 0.0
+
+            if not has_id:
+                # 新增列
+                if not can_access_trader(trader):
+                    continue
+                sess.add(Trade(
+                    user=trader, stock_id=sid, trade_date=tdate, side=side,
+                    price=price, quantity=qty, is_daytrade=is_dt, fee=fee, tax=tax,
+                ))
+                continue
+
+            rid = int(rid)
+            seen_ids.add(rid)
+            t = sess.query(Trade).filter(Trade.id == rid).first()
+            if not t or not can_access_trader(t.user):
+                continue
+            # 股數或買賣方向改變 → 舊沖銷配對已不成立，清掉讓損益重新以 policy 計算
+            core_changed = (int(t.quantity or 0) != qty) or (str(t.side).upper() != side)
+            t.trade_date = tdate
+            t.side = side
+            t.price = price
+            t.quantity = qty
+            t.is_daytrade = is_dt
+            t.fee = fee
+            t.tax = tax
+            if core_changed:
+                sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == rid).delete()
+                sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == rid).delete()
+
+        # 被刪掉的列（原本有、編輯後不見）
+        for oid, ot in orig_by_id.items():
+            if oid not in seen_ids:
+                if not can_access_trader(ot.user):
+                    continue
+                sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == oid).delete()
+                sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == oid).delete()
+                sess.query(Trade).filter(Trade.id == oid).delete()
+
         sess.commit()
-        st.success(f"已刪除交易 #{trade_id}")
+        st.success("已儲存修改")
         st.rerun()
     except Exception as e:
         sess.rollback()
@@ -281,31 +339,40 @@ def _delete_trade(trade_id: int, trader_name: str) -> None:
         sess.close()
 
 
-def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float) -> None:
-    """奇摩股市式：列出該股每一天、每一筆交易，可逐筆刪除。市值＝現價×股數。"""
-    hdr = st.columns(_TX_COL_WIDTHS)
-    for c, lbl, ta in zip(hdr, _TX_LABELS, _TX_TEXT_ALIGN):
-        c.markdown(f'<div class="te-hold-th" style="text-align:{ta}">{lbl}</div>', unsafe_allow_html=True)
-    for t in stock_ts:
-        cc = st.columns(_TX_COL_WIDTHS)
-        is_buy = str(t.side).upper() == "BUY"
-        side_txt = "買入" if is_buy else "賣出"
-        side_color = "#c62828" if is_buy else "#2e7d32"
-        qty = int(t.quantity or 0)
-        mv = cur_price * qty
-        dt = "當沖 " if getattr(t, "is_daytrade", False) else ""
-        cells = [
-            (f'{str(t.trade_date)[:10]}', "flex-start"),
-            (f'<span style="color:{side_color};font-weight:600">{dt}{side_txt}</span>', "center"),
-            (f'{qty:,}', "flex-end"),
-            (f'{float(t.price or 0):.2f}', "flex-end"),
-            (f'{mv:,.0f}', "flex-end"),
-        ]
-        for c, (v, jc) in zip(cc[:5], cells):
-            c.markdown(f'<div class="te-hold-td" style="justify-content:{jc}">{v}</div>', unsafe_allow_html=True)
-        with cc[5]:
-            if st.button("🗑", key=f"te_txdel_{sid}_{t.id}", use_container_width=True, help="刪除此筆交易"):
-                _delete_trade(int(t.id), t.user)
+def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: str, is_etf: bool) -> None:
+    """奇摩股市式可編輯逐筆交易表：買/賣、股數、股價、日期、當沖可直接改；按鈕整批儲存。"""
+    orig_by_id = {int(t.id): t for t in stock_ts}
+    df = pd.DataFrame([
+        {
+            "id": int(t.id),
+            "交易日期": _coerce_date(str(t.trade_date)[:10]),
+            "買/賣": "買入" if str(t.side).upper() == "BUY" else "賣出",
+            "交易股數": int(t.quantity or 0),
+            "交易股價": float(t.price or 0),
+            "當沖": bool(getattr(t, "is_daytrade", False)),
+            "市值": round(cur_price * int(t.quantity or 0)),
+        }
+        for t in stock_ts
+    ])
+    edited = st.data_editor(
+        df,
+        key=f"te_txedit_{sid}",
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "交易日期": st.column_config.DateColumn("交易日期", format="YYYY/MM/DD"),
+            "買/賣": st.column_config.SelectboxColumn("買/賣", options=["買入", "賣出"], required=True, width="small"),
+            "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="%d"),
+            "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="%.2f"),
+            "當沖": st.column_config.CheckboxColumn("當沖", width="small"),
+            "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="%d"),
+        },
+    )
+    st.caption("可直接在表格上修改買/賣、股數、股價、日期；刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
+    if st.button("💾 儲存修改", key=f"te_txsave_{sid}", type="primary"):
+        _save_tx_edits(sid, orig_by_id, edited, trader, is_etf)
 
 
 def _render_match_table_header():
@@ -764,7 +831,7 @@ def _render_stock_trade_panel(
         if not stock_ts:
             st.caption("此股尚無交易，於上方輸入第一筆。")
         else:
-            _render_stock_tx_list(sid, stock_ts, float(row["price"] or 0))
+            _render_stock_tx_list(sid, stock_ts, float(row["price"] or 0), trader, is_etf)
 
 
 # ---------- 主程式 ----------
