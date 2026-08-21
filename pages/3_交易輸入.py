@@ -364,10 +364,10 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
             "交易日期": st.column_config.DateColumn("交易日期", format="YYYY/MM/DD"),
             "買/賣": st.column_config.SelectboxColumn("買/賣", options=["買入", "賣出"], required=True, width="small"),
-            "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="%d"),
-            "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="%.2f"),
+            "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="localized"),
+            "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="accounting"),
             "當沖": st.column_config.CheckboxColumn("當沖", width="small"),
-            "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="%d"),
+            "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="localized"),
         },
     )
     st.caption("可直接在表格上修改買/賣、股數、股價、日期；刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
@@ -1081,7 +1081,18 @@ if day_trades:
         }
         for t in day_trades
     ])
-    st.data_editor(df, use_container_width=True, disabled=["id"], hide_index=True)
+    st.data_editor(
+        df,
+        use_container_width=True,
+        disabled=["id"],
+        hide_index=True,
+        column_config={
+            "價格": st.column_config.NumberColumn("價格", format="accounting"),
+            "股數": st.column_config.NumberColumn("股數", format="localized"),
+            "手續費": st.column_config.NumberColumn("手續費", format="accounting"),
+            "證交稅": st.column_config.NumberColumn("證交稅", format="accounting"),
+        },
+    )
     del_id = st.number_input("刪除交易 ID", min_value=0, value=0, step=1, key="te_del_id")
     if st.button("刪除該筆") and del_id:
         sess = get_session()
