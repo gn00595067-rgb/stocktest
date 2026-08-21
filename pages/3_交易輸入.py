@@ -621,10 +621,16 @@ def _render_stock_trade_panel(
         quote = get_quote_cached(sid)
         default_price = float(quote["price"]) if quote else row["price"]
 
-        fc1, fc2, fc3, fc4 = st.columns([1, 1, 1, 2])
+        fc1, fc2, fc3, fc4, fc5 = st.columns([1, 1.1, 1, 1, 2])
         with fc1:
             side = st.radio("買/賣", ["BUY", "SELL"], horizontal=True, key=f"te_side_{sid}")
         with fc2:
+            entry_date = st.date_input(
+                "交易日期",
+                value=st.session_state.get(f"te_edate_{sid}", date.today()),
+                key=f"te_edate_{sid}",
+            )
+        with fc3:
             price = st.number_input(
                 "成交價",
                 min_value=0.0,
@@ -633,7 +639,7 @@ def _render_stock_trade_panel(
                 format="%.2f",
                 key=f"te_price_{sid}",
             )
-        with fc3:
+        with fc4:
             quantity = st.number_input(
                 "股數",
                 min_value=1,
@@ -641,7 +647,7 @@ def _render_stock_trade_panel(
                 step=100,
                 key=f"te_qty_{sid}",
             )
-        with fc4:
+        with fc5:
             is_daytrade = st.checkbox("當沖", key=f"te_dt_{sid}")
             note = st.text_input("備註", key=f"te_note_{sid}")
 
@@ -773,7 +779,7 @@ def _render_stock_trade_panel(
                 t = Trade(
                     user=trader,
                     stock_id=sid,
-                    trade_date=trade_date,
+                    trade_date=entry_date,
                     side=side,
                     price=float(price),
                     quantity=int(quantity),
@@ -812,8 +818,8 @@ def _render_stock_trade_panel(
                 sess.commit()
                 _apply_match_plan(sid, match_plan_key, [], open_lots if side == "SELL" else [])
                 st.session_state["last_user"] = trader
-                st.session_state["last_date"] = trade_date
-                st.success(f"已新增 {sid} {side} {int(quantity):,} 股")
+                st.session_state["last_date"] = entry_date
+                st.success(f"已新增 {sid} {side} {int(quantity):,} 股（{entry_date}）")
                 st.rerun()
             except Exception as e:
                 sess.rollback()
