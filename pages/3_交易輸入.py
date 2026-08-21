@@ -851,23 +851,7 @@ for sid in extra_sids:
     })
 
 if holdings:
-    st.subheader("持有股票（點開列輸入買賣）")
-    summary_df = pd.DataFrame([
-        {
-            "股名": h["name"],
-            "代號": h["stock_id"],
-            "現價": h["price"],
-            "漲跌%": h["change_pct"],
-            "股數": h["qty"],
-            "均價": h["avg_cost"] if h["qty"] else None,
-            "市值": h["market_value"],
-            "當日已實現": h["realized_today"],
-            "期間已實現": h["realized_period"],
-            "未實現": h["unrealized"],
-        }
-        for h in sorted(holdings, key=lambda x: (-x["qty"], x["stock_id"]))
-    ])
-    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    st.subheader("持有股票（點開個股輸入買賣）")
     for h in sorted(holdings, key=lambda x: (-x["qty"], x["stock_id"])):
         _render_stock_trade_panel(h, masters, trades, custom_rules, policy, trader, trade_date)
 else:
