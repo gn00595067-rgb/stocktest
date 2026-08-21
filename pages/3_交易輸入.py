@@ -75,6 +75,7 @@ def _init_session_defaults():
     st.session_state.setdefault("te_period_days", 3)
     st.session_state.setdefault("te_policy", "CUSTOM_PLUS_FIFO")
     st.session_state.setdefault("te_auto_fifo", True)
+    st.session_state.setdefault("te_added_stocks", [])
 
 
 def _fmt_pnl(v):
@@ -370,8 +371,11 @@ def _render_add_stock_expander(masters: dict):
                         sess = get_session()
                         _ensure_stock_in_master(sess, picked, masters)
                         sess.close()
+                        added = st.session_state.setdefault("te_added_stocks", [])
+                        if picked not in added:
+                            added.append(picked)
                         st.session_state["te_expand_stock"] = picked
-                        st.success(f"已加入 {picked}")
+                        st.success(f"已加入 {picked}，請點開下方該股輸入第一筆買進")
                         st.rerun()
                 else:
                     st.caption("查無符合股票")
@@ -775,7 +779,9 @@ today_trades_all = [
 ]
 today_sids = {t.stock_id for t in today_trades_all}
 holding_sids = {h["stock_id"] for h in holdings}
-extra_sids = today_sids - holding_sids
+# 手動「加入持倉列表」但尚未有交易的股票，也補一列（0 股）供輸入第一筆買進
+manual_sids = set(st.session_state.get("te_added_stocks", []))
+extra_sids = (today_sids | manual_sids) - holding_sids
 
 for sid in extra_sids:
     quote = get_quote_cached(sid)
