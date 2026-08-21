@@ -663,6 +663,10 @@ def _render_stock_trade_panel(
         match_plan = []
 
         if side == "SELL":
+            # 上一輪送出後標記的重置：在沖銷 number_input 建立前清掉舊值（避免「widget 已建立不可修改」錯誤）
+            if st.session_state.pop(f"te_reset_match_{sid}", False):
+                for k in [key for key in list(st.session_state.keys()) if str(key).startswith(f"te_mq_{sid}_")]:
+                    del st.session_state[k]
             open_lots = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
             if not open_lots:
                 st.warning("無可沖銷的買進庫存。")
@@ -816,7 +820,11 @@ def _render_stock_trade_panel(
                             )
                         )
                 sess.commit()
-                _apply_match_plan(sid, match_plan_key, [], open_lots if side == "SELL" else [])
+                # 不可在此直接改沖銷 number_input 的 key（widget 已建立會報錯）；
+                # 改為標記重置，下一輪在 widget 建立前清除。
+                st.session_state[match_plan_key] = {}
+                if side == "SELL":
+                    st.session_state[f"te_reset_match_{sid}"] = True
                 st.session_state["last_user"] = trader
                 st.session_state["last_date"] = entry_date
                 st.success(f"已新增 {sid} {side} {int(quantity):,} 股（{entry_date}）")
