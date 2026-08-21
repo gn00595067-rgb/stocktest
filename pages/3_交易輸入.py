@@ -83,7 +83,7 @@ def _init_session_defaults():
     st.session_state.setdefault("te_policy", "CUSTOM_PLUS_FIFO")
     st.session_state.setdefault("te_auto_fifo", True)
     st.session_state.setdefault("te_added_stocks", [])
-    st.session_state.setdefault("te_autorefresh", False)
+    st.session_state.setdefault("te_autorefresh", True)
     st.session_state.setdefault("te_ar_interval", 20)
 
 
@@ -969,7 +969,7 @@ arc1, arc2, arc3 = st.columns([1.1, 1.0, 2.5])
 with arc1:
     st.session_state["te_autorefresh"] = st.toggle(
         "自動更新報價",
-        value=st.session_state.get("te_autorefresh", False),
+        value=st.session_state.get("te_autorefresh", True),
         key="te_autorefresh_tg",
         help="開啟後，盤中且未展開任何個股時，會每隔數秒自動抓最新股價並刷新畫面。",
     )
