@@ -254,6 +254,60 @@ def _render_holding_row(row: dict, sid: str, open_now: bool):
             st.rerun()
 
 
+# 逐筆交易明細欄寬（表頭與資料列一致）
+_TX_COL_WIDTHS = [1.5, 0.9, 1.0, 1.0, 1.25, 0.6]
+_TX_LABELS = ["交易日期", "買/賣", "交易股數", "交易股價", "市值", "刪除"]
+_TX_TEXT_ALIGN = ["left", "center", "right", "right", "right", "center"]
+_TX_JUSTIFY = ["flex-start", "center", "flex-end", "flex-end", "flex-end", "center"]
+
+
+def _delete_trade(trade_id: int, trader_name: str) -> None:
+    """刪除單筆交易並連帶清除其沖銷規則（買方或賣方皆清）。"""
+    if not can_access_trader(trader_name):
+        st.error("無權限刪除。")
+        return
+    sess = get_session()
+    try:
+        sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == int(trade_id)).delete()
+        sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == int(trade_id)).delete()
+        sess.query(Trade).filter(Trade.id == int(trade_id)).delete()
+        sess.commit()
+        st.success(f"已刪除交易 #{trade_id}")
+        st.rerun()
+    except Exception as e:
+        sess.rollback()
+        st.error(str(e))
+    finally:
+        sess.close()
+
+
+def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float) -> None:
+    """奇摩股市式：列出該股每一天、每一筆交易，可逐筆刪除。市值＝現價×股數。"""
+    hdr = st.columns(_TX_COL_WIDTHS)
+    for c, lbl, ta in zip(hdr, _TX_LABELS, _TX_TEXT_ALIGN):
+        c.markdown(f'<div class="te-hold-th" style="text-align:{ta}">{lbl}</div>', unsafe_allow_html=True)
+    for t in stock_ts:
+        cc = st.columns(_TX_COL_WIDTHS)
+        is_buy = str(t.side).upper() == "BUY"
+        side_txt = "買入" if is_buy else "賣出"
+        side_color = "#c62828" if is_buy else "#2e7d32"
+        qty = int(t.quantity or 0)
+        mv = cur_price * qty
+        dt = "當沖 " if getattr(t, "is_daytrade", False) else ""
+        cells = [
+            (f'{str(t.trade_date)[:10]}', "flex-start"),
+            (f'<span style="color:{side_color};font-weight:600">{dt}{side_txt}</span>', "center"),
+            (f'{qty:,}', "flex-end"),
+            (f'{float(t.price or 0):.2f}', "flex-end"),
+            (f'{mv:,.0f}', "flex-end"),
+        ]
+        for c, (v, jc) in zip(cc[:5], cells):
+            c.markdown(f'<div class="te-hold-td" style="justify-content:{jc}">{v}</div>', unsafe_allow_html=True)
+        with cc[5]:
+            if st.button("🗑", key=f"te_txdel_{sid}_{t.id}", use_container_width=True, help="刪除此筆交易"):
+                _delete_trade(int(t.id), t.user)
+
+
 def _render_match_table_header():
     labels = ["買進ID", "買進日", "買價", "價差", "淨損益", "可沖銷", "本次沖銷"]
     cols = st.columns(_MATCH_COL_WIDTHS)
@@ -700,31 +754,17 @@ def _render_stock_trade_panel(
             finally:
                 sess.close()
 
-        # 該股今日成交
-        today_ts = [
+        # 該股全部交易明細（每一天、每一筆；奇摩股市式逐筆列表，可逐筆刪除）
+        stock_ts = [
             t for t in trades
-            if t.stock_id == sid
-            and t.trade_date == trade_date
-            and (t.user or "").strip() == trader.strip()
+            if t.stock_id == sid and (t.user or "").strip() == trader.strip()
         ]
-        if today_ts:
-            st.caption("本日此股成交")
-            st.dataframe(
-                pd.DataFrame([
-                    {
-                        "ID": t.id,
-                        "買/賣": t.side,
-                        "價格": t.price,
-                        "股數": t.quantity,
-                        "手續費": t.fee,
-                        "稅": t.tax,
-                        "當沖": t.is_daytrade,
-                    }
-                    for t in today_ts
-                ]),
-                use_container_width=True,
-                hide_index=True,
-            )
+        stock_ts.sort(key=lambda t: (str(t.trade_date), t.id), reverse=True)
+        st.markdown("**交易明細（每一天、每一筆）**")
+        if not stock_ts:
+            st.caption("此股尚無交易，於上方輸入第一筆。")
+        else:
+            _render_stock_tx_list(sid, stock_ts, float(row["price"] or 0))
 
 
 # ---------- 主程式 ----------
