@@ -667,8 +667,8 @@ except OperationalError:
 today = date.today()
 allowed = get_allowed_traders()
 
-# ---------- 工具列 ----------
-tb1, tb2, tb3, tb4, tb5, tb6 = st.columns([1.2, 1, 1, 1.2, 1, 0.8])
+# ---------- 工具列（只留必填：買賣人、交易日期；其餘進階設定收合） ----------
+tb1, tb2, tb3 = st.columns([1.6, 1.1, 0.9])
 with tb1:
     if is_admin():
         trader = st.text_input("買賣人", value=st.session_state.get("last_user", ""), key="te_trader")
@@ -683,35 +683,41 @@ with tb2:
     trade_date = st.date_input("交易日期", value=st.session_state.get("te_date", today), key="te_date_in")
     st.session_state["te_date"] = trade_date
 with tb3:
-    period_days = st.selectbox(
-        "期間獲利",
-        options=[1, 3, 7, 30, 180],
-        format_func=lambda d: {1: "今日", 3: "近3天", 7: "近1週", 30: "近1月", 180: "近半年"}[d],
-        index=[1, 3, 7, 30, 180].index(st.session_state.get("te_period_days", 3))
-        if st.session_state.get("te_period_days", 3) in [1, 3, 7, 30, 180]
-        else 1,
-        key="te_period_sel",
-    )
-    st.session_state["te_period_days"] = period_days
-with tb4:
-    policy = st.selectbox(
-        "沖銷口徑",
-        options=list(_POLICY_OPTIONS.keys()),
-        format_func=lambda k: _POLICY_OPTIONS[k],
-        index=list(_POLICY_OPTIONS.keys()).index(st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO")),
-        key="te_policy_sel",
-    )
-    st.session_state["te_policy"] = policy
-with tb5:
-    st.session_state["te_auto_fifo"] = st.checkbox(
-        "賣出未配對時自動 FIFO",
-        value=st.session_state.get("te_auto_fifo", True),
-        key="te_auto_fifo_cb",
-    )
-with tb6:
-    if st.button("🔄 更新現價"):
+    st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+    if st.button("🔄 更新現價", use_container_width=True):
         clear_quote_cache()
         st.rerun()
+
+# ---------- 進階設定（預設已是最常用值，一般免調整） ----------
+with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不用改）", expanded=False):
+    ac1, ac2, ac3 = st.columns([1, 1.4, 1])
+    with ac1:
+        period_days = st.selectbox(
+            "期間獲利",
+            options=[1, 3, 7, 30, 180],
+            format_func=lambda d: {1: "今日", 3: "近3天", 7: "近1週", 30: "近1月", 180: "近半年"}[d],
+            index=[1, 3, 7, 30, 180].index(st.session_state.get("te_period_days", 3))
+            if st.session_state.get("te_period_days", 3) in [1, 3, 7, 30, 180]
+            else 1,
+            key="te_period_sel",
+        )
+        st.session_state["te_period_days"] = period_days
+    with ac2:
+        policy = st.selectbox(
+            "沖銷口徑",
+            options=list(_POLICY_OPTIONS.keys()),
+            format_func=lambda k: _POLICY_OPTIONS[k],
+            index=list(_POLICY_OPTIONS.keys()).index(st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO")),
+            key="te_policy_sel",
+        )
+        st.session_state["te_policy"] = policy
+    with ac3:
+        st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+        st.session_state["te_auto_fifo"] = st.checkbox(
+            "賣出未配對時自動 FIFO",
+            value=st.session_state.get("te_auto_fifo", True),
+            key="te_auto_fifo_cb",
+        )
 
 period_start = trade_date - timedelta(days=max(0, period_days - 1))
 period_end = trade_date
