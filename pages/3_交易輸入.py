@@ -204,7 +204,7 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
 
 # 持股表格欄寬與對齊（表頭與資料列必須一致）
 _HOLD_COL_WIDTHS = [1.8, 0.85, 0.95, 0.95, 0.95, 1.0, 1.15, 0.85]
-_HOLD_LABELS = ["股名", "代號", "現價", "漲跌%", "股數", "均價", "未實現", ""]
+_HOLD_LABELS = ["股名", "代號", "現價", "漲跌%", "股數", "持股成本均價", "未實現", ""]
 _HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
 _HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "center"]
 
