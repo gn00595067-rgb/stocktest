@@ -83,6 +83,8 @@ def _init_session_defaults():
     st.session_state.setdefault("te_policy", "CUSTOM_PLUS_FIFO")
     st.session_state.setdefault("te_auto_fifo", True)
     st.session_state.setdefault("te_added_stocks", [])
+    st.session_state.setdefault("te_autorefresh", False)
+    st.session_state.setdefault("te_ar_interval", 20)
 
 
 def _fmt_pnl(v):
@@ -563,6 +565,50 @@ def _ensure_stock_in_master(sess, stock_id: str, masters: dict):
     masters[stock_id] = row
 
 
+def _tw_now():
+    """台灣時間（UTC+8）；Streamlit Cloud 伺服器為 UTC，需自行換算。"""
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone.utc) + timedelta(hours=8)
+
+
+def _tw_market_open() -> bool:
+    """台股盤中（平日 08:45–13:35，含盤前試撮與收盤緩衝）。"""
+    from datetime import time as dtime
+    now = _tw_now()
+    if now.weekday() >= 5:  # 週六日
+        return False
+    return dtime(8, 45) <= now.time() <= dtime(13, 35)
+
+
+def _maybe_autorefresh():
+    """開啟且無展開個股、且盤中時，用 fragment 每 N 秒清報價快取並整頁刷新。"""
+    if not st.session_state.get("te_autorefresh"):
+        return
+    interval = int(st.session_state.get("te_ar_interval", 20))
+    any_open = any(str(k).startswith("te_open_") and v for k, v in st.session_state.items())
+    if any_open:
+        st.caption("✏️ 有展開的個股（可能正在編輯），自動更新暫停；收合後恢復。")
+        return
+    if not _tw_market_open():
+        nxt = _tw_now().strftime("%H:%M")
+        st.caption(f"💤 非台股交易時段（現在 {nxt}），自動更新暫停；可按 🔄 手動更新。")
+        return
+
+    # 每次整頁執行先歸零計數；初次呼叫不重跑，之後由 fragment 計時器每 interval 秒觸發一次整頁 rerun
+    st.session_state["_ar_ticks"] = 0
+
+    @st.fragment(run_every=interval)
+    def _tick():
+        st.session_state["_ar_ticks"] = st.session_state.get("_ar_ticks", 0) + 1
+        if st.session_state["_ar_ticks"] <= 1:
+            return  # 初次註冊不動作，避免立即無限重跑
+        clear_quote_cache()
+        st.rerun()  # 整頁刷新，讓現價/漲跌/未實現一起跳動
+
+    _tick()
+    st.caption(f"🟢 自動更新中：每 {interval} 秒（僅盤中、且未展開個股時）。")
+
+
 def _render_add_stock_expander(masters: dict):
     with st.expander("➕ 新增股票（搜尋台股代號或名稱）", expanded=False):
         kw = st.text_input("搜尋", placeholder="2330、台積電…", key="te_stock_search")
@@ -917,6 +963,27 @@ with tb3:
     if st.button("🔄 更新現價", use_container_width=True):
         clear_quote_cache()
         st.rerun()
+
+# ---------- 自動更新報價（盤中、未展開個股時每 N 秒跳動） ----------
+arc1, arc2, arc3 = st.columns([1.1, 1.0, 2.5])
+with arc1:
+    st.session_state["te_autorefresh"] = st.toggle(
+        "自動更新報價",
+        value=st.session_state.get("te_autorefresh", False),
+        key="te_autorefresh_tg",
+        help="開啟後，盤中且未展開任何個股時，會每隔數秒自動抓最新股價並刷新畫面。",
+    )
+with arc2:
+    st.session_state["te_ar_interval"] = st.selectbox(
+        "更新間隔",
+        options=[10, 15, 20, 30, 60],
+        index=[10, 15, 20, 30, 60].index(st.session_state.get("te_ar_interval", 20))
+        if st.session_state.get("te_ar_interval", 20) in [10, 15, 20, 30, 60] else 2,
+        format_func=lambda s: f"每 {s} 秒",
+        key="te_ar_interval_sel",
+    )
+with arc3:
+    _maybe_autorefresh()
 
 # ---------- 管理買賣人名單（僅管理者；新增／刪除會同步到 Google 試算表） ----------
 if is_admin():
