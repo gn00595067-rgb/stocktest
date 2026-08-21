@@ -343,6 +343,7 @@ def build_holdings_summary(
         quote = get_quote_fn(sid) if get_quote_fn else None
         price = float(quote["price"]) if quote else avg
         chg_pct = float(quote.get("change_pct", 0)) if quote else 0.0
+        change = float(quote.get("change", 0)) if quote else 0.0
         m = masters.get(sid)
         unrealized = (price - avg) * qty
         rows.append({
@@ -351,6 +352,7 @@ def build_holdings_summary(
             "qty": qty,
             "avg_cost": round(avg, 4),
             "price": price,
+            "change": round(change, 2),
             "change_pct": chg_pct,
             "market_value": round(price * qty, 2),
             "unrealized": round(unrealized, 2),

@@ -7,7 +7,7 @@ from datetime import date
 from typing import List, Optional
 
 _price_cache = {}
-CACHE_SECONDS = 60  # 報價快取秒數（每檔股票每 60 秒最多打 1 次 API，避免持倉/儀表板多檔時爆量）
+CACHE_SECONDS = 20  # 報價快取秒數（TWSE MIS 約每 5 秒更新；20 秒兼顧即時與不過度請求）
 
 # 台股漲跌停幅度：一般股 10%，ETF 等 5%
 LIMIT_PCT_NORMAL = 0.10
@@ -125,17 +125,17 @@ class FinMindPriceProvider(PriceProvider):
             if tick:
                 close = float(tick.get("close", 0))
                 open_p = float(tick.get("open", close))
-                chg = close - open_p
                 prev_close = close
                 daily = self._fetch_daily_price(stock_id, 3)
                 if len(daily) >= 2:
                     prev_close = float(daily[-2].get("close", prev_close))
+                chg = close - prev_close  # 漲跌＝現價−昨收
                 limit_up, limit_down = _compute_limit_prices(prev_close, is_etf=False)
                 return {
                     "name": stock_id,
                     "price": close,
                     "change": chg,
-                    "change_pct": (chg / open_p * 100) if open_p else 0,
+                    "change_pct": (chg / prev_close * 100) if prev_close else 0,
                     "prev_close": prev_close,
                     "limit_up": limit_up,
                     "limit_down": limit_down,
@@ -151,14 +151,14 @@ class FinMindPriceProvider(PriceProvider):
             last = daily[-1]
             close = float(last.get("close", 0))
             open_p = float(last.get("open", close))
-            chg = close - open_p
             prev_close = float(daily[-2].get("close", close)) if len(daily) >= 2 else open_p
+            chg = close - prev_close  # 漲跌＝現價−昨收
             limit_up, limit_down = _compute_limit_prices(prev_close, is_etf=False)
             return {
                 "name": stock_id,
                 "price": close,
                 "change": chg,
-                "change_pct": (chg / open_p * 100) if open_p else 0,
+                "change_pct": (chg / prev_close * 100) if prev_close else 0,
                 "prev_close": prev_close,
                 "limit_up": limit_up,
                 "limit_down": limit_down,
@@ -215,6 +215,109 @@ class MockPriceProvider(PriceProvider):
         }
 
 
+class TwseMisProvider(PriceProvider):
+    """台灣證交所官方即時報價（mis.twse.com.tw）。免 token、盤中約每 5 秒更新、可批次多檔。
+
+    漲跌＝現價(z)−昨收(y)；z 為 '-'（尚無成交）時退而用最佳買/賣價或昨收。
+    通道：上市=tse_、上櫃=otc_；未知交易所時同時查兩個通道取有效者。
+    """
+
+    BASE = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+    }
+
+    @staticmethod
+    def _f(v):
+        try:
+            x = float(v)
+            return x if x > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _ex_prefix(exchange: Optional[str]) -> Optional[str]:
+        if not exchange:
+            return None
+        e = str(exchange).upper()
+        if e in ("TWSE", "TSE"):
+            return "tse"
+        if e in ("TPEX", "OTC", "TPEx".upper()):
+            return "otc"
+        return None
+
+    def _parse(self, m: dict) -> Optional[dict]:
+        z = self._f(m.get("z"))
+        if z is None:  # 尚無成交價，改用最佳買價→賣價→昨收
+            b = (m.get("b") or "").split("_")[0]
+            a = (m.get("a") or "").split("_")[0]
+            z = self._f(b) or self._f(a) or self._f(m.get("y"))
+        if z is None:
+            return None
+        y = self._f(m.get("y")) or z
+        o = self._f(m.get("o")) or z
+        chg = z - y if y else 0.0
+        limit_up, limit_down = _compute_limit_prices(y, is_etf=False)
+        return {
+            "name": m.get("n") or m.get("c"),
+            "price": _round_price(z),
+            "change": _round_price(chg),
+            "change_pct": (chg / y * 100) if y else 0.0,
+            "prev_close": y,
+            "limit_up": limit_up,
+            "limit_down": limit_down,
+            "open": o,
+            "high": self._f(m.get("h")),
+            "low": self._f(m.get("l")),
+            "source": "twse_mis",
+            "data_date": str(m.get("d") or "")[:10] if m.get("d") else "",
+            "time": m.get("t"),
+        }
+
+    def get_quotes(self, stock_ids: List[str], exchanges: Optional[dict] = None) -> dict:
+        """一次批次抓多檔，回傳 {stock_id: quote}。exchanges 可選：{stock_id: 'TWSE'/'TPEX'}。"""
+        ids = [str(s).strip() for s in stock_ids if str(s).strip()]
+        if not ids:
+            return {}
+        channels = []
+        for sid in ids:
+            pref = self._ex_prefix((exchanges or {}).get(sid))
+            if pref:
+                channels.append(f"{pref}_{sid}.tw")
+            else:  # 未知交易所：兩個通道都查，取有效者
+                channels.append(f"tse_{sid}.tw")
+                channels.append(f"otc_{sid}.tw")
+        try:
+            import requests
+            r = requests.get(
+                self.BASE,
+                params={"ex_ch": "|".join(channels), "json": "1", "delay": "0"},
+                headers=self.HEADERS,
+                timeout=8,
+            )
+            if r.status_code != 200:
+                return {}
+            arr = r.json().get("msgArray", []) or []
+        except Exception:
+            return {}
+        out = {}
+        for m in arr:
+            code = str(m.get("c") or "").strip()
+            if not code:
+                continue
+            q = self._parse(m)
+            if q and code not in out:  # 兩通道都回時，保留第一個有效者
+                out[code] = q
+        return out
+
+    def get_quote(self, stock_id: str) -> Optional[dict]:
+        return self.get_quotes([stock_id]).get(str(stock_id).strip())
+
+
+_mis_provider = TwseMisProvider()
+
+
 def get_price_service():
     token = os.environ.get("FINMIND_TOKEN")
     if token:
@@ -228,11 +331,37 @@ def get_quote_cached(stock_id: str) -> Optional[dict]:
         data, ts = _price_cache[stock_id]
         if now - ts < CACHE_SECONDS:
             return data
-    provider = get_price_service()
-    data = provider.get_quote(stock_id)
+    # 主源：TWSE MIS 官方即時（免 token）；失敗再退回 FinMind / Mock
+    data = _mis_provider.get_quote(stock_id)
+    if not data:
+        data = get_price_service().get_quote(stock_id)
     if data:
         _price_cache[stock_id] = (data, now)
     return data
+
+
+def get_quotes_cached(stock_ids: List[str], exchanges: Optional[dict] = None) -> dict:
+    """批次取價（供持倉頁一次抓多檔）：先讀快取，未命中的用 TWSE MIS 一次批次補齊，
+    仍缺者再逐檔退回 FinMind/Mock。回傳 {stock_id: quote}。"""
+    now = time.time()
+    result = {}
+    missing = []
+    for sid in {str(s).strip() for s in stock_ids if str(s).strip()}:
+        cached = _price_cache.get(sid)
+        if cached and now - cached[1] < CACHE_SECONDS:
+            result[sid] = cached[0]
+        else:
+            missing.append(sid)
+    if missing:
+        fresh = _mis_provider.get_quotes(missing, exchanges=exchanges)
+        for sid in missing:
+            data = fresh.get(sid)
+            if not data:
+                data = get_price_service().get_quote(sid)
+            if data:
+                _price_cache[sid] = (data, now)
+                result[sid] = data
+    return result
 
 
 def fetch_daily_prices(stock_id: str, start_date: date, end_date: date) -> List[dict]:

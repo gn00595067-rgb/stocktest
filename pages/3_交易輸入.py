@@ -26,6 +26,7 @@ from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.price_service import (
     get_quote_cached,
+    get_quotes_cached,
     fetch_stock_list_cached,
     clear_quote_cache,
     get_finmind_debug,
@@ -204,21 +205,36 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
 
 # 持股表格欄寬與對齊（表頭與資料列必須一致）
 _HOLD_COL_WIDTHS = [1.8, 0.85, 0.95, 0.95, 0.95, 1.0, 1.15, 0.85]
-_HOLD_LABELS = ["股名", "代號", "現價", "漲跌%", "股數", "持股成本均價", "未實現", ""]
+_HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "持股成本均價", "未實現", ""]
 _HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
 _HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "center"]
 
 
-def _html_pct(v) -> str:
-    """漲跌幅著色（台股：漲紅、跌綠）。"""
-    x = float(v or 0)
+def _quote_color(change) -> str:
+    """台股：漲紅、跌綠、平灰。"""
+    x = float(change or 0)
     if x > 0:
-        color = "#c62828"
-    elif x < 0:
-        color = "#2e7d32"
-    else:
-        color = "#64748b"
-    return f'<span style="color:{color};font-weight:600">{x:+.2f}%</span>'
+        return "#c62828"
+    if x < 0:
+        return "#2e7d32"
+    return "#64748b"
+
+
+def _html_price_colored(price, change) -> str:
+    """現價依漲跌著色（奇摩式）。"""
+    color = _quote_color(change)
+    return f'<span style="color:{color};font-weight:700">{float(price):.2f}</span>'
+
+
+def _html_change_arrow(change, pct) -> str:
+    """▲/▼ 漲跌值 (百分比)，紅漲綠跌，一目了然。"""
+    x = float(change or 0)
+    color = _quote_color(x)
+    arrow = "▲" if x > 0 else ("▼" if x < 0 else "—")
+    return (
+        f'<span style="color:{color};font-weight:600">{arrow} {abs(x):.2f}</span>'
+        f'<span style="color:{color};font-size:0.85em"> ({abs(float(pct or 0)):.2f}%)</span>'
+    )
 
 
 def _render_holdings_header():
@@ -230,11 +246,12 @@ def _render_holdings_header():
 def _render_holding_row(row: dict, sid: str, open_now: bool):
     cols = st.columns(_HOLD_COL_WIDTHS)
     avg = f"{row['avg_cost']:.2f}" if row["qty"] else "—"
+    change = row.get("change", 0)
     values = [
         f'<b>{row["name"]}</b>',
         f'<code>{sid}</code>',
-        f'{row["price"]:.2f}',
-        _html_pct(row["change_pct"]),
+        _html_price_colored(row["price"], change),
+        _html_change_arrow(change, row["change_pct"]),
         f'{row["qty"]:,}',
         avg,
         _html_pnl_amount(row["unrealized"]),
@@ -962,6 +979,16 @@ with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不�
 period_start = trade_date - timedelta(days=max(0, period_days - 1))
 period_end = trade_date
 
+# 批次預抓即時報價（TWSE MIS 一次一包），暖快取後下面逐檔取價直接命中
+_sids_for_quote = {
+    t.stock_id for t in trades
+    if (not trader or (t.user or "").strip() == trader.strip())
+}
+_sids_for_quote |= set(st.session_state.get("te_added_stocks", []))
+if _sids_for_quote:
+    _ex_map = {sid: getattr(masters.get(sid), "exchange", None) for sid in _sids_for_quote}
+    get_quotes_cached(list(_sids_for_quote), exchanges=_ex_map)
+
 holdings = build_holdings_summary(
     trades,
     masters,
@@ -996,7 +1023,7 @@ k2.metric(
 k3.metric(
     "③ 持倉未實現",
     f"{unrealized_total:,.0f}",
-    help="以 FinMind 即時價估算，未扣未來賣出費稅",
+    help="以即時價（TWSE 官方報價，盤中約每 5 秒更新）估算，未扣未來賣出費稅",
 )
 k4.metric(
     "盤中合計參考",
@@ -1039,6 +1066,7 @@ for sid in extra_sids:
         "qty": 0,
         "avg_cost": 0.0,
         "price": price,
+        "change": float(quote.get("change", 0)) if quote else 0.0,
         "change_pct": float(quote.get("change_pct", 0)) if quote else 0.0,
         "market_value": 0.0,
         "unrealized": 0.0,
