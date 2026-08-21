@@ -145,6 +145,25 @@ def _inject_trade_entry_css():
         .te-match-box div[data-testid="stNumberInput"] > div {
             padding-top: 0.1rem;
         }
+        /* 持股表格：表頭與資料列同欄寬、數字靠右對齊 */
+        .te-hold-th {
+            font-size: 0.74rem;
+            color: #64748b;
+            font-weight: 600;
+            padding: 0.1rem 0.15rem 0.4rem;
+            border-bottom: 1px solid #e2e8f0;
+            white-space: nowrap;
+        }
+        .te-hold-td {
+            font-size: 0.9rem;
+            min-height: 2.5rem;
+            display: flex;
+            align-items: center;
+            padding: 0.1rem 0.15rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -181,6 +200,58 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
         f'<span style="color:{color};font-weight:600">{diff:+.2f}</span>'
         f'<span style="color:{color};font-size:0.82em"> ({pct:+.2f}%)</span>'
     )
+
+
+# 持股表格欄寬與對齊（表頭與資料列必須一致）
+_HOLD_COL_WIDTHS = [1.8, 0.85, 0.95, 0.95, 0.95, 1.0, 1.15, 0.85]
+_HOLD_LABELS = ["股名", "代號", "現價", "漲跌%", "股數", "均價", "未實現", ""]
+_HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
+_HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "center"]
+
+
+def _html_pct(v) -> str:
+    """漲跌幅著色（台股：漲紅、跌綠）。"""
+    x = float(v or 0)
+    if x > 0:
+        color = "#c62828"
+    elif x < 0:
+        color = "#2e7d32"
+    else:
+        color = "#64748b"
+    return f'<span style="color:{color};font-weight:600">{x:+.2f}%</span>'
+
+
+def _render_holdings_header():
+    cols = st.columns(_HOLD_COL_WIDTHS)
+    for c, lbl, ta in zip(cols, _HOLD_LABELS, _HOLD_TEXT_ALIGN):
+        c.markdown(f'<div class="te-hold-th" style="text-align:{ta}">{lbl}</div>', unsafe_allow_html=True)
+
+
+def _render_holding_row(row: dict, sid: str, open_now: bool):
+    cols = st.columns(_HOLD_COL_WIDTHS)
+    avg = f"{row['avg_cost']:.2f}" if row["qty"] else "—"
+    values = [
+        f'<b>{row["name"]}</b>',
+        f'<code>{sid}</code>',
+        f'{row["price"]:.2f}',
+        _html_pct(row["change_pct"]),
+        f'{row["qty"]:,}',
+        avg,
+        _html_pnl_amount(row["unrealized"]),
+    ]
+    for c, v, jc in zip(cols[:7], values, _HOLD_JUSTIFY[:7]):
+        c.markdown(
+            f'<div class="te-hold-td" style="justify-content:{jc}">{v}</div>',
+            unsafe_allow_html=True,
+        )
+    with cols[7]:
+        if st.button(
+            "收合" if open_now else "輸入",
+            key=f"te_toggle_{sid}",
+            use_container_width=True,
+        ):
+            st.session_state[f"te_open_{sid}"] = not open_now
+            st.rerun()
 
 
 def _render_match_table_header():
@@ -400,12 +471,17 @@ def _render_stock_trade_panel(
 ):
     sid = row["stock_id"]
     is_etf = bool(getattr(masters.get(sid), "is_etf", False))
-    expand = st.session_state.get("te_expand_stock") == sid
-    label = f"**{row['name']}** `{sid}`　現價 {row['price']:.2f} ({row['change_pct']:+.2f}%)　"
-    label += f"持有 {row['qty']:,}　均價 {row['avg_cost']:.2f}　未實現 {_fmt_pnl(row['unrealized'])}"
-    with st.expander(label, expanded=expand):
-        if expand:
-            st.session_state.pop("te_expand_stock", None)
+    open_key = f"te_open_{sid}"
+    if st.session_state.get("te_expand_stock") == sid:
+        st.session_state[open_key] = True
+        st.session_state.pop("te_expand_stock", None)
+    open_now = bool(st.session_state.get(open_key, False))
+
+    _render_holding_row(row, sid, open_now)
+
+    if not open_now:
+        return
+    with st.container(border=True):
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("市值", f"{row['market_value']:,.0f}")
         c2.metric("當日已實現", _fmt_pnl(row["realized_today"]), delta_color=_pnl_delta_color(row["realized_today"]))
@@ -851,7 +927,8 @@ for sid in extra_sids:
     })
 
 if holdings:
-    st.subheader("持有股票（點開個股輸入買賣）")
+    st.subheader("持有股票（點「輸入」展開該股買賣）")
+    _render_holdings_header()
     for h in sorted(holdings, key=lambda x: (-x["qty"], x["stock_id"])):
         _render_stock_trade_panel(h, masters, trades, custom_rules, policy, trader, trade_date)
 else:
