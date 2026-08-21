@@ -20,12 +20,14 @@ SHEET_TRADES = "trades"
 SHEET_RULES = "custom_match_rules"
 SHEET_USERS = "user_accounts"
 SHEET_USER_BINDINGS = "user_trader_bindings"
+SHEET_TRADERS = "traders"
 
 # 欄位順序（與 DB 對應）
 TRADES_HEADERS = ["id", "user", "stock_id", "trade_date", "side", "price", "quantity", "is_daytrade", "fee", "tax", "note"]
 RULES_HEADERS = ["sell_trade_id", "buy_trade_id", "matched_qty", "created_at"]
 USERS_HEADERS = ["id", "username", "password_hash", "role", "is_active", "created_at"]
 USER_BINDINGS_HEADERS = ["user_id", "trader_name", "created_at"]
+TRADERS_HEADERS = ["id", "name", "created_at"]
 
 # 需寫入試算表時用的範圍（Scopes）
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
@@ -152,7 +154,7 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
         return False, err
 
     from sqlalchemy import text
-    from db.models import Trade, CustomMatchRule, UserAccount, UserTraderBinding
+    from db.models import Trade, CustomMatchRule, UserAccount, UserTraderBinding, Trader
 
     try:
         # --- 讀取 trades ---
@@ -161,6 +163,13 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
             rows_trades = ws_trades.get_all_records()
         except gspread.WorksheetNotFound:
             rows_trades = []
+
+        # --- 讀取 traders（買賣人名單） ---
+        try:
+            ws_traders = spread.worksheet(SHEET_TRADERS)
+            rows_traders = ws_traders.get_all_records()
+        except gspread.WorksheetNotFound:
+            rows_traders = []
 
         # --- 讀取 custom_match_rules ---
         try:
@@ -188,7 +197,31 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
             conn.execute(text("DELETE FROM user_accounts"))
             conn.execute(text("DELETE FROM custom_match_rules"))
             conn.execute(text("DELETE FROM trades"))
+            conn.execute(text("DELETE FROM traders"))
             conn.commit()
+
+        # 插入 traders（保留 id）
+        if rows_traders:
+            with engine.connect() as conn:
+                for r in rows_traders:
+                    tid = r.get("id")
+                    name = str(r.get("name") or "").strip()
+                    if not name:
+                        continue
+                    try:
+                        tid = int(float(tid)) if tid is not None and str(tid).strip() else None
+                    except (ValueError, TypeError):
+                        tid = None
+                    created_at = _parse_datetime(r.get("created_at"))
+                    if tid is not None:
+                        conn.execute(text(
+                            "INSERT INTO traders (id, name, created_at) VALUES (:id, :name, :created_at)"
+                        ), {"id": tid, "name": name, "created_at": created_at})
+                    else:
+                        conn.execute(text(
+                            "INSERT INTO traders (name, created_at) VALUES (:name, :created_at)"
+                        ), {"name": name, "created_at": created_at})
+                conn.commit()
 
         # 插入 trades（保留 id）
         if rows_trades:
@@ -313,6 +346,7 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                 with engine.connect() as conn:
                     conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM trades) WHERE name = 'trades'"))
                     conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM user_accounts) WHERE name = 'user_accounts'"))
+                    conn.execute(text("UPDATE sqlite_sequence SET seq = (SELECT COALESCE(MAX(id),0) FROM traders) WHERE name = 'traders'"))
                     conn.commit()
             except Exception:
                 pass
@@ -354,6 +388,11 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                 SELECT user_id, trader_name, created_at
                 FROM user_trader_bindings
                 ORDER BY user_id, trader_name
+            """)).fetchall()
+            r_traders = conn.execute(text("""
+                SELECT id, name, created_at
+                FROM traders
+                ORDER BY id
             """)).fetchall()
 
         def _date_str(v):
@@ -398,6 +437,11 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                 r[0], r[1], _datetime_str(r[2]),
             ]
 
+        def row_trader(r):
+            return [
+                r[0], r[1], _datetime_str(r[2]),
+            ]
+
         # 寫入 trades 工作表
         try:
             ws_trades = spread.worksheet(SHEET_TRADES)
@@ -437,6 +481,15 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         if user_bindings_data:
             ws_user_bindings.clear()
             ws_user_bindings.update(user_bindings_data, value_input_option="USER_ENTERED")
+
+        # 寫入 traders 工作表（買賣人名單）
+        try:
+            ws_traders = spread.worksheet(SHEET_TRADERS)
+        except gspread.WorksheetNotFound:
+            ws_traders = spread.add_worksheet(title=SHEET_TRADERS, rows=200, cols=len(TRADERS_HEADERS))
+        traders_data = [TRADERS_HEADERS] + [row_trader(r) for r in r_traders]
+        ws_traders.clear()
+        ws_traders.update(traders_data, value_input_option="USER_ENTERED")
 
         return True, None
     except Exception as e:

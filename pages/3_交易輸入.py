@@ -40,6 +40,12 @@ from services.auth_service import (
     filter_trades_by_permission,
 )
 from services.trade_fees import fees_for_trade, get_fee_tax_rates
+from services.trader_service import (
+    list_trader_names,
+    add_trader,
+    delete_trader,
+    ensure_traders_seeded,
+)
 from services.trade_entry_service import (
     build_holdings_summary,
     get_open_buy_lots,
@@ -658,6 +664,9 @@ st.caption(
     "賣出時可指定沖銷配對（例如僅配近 3 天買進，不與舊庫存混算）。"
 )
 
+# 首次使用時，用既有交易中的買賣人自動補齊名單
+ensure_traders_seeded()
+
 try:
     trades, masters, custom_rules, stocks = _load_data()
 except OperationalError:
@@ -671,7 +680,14 @@ allowed = get_allowed_traders()
 tb1, tb2, tb3 = st.columns([1.6, 1.1, 0.9])
 with tb1:
     if is_admin():
-        trader = st.text_input("買賣人", value=st.session_state.get("last_user", ""), key="te_trader")
+        trader_names = list_trader_names()
+        if trader_names:
+            last = st.session_state.get("last_user")
+            idx = trader_names.index(last) if last in trader_names else 0
+            trader = st.selectbox("買賣人", options=trader_names, index=idx, key="te_trader_sel")
+        else:
+            trader = ""
+            st.selectbox("買賣人", options=["（尚無名單，請於下方新增）"], disabled=True, key="te_trader_empty")
     else:
         if not allowed:
             st.warning("帳號尚未綁定買賣人，請聯絡管理者。")
@@ -687,6 +703,33 @@ with tb3:
     if st.button("🔄 更新現價", use_container_width=True):
         clear_quote_cache()
         st.rerun()
+
+# ---------- 管理買賣人名單（僅管理者；新增／刪除會同步到 Google 試算表） ----------
+if is_admin():
+    with st.expander("👥 管理買賣人名單（新增／刪除，會存到 Google 試算表）", expanded=False):
+        ma1, ma2 = st.columns([2, 1])
+        with ma1:
+            new_trader = st.text_input("新增買賣人", key="te_new_trader", placeholder="輸入名稱，例如 Jonathan")
+        with ma2:
+            st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+            if st.button("➕ 新增", key="te_add_trader_btn", use_container_width=True):
+                ok, msg = add_trader(new_trader)
+                (st.success if ok else st.warning)(msg)
+                if ok:
+                    st.rerun()
+        names_now = list_trader_names()
+        if names_now:
+            md1, md2 = st.columns([2, 1])
+            with md1:
+                del_trader_name = st.selectbox("刪除買賣人", options=names_now, key="te_del_trader_sel")
+            with md2:
+                st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ 刪除", key="te_del_trader_btn", use_container_width=True):
+                    ok, msg = delete_trader(del_trader_name)
+                    (st.success if ok else st.warning)(msg)
+                    if ok:
+                        st.rerun()
+            st.caption("刪除只是把名字從選單移除，該買賣人已輸入的交易與歷史不受影響。")
 
 # ---------- 進階設定（預設已是最常用值，一般免調整） ----------
 with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不用改）", expanded=False):

@@ -64,6 +64,15 @@ class CustomMatchRule(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=True)
 
 
+class Trader(Base):
+    """買賣人名單（可於介面新增／刪除，並同步到 Google 試算表）。"""
+    __tablename__ = "traders"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String(50), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class UserAccount(Base):
     __tablename__ = "user_accounts"
 
