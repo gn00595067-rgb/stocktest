@@ -1099,28 +1099,32 @@ if day_trades:
             "id": t.id,
             "股票": t.stock_id,
             "買賣人": t.user,
-            "買/賣": t.side,
+            "買/賣": "買入" if str(t.side).upper() == "BUY" else "賣出",
             "價格": t.price,
             "股數": t.quantity,
             "手續費": t.fee,
             "證交稅": t.tax,
-            "當沖": t.is_daytrade,
+            "當沖": "當沖" if t.is_daytrade else "",
             "備註": t.note or "",
         }
         for t in day_trades
     ])
-    st.data_editor(
+    st.dataframe(
         df,
         use_container_width=True,
-        disabled=["id"],
         hide_index=True,
         column_config={
             "價格": st.column_config.NumberColumn("價格", format="accounting"),
             "股數": st.column_config.NumberColumn("股數", format="localized"),
             "手續費": st.column_config.NumberColumn("手續費", format="accounting"),
             "證交稅": st.column_config.NumberColumn("證交稅", format="accounting"),
+            "當沖": st.column_config.TextColumn(
+                "當沖",
+                help="當日沖銷：同一天買進又賣出、當天軋平的交易；標「當沖」表示這筆屬當沖，空白為一般買賣。",
+            ),
         },
     )
+    st.caption("此表為當日成交總覽（唯讀）。要修改／刪除請用上方各股票展開的「交易明細」，或下方輸入交易 ID 刪除。")
     del_id = st.number_input("刪除交易 ID", min_value=0, value=0, step=1, key="te_del_id")
     if st.button("刪除該筆") and del_id:
         sess = get_session()
