@@ -103,8 +103,8 @@ def _pnl_delta_color(v):
     return "normal" if float(v) >= 0 else "inverse"
 
 
-# 沖銷表欄寬（表頭與資料列必須一致）
-_MATCH_COL_WIDTHS = [0.52, 0.92, 0.58, 0.62, 0.82, 0.68, 1.08]
+# 沖銷表欄寬（表頭與資料列必須一致）；末欄含股數輸入＋補滿/清0/只此快捷鈕，較寬
+_MATCH_COL_WIDTHS = [0.5, 0.86, 0.56, 0.6, 0.78, 0.62, 1.6]
 
 
 def _inject_trade_entry_css():
@@ -433,6 +433,49 @@ def _read_match_plan(stock_id: str, open_lots: list) -> list:
     return plan
 
 
+def _row_op_key(stock_id: str) -> str:
+    return f"te_rowop_{stock_id}"
+
+
+def _apply_pending_row_op(stock_id: str, open_lots: list, sell_qty: int) -> None:
+    """處理沖銷列快捷按鈕（補滿／清0／只配此）。
+
+    必須在任何沖銷 number_input 建立「之前」呼叫：直接改寫該列 widget 的
+    session_state 值，避開 Streamlit「widget 已建立不可修改」限制。
+    每次 rerun 只處理一個操作（按鈕按下時排入、rerun 後於此生效）。
+    """
+    pending = st.session_state.pop(_row_op_key(stock_id), None)
+    if not pending:
+        return
+    op, bid = pending
+    bid = int(bid)
+    lot = next((l for l in open_lots if int(l["trade_id"]) == bid), None)
+    if not lot:
+        return
+    max_q = int(lot["remaining_qty"])
+    wk = _match_widget_key(stock_id, bid)
+    if op == "clear":
+        st.session_state[wk] = 0
+    elif op == "fill":
+        # 補到湊齊賣出股數：其他各列目前已配的合計之外，還缺多少就補多少（上限為此批可沖銷量）
+        others = 0
+        for l in open_lots:
+            oid = int(l["trade_id"])
+            if oid == bid:
+                continue
+            others += min(
+                safe_int_qty(st.session_state.get(_match_widget_key(stock_id, oid), 0)),
+                int(l["remaining_qty"]),
+            )
+        need = max(0, int(sell_qty) - others)
+        st.session_state[wk] = min(max_q, need)
+    elif op == "only":
+        # 清掉其他所有列，整筆只用這批配（上限為此批可沖銷量）
+        for l in open_lots:
+            st.session_state[_match_widget_key(stock_id, int(l["trade_id"]))] = 0
+        st.session_state[wk] = min(max_q, int(sell_qty))
+
+
 def _render_match_panel(
     stock_id: str,
     match_plan_key: str,
@@ -451,6 +494,9 @@ def _render_match_panel(
     sell_price = float(sell_price)
     sell_qty_i = max(1, int(sell_qty))
     trade_by_id = {t.id: t for t in trades}
+
+    # 快捷按鈕（補滿／清0／只配此）的延後處理：務必在下方 number_input 建立前
+    _apply_pending_row_op(stock_id, open_lots, sell_qty_i)
 
     with st.container(border=True):
         st.markdown('<div class="te-match-box">', unsafe_allow_html=True)
@@ -484,6 +530,19 @@ def _render_match_panel(
                 key=wkey,
                 label_visibility="collapsed",
             )
+            bf, bc, bo = c6.columns(3)
+            if bf.button("補滿", key=f"{wkey}_fill", use_container_width=True,
+                         help="把這批補到湊齊賣出股數（自動算還缺多少）"):
+                st.session_state[_row_op_key(stock_id)] = ("fill", bid)
+                st.rerun()
+            if bc.button("清0", key=f"{wkey}_clr", use_container_width=True,
+                         help="取消這批配對（歸零）"):
+                st.session_state[_row_op_key(stock_id)] = ("clear", bid)
+                st.rerun()
+            if bo.button("只此", key=f"{wkey}_only", use_container_width=True,
+                         help="清掉其他批，整筆只用這批配"):
+                st.session_state[_row_op_key(stock_id)] = ("only", bid)
+                st.rerun()
             q = safe_int_qty(qty)
             plan_sum += q
 
@@ -520,7 +579,7 @@ def _render_match_panel(
             if plan_sum == sell_qty_i:
                 st.success("✓ 配對股數與賣出一致")
             elif plan_sum < sell_qty_i:
-                st.caption(f"尚缺 **{sell_qty_i - plan_sum:,}** 股（可點快捷配對或手動填入）")
+                st.caption(f"尚缺 **{sell_qty_i - plan_sum:,}** 股（可用各列「補滿／清0／只此」快捷鈕、上方②排序或手動填入）")
             else:
                 st.warning(f"已超出賣出 **{plan_sum - sell_qty_i:,}** 股，請調整各列數字")
         st.markdown("</div>", unsafe_allow_html=True)
