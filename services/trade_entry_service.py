@@ -207,17 +207,19 @@ def sort_lots_by_strategy(open_lots: List[dict], strategy: Optional[str]) -> Lis
     """依策略回傳排序後的買進批次（供沖銷表顯示用，不改動股數）。
 
     strategy:
-      - "profit_max"  賺多優先：買價由低到高
-      - "profit_min"  賺少優先：買價由高到低
+      - "profit_max"  賺多：買價由低到高（獲利最多先）
+      - "profit_min"  賺少：買價由高到低（獲利最少先）
+      - "loss_max"    賠多：買價由高到低（虧損最多先）
+      - "loss_min"    賠少：買價由低到高（虧損最少先）
       - "nearest_avg" 接近均價：與加權平均成本差距由小到大
       - "fifo"        先進先出：買進日由舊到新
       - "recent"      近期優先：買進日由新到舊
       - 其他/None      維持原順序
     """
     lots = list(open_lots)
-    if strategy == "profit_max":
+    if strategy in ("profit_max", "loss_min"):
         return sorted(lots, key=lambda x: (float(x["price"]), x["trade_id"]))
-    if strategy == "profit_min":
+    if strategy in ("profit_min", "loss_max"):
         return sorted(lots, key=lambda x: (-float(x["price"]), x["trade_id"]))
     if strategy == "nearest_avg":
         total = sum(int(lot["remaining_qty"]) for lot in lots)
@@ -231,6 +233,72 @@ def sort_lots_by_strategy(open_lots: List[dict], strategy: Optional[str]) -> Lis
     if strategy == "recent":
         return sorted(lots, key=lambda x: (str(x["date"])[:10], x["trade_id"]), reverse=True)
     return lots
+
+
+_TIME_DAYS = {"3d": 3, "5d": 5}
+_PROFIT_SORTS = ("profit_max", "profit_min")
+_LOSS_SORTS = ("loss_max", "loss_min")
+
+
+def filter_lots_by_time(
+    open_lots: List[dict], time_key: str, anchor: Optional[date] = None
+) -> List[dict]:
+    """依時間範圍篩選買進批次。
+
+    time_key："all"（不限，預設）／"3d"（近3天）／"5d"（近5天）。
+    anchor：計算「近 N 天」的基準日，預設今天。
+    """
+    days = _TIME_DAYS.get(time_key)
+    if not days:
+        return list(open_lots)
+    base = anchor or date.today()
+    cutoff = (base - timedelta(days=days)).isoformat()
+    return [lot for lot in open_lots if str(lot["date"])[:10] >= cutoff]
+
+
+def filter_and_sort_lots(
+    open_lots: List[dict], sort_key: str, sell_price: Optional[float] = None
+) -> List[dict]:
+    """依賺賠篩選 + 排序（不改股數）。
+
+    - profit_max / profit_min：只留「賺」的批次（買價 < 賣價）
+    - loss_max / loss_min：只留「賠」的批次（買價 > 賣價）
+    - fifo / nearest_avg / 其他：不篩選，僅排序
+    未提供 sell_price 時不做賺賠篩選（只排序）。
+    """
+    lots = list(open_lots)
+    sp = None if sell_price is None else float(sell_price)
+    if sp is not None and sort_key in _PROFIT_SORTS:
+        lots = [l for l in lots if float(l["price"]) < sp]
+    elif sp is not None and sort_key in _LOSS_SORTS:
+        lots = [l for l in lots if float(l["price"]) > sp]
+    return sort_lots_by_strategy(lots, sort_key)
+
+
+def combined_match_plan(
+    sell_qty: int,
+    open_lots: List[dict],
+    time_key: str = "all",
+    sort_key: str = "fifo",
+    sell_price: Optional[float] = None,
+) -> List[Tuple[int, int]]:
+    """時間範圍 × 賺賠排序 交集後，由前到後填滿賣出股數的配對計畫。
+
+    先依 time_key 篩時間，再依 sort_key（含賺/賠篩選）排序，最後由前往後配到滿。
+    符合條件的批次不足時，計畫合計會小於 sell_qty（進度條會顯示尚缺）。
+    """
+    lots = filter_lots_by_time(open_lots, time_key)
+    lots = filter_and_sort_lots(lots, sort_key, sell_price)
+    plan: List[Tuple[int, int]] = []
+    left = int(sell_qty)
+    for lot in lots:
+        if left <= 0:
+            break
+        q = min(left, int(lot["remaining_qty"]))
+        if q > 0:
+            plan.append((lot["trade_id"], q))
+            left -= q
+    return plan
 
 
 def preview_avg_cost_after_buy(

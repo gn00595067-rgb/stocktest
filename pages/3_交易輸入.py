@@ -51,10 +51,9 @@ from services.trade_entry_service import (
     build_holdings_summary,
     get_open_buy_lots,
     fifo_match_plan,
-    recent_days_match_plan,
-    profit_ranked_match_plan,
-    nearest_avg_match_plan,
-    sort_lots_by_strategy,
+    combined_match_plan,
+    filter_lots_by_time,
+    filter_and_sort_lots,
     preview_avg_cost_after_buy,
     realized_pnl_for_sell_plan,
     compute_realized_in_range,
@@ -735,75 +734,82 @@ def _render_stock_trade_panel(
                 st.warning("無可沖銷的買進庫存。")
             else:
                 st.markdown("**沖銷配對** — 指定此筆賣出對應的買進批次（空白視為 0，不會造成錯誤）")
-                b1, b2, b3, b4 = st.columns(4)
                 sell_qty = int(quantity)
-                sort_key = f"te_sort_{sid}"
-                with b1:
-                    if st.button("FIFO 自動", key=f"te_fifo_{sid}", use_container_width=True):
-                        st.session_state[sort_key] = "fifo"
-                        _apply_match_plan(sid, match_plan_key, fifo_match_plan(sell_qty, open_lots), open_lots)
-                        st.rerun()
-                with b2:
-                    if st.button("僅近3天", key=f"te_r3_{sid}", use_container_width=True):
-                        st.session_state[sort_key] = "recent"
-                        _apply_match_plan(
-                            sid, match_plan_key, recent_days_match_plan(sell_qty, open_lots, 3), open_lots
-                        )
-                        st.rerun()
-                with b3:
-                    if st.button("僅近5天", key=f"te_r5_{sid}", use_container_width=True):
-                        st.session_state[sort_key] = "recent"
-                        _apply_match_plan(
-                            sid, match_plan_key, recent_days_match_plan(sell_qty, open_lots, 5), open_lots
-                        )
-                        st.rerun()
-                with b4:
-                    if st.button("清空配對", key=f"te_clr_{sid}", use_container_width=True):
-                        st.session_state[sort_key] = None
-                        _apply_match_plan(sid, match_plan_key, [], open_lots)
-                        st.rerun()
+                sell_price_now = float(price)
+                time_key_ss = f"te_time_{sid}"
+                sort_key_ss = f"te_sortmode_{sid}"
+                time_now = st.session_state.setdefault(time_key_ss, "all")
+                sort_now = st.session_state.setdefault(sort_key_ss, "fifo")
 
-                st.caption("依獲利快速篩選（賣價固定，賺多＝買價最低先配）；按下後表格會依該策略排序")
-                f1, f2, f3 = st.columns(3)
-                with f1:
-                    if st.button(
-                        "💰 賺多優先", key=f"te_pmax_{sid}", use_container_width=True,
-                        help="優先配對買價最低（獲利最多）的批次，並將表格由賺多到賺少排序",
-                    ):
-                        st.session_state[sort_key] = "profit_max"
-                        _apply_match_plan(
-                            sid, match_plan_key,
-                            profit_ranked_match_plan(sell_qty, open_lots, most_profit=True),
+                def _reapply_match():
+                    """依目前『時間 × 賺賠』兩軸選擇重算配對並填入各列。"""
+                    _apply_match_plan(
+                        sid,
+                        match_plan_key,
+                        combined_match_plan(
+                            sell_qty,
                             open_lots,
-                        )
-                        st.rerun()
-                with f2:
-                    if st.button(
-                        "🪙 賺少優先", key=f"te_pmin_{sid}", use_container_width=True,
-                        help="優先配對買價最高（獲利最少）的批次，並將表格由賺少到賺多排序",
-                    ):
-                        st.session_state[sort_key] = "profit_min"
-                        _apply_match_plan(
-                            sid, match_plan_key,
-                            profit_ranked_match_plan(sell_qty, open_lots, most_profit=False),
-                            open_lots,
-                        )
-                        st.rerun()
-                with f3:
-                    if st.button(
-                        "⚖️ 接近均價", key=f"te_pavg_{sid}", use_container_width=True,
-                        help="優先配對買價最接近庫存加權平均成本的批次，並依接近程度排序",
-                    ):
-                        st.session_state[sort_key] = "nearest_avg"
-                        _apply_match_plan(
-                            sid, match_plan_key,
-                            nearest_avg_match_plan(sell_qty, open_lots),
-                            open_lots,
-                        )
-                        st.rerun()
+                            st.session_state.get(time_key_ss, "all"),
+                            st.session_state.get(sort_key_ss, "fifo"),
+                            sell_price_now,
+                        ),
+                        open_lots,
+                    )
 
-                # 依最近按下的策略排序表格顯示（不影響股數計算）
-                open_lots = sort_lots_by_strategy(open_lots, st.session_state.get(sort_key))
+                # ── ① 時間範圍（可與②賺賠搭配）──
+                st.caption("① 時間範圍（可與下方②搭配）")
+                _TIME_BTNS = [("all", "全部"), ("3d", "近3天"), ("5d", "近5天")]
+                tcols = st.columns(len(_TIME_BTNS))
+                for col, (tk, label) in zip(tcols, _TIME_BTNS):
+                    with col:
+                        if st.button(
+                            label,
+                            key=f"te_tbtn_{sid}_{tk}",
+                            use_container_width=True,
+                            type="primary" if time_now == tk else "secondary",
+                        ):
+                            st.session_state[time_key_ss] = tk
+                            _reapply_match()
+                            st.rerun()
+
+                # ── ② 排序方式（賺X只配獲利批次、賠X只配虧損批次；賣價固定）──
+                st.caption("② 排序方式（賺多/賺少只配獲利批次；賠多/賠少只配虧損批次）")
+                _SORT_BTNS = [
+                    ("fifo", "先進先出"),
+                    ("profit_max", "💰賺多"),
+                    ("profit_min", "🪙賺少"),
+                    ("loss_max", "🔻賠多"),
+                    ("loss_min", "🩹賠少"),
+                    ("nearest_avg", "⚖️接近均價"),
+                ]
+                scols = st.columns(len(_SORT_BTNS))
+                for col, (sk, label) in zip(scols, _SORT_BTNS):
+                    with col:
+                        if st.button(
+                            label,
+                            key=f"te_sbtn_{sid}_{sk}",
+                            use_container_width=True,
+                            type="primary" if sort_now == sk else "secondary",
+                        ):
+                            st.session_state[sort_key_ss] = sk
+                            _reapply_match()
+                            st.rerun()
+
+                if st.button("🧹 清空配對", key=f"te_clr_{sid}"):
+                    _apply_match_plan(sid, match_plan_key, [], open_lots)
+                    st.rerun()
+
+                # 依目前『時間 × 賺賠』兩軸篩選+排序顯示（與配對計畫一致）
+                open_lots = filter_and_sort_lots(
+                    filter_lots_by_time(open_lots, st.session_state.get(time_key_ss, "all")),
+                    st.session_state.get(sort_key_ss, "fifo"),
+                    sell_price_now,
+                )
+                if not open_lots:
+                    st.info(
+                        "此篩選條件下沒有符合的買進批次"
+                        "（例如選了『賠多/賠少』但目前買價都低於賣價，或該時間範圍內沒有庫存）。"
+                    )
 
                 match_plan = _render_match_panel(
                     sid,
@@ -835,7 +841,7 @@ def _render_stock_trade_panel(
                 return
             if side == "SELL" and open_lots:
                 if not match_plan and not st.session_state.get("te_auto_fifo"):
-                    st.error("請設定沖銷配對，或勾選上方「賣出未配對時自動 FIFO」。")
+                    st.error("請設定沖銷配對，或勾選上方「賣出未配對時自動先進先出」。")
                     return
                 plan_sum = sum(q for _, q in match_plan)
                 if match_plan and plan_sum != int(quantity):
@@ -1038,7 +1044,7 @@ with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不�
     with ac3:
         st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
         st.session_state["te_auto_fifo"] = st.checkbox(
-            "賣出未配對時自動 FIFO",
+            "賣出未配對時自動先進先出",
             value=st.session_state.get("te_auto_fifo", True),
             key="te_auto_fifo_cb",
         )

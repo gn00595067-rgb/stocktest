@@ -4,12 +4,17 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from datetime import date, timedelta
+
 from services.trade_entry_service import (
     safe_int_qty,
     estimate_match_row_net_pnl,
     profit_ranked_match_plan,
     nearest_avg_match_plan,
     sort_lots_by_strategy,
+    filter_lots_by_time,
+    filter_and_sort_lots,
+    combined_match_plan,
 )
 
 
@@ -90,7 +95,72 @@ def test_sort_lots_by_strategy_orders():
     assert ids(sort_lots_by_strategy(_lots(), "profit_max")) == [279, 277, 276, 278]
     # 賺少優先：買價高→低
     assert ids(sort_lots_by_strategy(_lots(), "profit_min")) == [278, 276, 277, 279]
+    # 賠多：買價高→低（虧損最多先）＝與 profit_min 同序
+    assert ids(sort_lots_by_strategy(_lots(), "loss_max")) == [278, 276, 277, 279]
+    # 賠少：買價低→高（虧損最少先）＝與 profit_max 同序
+    assert ids(sort_lots_by_strategy(_lots(), "loss_min")) == [279, 277, 276, 278]
     # 接近均價(363.125)：276(362.5),277(360.5),279(360.0),278(369.5)
     assert ids(sort_lots_by_strategy(_lots(), "nearest_avg")) == [276, 277, 279, 278]
     # 未知策略維持原順序
     assert ids(sort_lots_by_strategy(_lots(), None)) == [276, 277, 278, 279]
+
+
+def _mixed_lots():
+    """買價分布在賣價 363 兩側：賺=價<363、賠=價>363。"""
+    return [
+        {"trade_id": 1, "date": "2026-02-01", "price": 350.0, "remaining_qty": 1000},  # 賺
+        {"trade_id": 2, "date": "2026-02-02", "price": 360.0, "remaining_qty": 1000},  # 賺
+        {"trade_id": 3, "date": "2026-02-03", "price": 370.0, "remaining_qty": 1000},  # 賠
+        {"trade_id": 4, "date": "2026-02-04", "price": 380.0, "remaining_qty": 1000},  # 賠
+    ]
+
+
+def test_filter_and_sort_profit_only_keeps_winners():
+    ids = lambda lots: [l["trade_id"] for l in lots]
+    # 賺多：只留買價<363（1,2），買價低→高 → [1,2]
+    assert ids(filter_and_sort_lots(_mixed_lots(), "profit_max", sell_price=363.0)) == [1, 2]
+    # 賺少：只留賺，買價高→低 → [2,1]
+    assert ids(filter_and_sort_lots(_mixed_lots(), "profit_min", sell_price=363.0)) == [2, 1]
+
+
+def test_filter_and_sort_loss_only_keeps_losers():
+    ids = lambda lots: [l["trade_id"] for l in lots]
+    # 賠多：只留買價>363（3,4），虧損最多（買價高）先 → [4,3]
+    assert ids(filter_and_sort_lots(_mixed_lots(), "loss_max", sell_price=363.0)) == [4, 3]
+    # 賠少：只留賠，虧損最少（買價低）先 → [3,4]
+    assert ids(filter_and_sort_lots(_mixed_lots(), "loss_min", sell_price=363.0)) == [3, 4]
+
+
+def test_filter_and_sort_no_sell_price_skips_profit_loss_filter():
+    ids = lambda lots: [l["trade_id"] for l in lots]
+    # 未給賣價時不做賺賠篩選，只排序（全部保留）
+    assert set(ids(filter_and_sort_lots(_mixed_lots(), "profit_max"))) == {1, 2, 3, 4}
+
+
+def test_filter_lots_by_time_all_and_recent():
+    lots = [
+        {"trade_id": 1, "date": (date.today() - timedelta(days=10)).isoformat(), "price": 10, "remaining_qty": 1000},
+        {"trade_id": 2, "date": (date.today() - timedelta(days=2)).isoformat(), "price": 10, "remaining_qty": 1000},
+        {"trade_id": 3, "date": date.today().isoformat(), "price": 10, "remaining_qty": 1000},
+    ]
+    ids = lambda ls: sorted(l["trade_id"] for l in ls)
+    assert ids(filter_lots_by_time(lots, "all")) == [1, 2, 3]
+    assert ids(filter_lots_by_time(lots, "3d")) == [2, 3]
+    assert ids(filter_lots_by_time(lots, "5d")) == [2, 3]
+
+
+def test_combined_match_plan_time_and_profit_axes_intersect():
+    lots = [
+        {"trade_id": 1, "date": (date.today() - timedelta(days=10)).isoformat(), "price": 350.0, "remaining_qty": 1000},  # 賺但太舊
+        {"trade_id": 2, "date": (date.today() - timedelta(days=1)).isoformat(), "price": 355.0, "remaining_qty": 1000},  # 賺+近
+        {"trade_id": 3, "date": date.today().isoformat(), "price": 380.0, "remaining_qty": 1000},  # 賠+近
+    ]
+    # 近3天 × 賺多：時間留 2,3；賺只留 2 → 全配 2
+    plan = combined_match_plan(1000, lots, time_key="3d", sort_key="profit_max", sell_price=363.0)
+    assert plan == [(2, 1000)]
+    # 近3天 × 賠多：時間留 2,3；賠只留 3 → 全配 3
+    plan2 = combined_match_plan(1000, lots, time_key="3d", sort_key="loss_max", sell_price=363.0)
+    assert plan2 == [(3, 1000)]
+    # 符合者不足時，計畫合計 < 賣出股數（不報錯）
+    plan3 = combined_match_plan(5000, lots, time_key="3d", sort_key="profit_max", sell_price=363.0)
+    assert sum(q for _, q in plan3) == 1000
