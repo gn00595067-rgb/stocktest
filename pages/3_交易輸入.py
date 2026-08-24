@@ -723,6 +723,8 @@ def _render_stock_trade_panel(
         match_plan_key = f"te_match_{sid}"
         open_lots = []
         match_plan = []
+        est_realized = 0.0
+        submit_slot = None
 
         if side == "SELL":
             # 上一輪送出後標記的重置：在沖銷 number_input 建立前清掉舊值（避免「widget 已建立不可修改」錯誤）
@@ -732,6 +734,7 @@ def _render_stock_trade_panel(
             open_lots = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
             if not open_lots:
                 st.warning("無可沖銷的買進庫存。")
+                submit_slot = st.container()
             else:
                 st.markdown("**沖銷配對** — 指定此筆賣出對應的買進批次（空白視為 0，不會造成錯誤）")
                 sell_qty = int(quantity)
@@ -831,6 +834,9 @@ def _render_stock_trade_panel(
                     else:
                         st.info("此篩選條件下沒有符合的買進批次，請調整上方時間範圍或排序方式。")
 
+                # 送出按鈕/估算損益佔位：顯示在篩選鈕下方、沖銷表上方，量大時免捲到底找按鈕
+                submit_slot = st.container()
+
                 match_plan = _render_match_panel(
                     sid,
                     match_plan_key,
@@ -845,7 +851,6 @@ def _render_stock_trade_panel(
                 est_realized = realized_pnl_for_sell_plan(
                     price, sell_qty, fee_est, tax_est, match_plan, trade_by_id
                 )
-                st.info(f"依目前配對，預估本次賣出淨損益：**{_fmt_pnl(est_realized)}** 元（含手續費與證交稅）")
         else:
             new_qty, new_cost, new_avg = preview_avg_cost_after_buy(
                 cur_qty, cur_cost, price, int(quantity), fee_est
@@ -854,44 +859,62 @@ def _render_stock_trade_panel(
                 f"若以此價買進 {int(quantity):,} 股，買進後均價約 **{new_avg:.2f}** 元"
                 f"（持股 {cur_qty:,} → {new_qty:,}）"
             )
+            submit_slot = st.container()
 
-        if st.button("✅ 送出此筆交易", key=f"te_submit_{sid}", type="primary"):
-            if not can_access_trader(trader):
-                st.error("無此買賣人權限。")
-                return
+        if submit_slot is None:
+            submit_slot = st.container()
+        with submit_slot:
             if side == "SELL" and open_lots:
-                if not match_plan and not st.session_state.get("te_auto_fifo"):
-                    st.error("請設定沖銷配對，或勾選上方「賣出未配對時自動先進先出」。")
-                    return
-                plan_sum = sum(q for _, q in match_plan)
-                if match_plan and plan_sum != int(quantity):
-                    st.error("請調整沖銷配對，使合計股數等於賣出股數。")
-                    return
-            sess = get_session()
-            try:
-                t = Trade(
-                    user=trader,
-                    stock_id=sid,
-                    trade_date=entry_date,
-                    side=side,
-                    price=float(price),
-                    quantity=int(quantity),
-                    is_daytrade=is_daytrade,
-                    fee=fee_est,
-                    tax=tax_est if side == "SELL" else 0.0,
-                    note=(note or None),
+                st.info(
+                    f"依目前配對，預估本次賣出淨損益：**{_fmt_pnl(est_realized)}** 元"
+                    "（含手續費與證交稅）"
                 )
-                sess.add(t)
-                sess.flush()
-                if side == "SELL" and match_plan:
-                    for buy_id, mq in match_plan:
-                        existing = sess.query(CustomMatchRule).filter(
-                            CustomMatchRule.sell_trade_id == t.id,
-                            CustomMatchRule.buy_trade_id == buy_id,
-                        ).first()
-                        if existing:
-                            existing.matched_qty = int(existing.matched_qty) + int(mq)
-                        else:
+            if st.button("✅ 送出此筆交易", key=f"te_submit_{sid}", type="primary"):
+                if not can_access_trader(trader):
+                    st.error("無此買賣人權限。")
+                    return
+                if side == "SELL" and open_lots:
+                    if not match_plan and not st.session_state.get("te_auto_fifo"):
+                        st.error("請設定沖銷配對，或勾選上方「賣出未配對時自動先進先出」。")
+                        return
+                    plan_sum = sum(q for _, q in match_plan)
+                    if match_plan and plan_sum != int(quantity):
+                        st.error("請調整沖銷配對，使合計股數等於賣出股數。")
+                        return
+                sess = get_session()
+                try:
+                    t = Trade(
+                        user=trader,
+                        stock_id=sid,
+                        trade_date=entry_date,
+                        side=side,
+                        price=float(price),
+                        quantity=int(quantity),
+                        is_daytrade=is_daytrade,
+                        fee=fee_est,
+                        tax=tax_est if side == "SELL" else 0.0,
+                        note=(note or None),
+                    )
+                    sess.add(t)
+                    sess.flush()
+                    if side == "SELL" and match_plan:
+                        for buy_id, mq in match_plan:
+                            existing = sess.query(CustomMatchRule).filter(
+                                CustomMatchRule.sell_trade_id == t.id,
+                                CustomMatchRule.buy_trade_id == buy_id,
+                            ).first()
+                            if existing:
+                                existing.matched_qty = int(existing.matched_qty) + int(mq)
+                            else:
+                                sess.add(
+                                    CustomMatchRule(
+                                        sell_trade_id=t.id,
+                                        buy_trade_id=buy_id,
+                                        matched_qty=int(mq),
+                                    )
+                                )
+                    elif side == "SELL" and st.session_state.get("te_auto_fifo") and open_lots:
+                        for buy_id, mq in fifo_match_plan(int(quantity), open_lots):
                             sess.add(
                                 CustomMatchRule(
                                     sell_trade_id=t.id,
@@ -899,30 +922,21 @@ def _render_stock_trade_panel(
                                     matched_qty=int(mq),
                                 )
                             )
-                elif side == "SELL" and st.session_state.get("te_auto_fifo") and open_lots:
-                    for buy_id, mq in fifo_match_plan(int(quantity), open_lots):
-                        sess.add(
-                            CustomMatchRule(
-                                sell_trade_id=t.id,
-                                buy_trade_id=buy_id,
-                                matched_qty=int(mq),
-                            )
-                        )
-                sess.commit()
-                # 不可在此直接改沖銷 number_input 的 key（widget 已建立會報錯）；
-                # 改為標記重置，下一輪在 widget 建立前清除。
-                st.session_state[match_plan_key] = {}
-                if side == "SELL":
-                    st.session_state[f"te_reset_match_{sid}"] = True
-                st.session_state["last_user"] = trader
-                st.session_state["last_date"] = entry_date
-                st.success(f"已新增 {sid} {side} {int(quantity):,} 股（{entry_date}）")
-                st.rerun()
-            except Exception as e:
-                sess.rollback()
-                st.error(str(e))
-            finally:
-                sess.close()
+                    sess.commit()
+                    # 不可在此直接改沖銷 number_input 的 key（widget 已建立會報錯）；
+                    # 改為標記重置，下一輪在 widget 建立前清除。
+                    st.session_state[match_plan_key] = {}
+                    if side == "SELL":
+                        st.session_state[f"te_reset_match_{sid}"] = True
+                    st.session_state["last_user"] = trader
+                    st.session_state["last_date"] = entry_date
+                    st.success(f"已新增 {sid} {side} {int(quantity):,} 股（{entry_date}）")
+                    st.rerun()
+                except Exception as e:
+                    sess.rollback()
+                    st.error(str(e))
+                finally:
+                    sess.close()
 
         # 該股全部交易明細（每一天、每一筆；奇摩股市式逐筆列表，可逐筆刪除）
         stock_ts = [
