@@ -800,16 +800,36 @@ def _render_stock_trade_panel(
                     st.rerun()
 
                 # 依目前『時間 × 賺賠』兩軸篩選+排序顯示（與配對計畫一致）
-                open_lots = filter_and_sort_lots(
-                    filter_lots_by_time(open_lots, st.session_state.get(time_key_ss, "all")),
-                    st.session_state.get(sort_key_ss, "fifo"),
-                    sell_price_now,
-                )
+                _time_key_now = st.session_state.get(time_key_ss, "all")
+                _sort_key_now = st.session_state.get(sort_key_ss, "fifo")
+                _time_lots = filter_lots_by_time(open_lots, _time_key_now)
+                open_lots = filter_and_sort_lots(_time_lots, _sort_key_now, sell_price_now)
                 if not open_lots:
-                    st.info(
-                        "此篩選條件下沒有符合的買進批次"
-                        "（例如選了『賠多/賠少』但目前買價都低於賣價，或該時間範圍內沒有庫存）。"
-                    )
+                    _time_label = {"all": "全部", "3d": "近3天", "5d": "近5天"}.get(_time_key_now, "全部")
+                    _n_win = sum(1 for l in _time_lots if float(l["price"]) < sell_price_now)   # 賺
+                    _n_lose = sum(1 for l in _time_lots if float(l["price"]) > sell_price_now)  # 賠
+                    _n_even = sum(1 for l in _time_lots if float(l["price"]) == sell_price_now)  # 打平
+                    if not _time_lots:
+                        st.info(
+                            f"📭「{_time_label}」範圍內沒有可沖銷的買進庫存。"
+                            "請改選其他時間範圍（例如「全部」）。"
+                        )
+                    elif _sort_key_now in ("profit_max", "profit_min"):
+                        st.info(
+                            f"📈 這檔在「{_time_label}」共 {len(_time_lots)} 筆買進批次，"
+                            f"買價都 **不低於** 賣價 {sell_price_now:.2f}"
+                            f"（{_n_lose} 筆賠、{_n_even} 筆打平，**沒有『賺』的批次**），"
+                            "所以「賺多／賺少」配不到。改用「賠多／賠少」或「先進先出」即可。"
+                        )
+                    elif _sort_key_now in ("loss_max", "loss_min"):
+                        st.info(
+                            f"📉 這檔在「{_time_label}」共 {len(_time_lots)} 筆買進批次，"
+                            f"買價都 **不高於** 賣價 {sell_price_now:.2f}"
+                            f"（{_n_win} 筆賺、{_n_even} 筆打平，**沒有『賠』的批次**），"
+                            "所以「賠多／賠少」配不到。改用「賺多／賺少」或「先進先出」即可。"
+                        )
+                    else:
+                        st.info("此篩選條件下沒有符合的買進批次，請調整上方時間範圍或排序方式。")
 
                 match_plan = _render_match_panel(
                     sid,
