@@ -306,7 +306,7 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
             is_dt = bool(r.get("當沖"))
             if qty <= 0 or price <= 0 or tdate is None:
                 continue  # 略過尚未填完整的空白／新列
-            fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf)
+            fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
             tax = tax if side == "SELL" else 0.0
 
             if not has_id:
@@ -400,7 +400,7 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "當沖": st.column_config.CheckboxColumn(
                 "當沖",
                 width="small",
-                help="標記此筆為當日沖銷（僅供辨識分類）；勾選不會改變手續費或證交稅金額。",
+                help="標記此筆為當日沖銷。勾選後按儲存，賣出證交稅會依現股當沖減半（一般個股 0.3%→0.15%；ETF 維持 0.1%）。手續費不受影響。",
             ),
             "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="localized"),
         },
@@ -788,10 +788,10 @@ def _render_stock_trade_panel(
             is_daytrade = st.checkbox("當沖", key=f"te_dt_{sid}")
             note = st.text_input("備註", key=f"te_note_{sid}")
 
-        fee_est, tax_est = fees_for_trade(side, price, int(quantity), is_etf=is_etf)
+        fee_est, tax_est = fees_for_trade(side, price, int(quantity), is_etf=is_etf, is_daytrade=is_daytrade)
         st.caption(
             f"估算：手續費 **{fee_est:,.0f}** 元"
-            + (f"　證交稅 **{tax_est:,.0f}** 元" if side == "SELL" else "")
+            + (f"　證交稅 **{tax_est:,.0f}** 元" + ("（當沖減半）" if is_daytrade and not is_etf else "") if side == "SELL" else "")
             + f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）"
         )
 
@@ -1310,7 +1310,7 @@ if day_trades:
     st.caption(
         f"💡 **手續費公式**：成交價 × 股數 × 手續費率（目前 **{_fr_now:.4%}**），四捨五入至整數、未滿 20 元以 20 元計。"
         f"　例：2365 × 100 × {_fr_now:.4%} ＝ {2365*100*_fr_now:.2f} → 337 元。"
-        f"　賣出另收證交稅 ＝ 成交價 × 股數 × **{_tr_now:.3%}**（ETF 0.1%）。"
+        f"　賣出另收證交稅 ＝ 成交價 × 股數 × **{_tr_now:.3%}**（ETF 0.1%；勾當沖則一般個股減半為 {_tr_now/2:.3%}）。"
         "　券商若有打折，可在下方「手續費／證交稅率」或主檔設定調整費率。"
     )
     st.caption("此表為當日成交總覽（唯讀）。要修改／刪除請用上方各股票展開的「交易明細」，或下方輸入交易 ID 刪除。")

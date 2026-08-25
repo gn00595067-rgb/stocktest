@@ -33,25 +33,37 @@ def estimate_sell_tax(
     quantity: int,
     is_etf: bool = False,
     tax_rate: Optional[float] = None,
+    is_daytrade: bool = False,
 ) -> float:
-    """賣出證交稅（四捨五入至整數）。"""
+    """賣出證交稅（四捨五入至整數）。
+
+    現股當沖：一般個股證交稅減半（0.3% → 0.15%）。ETF 本即 0.1%，不再另外減半。
+    """
     if quantity <= 0 or price <= 0:
         return 0.0
     if is_etf:
         rate = DEFAULT_ETF_TAX_RATE
     else:
         rate = tax_rate if tax_rate is not None else get_fee_tax_rates()[1]
+        if is_daytrade:
+            rate = rate / 2.0  # 現股當沖證交稅減半
     return float(round(price * quantity * rate))
 
 
-def fees_for_trade(side: str, price: float, quantity: int, is_etf: bool = False) -> Tuple[float, float]:
+def fees_for_trade(
+    side: str,
+    price: float,
+    quantity: int,
+    is_etf: bool = False,
+    is_daytrade: bool = False,
+) -> Tuple[float, float]:
     """
     回傳 (fee, tax)。
-    買進：僅手續費；賣出：手續費 + 證交稅。
+    買進：僅手續費；賣出：手續費 + 證交稅（當沖時一般個股稅減半）。
     """
     fee = estimate_broker_fee(price, quantity)
     side_u = (side or "").strip().upper()
     if side_u == "SELL":
-        tax = estimate_sell_tax(price, quantity, is_etf=is_etf)
+        tax = estimate_sell_tax(price, quantity, is_etf=is_etf, is_daytrade=is_daytrade)
         return fee, tax
     return fee, 0.0
