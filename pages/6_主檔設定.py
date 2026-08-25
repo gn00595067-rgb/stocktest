@@ -16,7 +16,8 @@ try:
 except Exception:
     pass
 from db.database import get_session
-from db.models import StockMaster
+from db.models import StockMaster, Trade
+from services.trade_fees import estimate_sell_tax
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 from db.seed_data import run_seed
 from db.mock_data import generate_mock_trades
@@ -158,6 +159,64 @@ if "tax_rate" not in st.session_state:
     st.session_state["tax_rate"] = tax_rate
 st.session_state["fee_rate"] = fee_rate
 st.session_state["tax_rate"] = tax_rate
+
+st.subheader("🔧 一次性維護：當沖證交稅重算（減半）")
+st.caption(
+    "把過去『當沖賣出』但證交稅仍以全額（0.3%）記錄的交易，重算為現股當沖減半（0.15%）。"
+    "ETF 維持 0.1% 不變、買進不受影響。會先預覽差異，確認後才寫回資料庫並同步 Google 試算表。"
+)
+with st.expander("展開檢查／重算當沖證交稅", expanded=False):
+    _msess = get_session()
+    try:
+        _masters = {m.stock_id: m for m in _msess.query(StockMaster).all()}
+        _dt_sells = [
+            t for t in _msess.query(Trade).filter(Trade.is_daytrade.is_(True)).all()
+            if (getattr(t, "side", "") or "").upper() == "SELL"
+        ]
+        _rows = []
+        _id_to_new = {}
+        for t in _dt_sells:
+            _is_etf = bool(getattr(_masters.get(t.stock_id), "is_etf", False))
+            _new_tax = estimate_sell_tax(float(t.price or 0), int(t.quantity or 0), is_etf=_is_etf, is_daytrade=True)
+            _old_tax = float(t.tax or 0)
+            if abs(_old_tax - _new_tax) >= 0.5:  # 有差異才需重算
+                _m = _masters.get(t.stock_id)
+                _id_to_new[t.id] = _new_tax
+                _rows.append({
+                    "id": t.id,
+                    "股票": f"{t.stock_id} {getattr(_m, 'name', '') or ''}".strip(),
+                    "買賣人": t.user,
+                    "日期": str(t.trade_date),
+                    "價格": float(t.price or 0),
+                    "股數": int(t.quantity or 0),
+                    "原證交稅": round(_old_tax),
+                    "減半後": round(_new_tax),
+                    "差額": round(_new_tax - _old_tax),
+                })
+        if not _dt_sells:
+            st.info("目前沒有任何『當沖賣出』交易。")
+        elif not _rows:
+            st.success(f"檢查了 {len(_dt_sells)} 筆當沖賣出，全部證交稅已是減半（或為 ETF），無需重算。")
+        else:
+            _prev = pd.DataFrame(_rows)
+            st.dataframe(_prev, hide_index=True, use_container_width=True)
+            _total = int(_prev["差額"].sum())
+            st.warning(f"共 **{len(_rows)}** 筆將重算，證交稅合計變動 **{_total:,}** 元（負值＝減少）。此動作無法一鍵還原，請先確認上表。")
+            _confirm = st.checkbox("我已確認上表，要套用重算", key="dt_tax_confirm")
+            if st.button("套用當沖證交稅重算", type="primary", disabled=not _confirm):
+                for t in _dt_sells:
+                    if t.id in _id_to_new:
+                        t.tax = float(_id_to_new[t.id])
+                try:
+                    _msess.commit()
+                    st.success(f"已重算 {len(_id_to_new)} 筆當沖證交稅並同步。請至『庫存損益／當日交易明細』確認。")
+                    st.rerun()
+                except OperationalError as e:
+                    _msess.rollback()
+                    st.error("無法寫入資料庫（目前環境為唯讀）。請在雲端部署的 App 上以管理者身分執行。")
+                    st.caption(f"技術細節：{e}")
+    finally:
+        _msess.close()
 
 st.subheader("種子資料")
 if st.button("載入種子資料（2330/2317/3706 等）"):
