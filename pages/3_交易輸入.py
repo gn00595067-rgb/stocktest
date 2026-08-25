@@ -267,7 +267,13 @@ def _render_holding_row(row: dict, sid: str, open_now: bool):
             key=f"te_toggle_{sid}",
             use_container_width=True,
         ):
-            st.session_state[f"te_open_{sid}"] = not open_now
+            new_state = not open_now
+            if new_state:
+                # 手風琴：展開此檔時，自動收合其他所有檔，畫面不會越拉越長
+                for k in list(st.session_state.keys()):
+                    if str(k).startswith("te_open_"):
+                        st.session_state[k] = False
+            st.session_state[f"te_open_{sid}"] = new_state
             st.rerun()
 
 
@@ -288,8 +294,12 @@ def _coerce_date(v):
         return None
 
 
-def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: bool) -> None:
-    """把 data_editor 的修改（改值／新增列／刪除列）寫回資料庫。"""
+def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: bool, auto_fee: bool = True) -> None:
+    """把 data_editor 的修改（改值／新增列／刪除列）寫回資料庫。
+
+    auto_fee=True：手續費/證交稅依費率自動重算（忽略表格內的數字）。
+    auto_fee=False：採用表格內手動輸入的手續費/證交稅（用來對帳券商實收金額，如國泰證券折讓）。
+    """
     sess = get_session()
     try:
         seen_ids = set()
@@ -304,17 +314,31 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
                 price = 0.0
             tdate = _coerce_date(r.get("交易日期"))
             is_dt = bool(r.get("當沖"))
+            # 買賣人：可在表格改；空白（如新列）沿用目前選定的買賣人
+            trader_row = (str(r.get("買賣人")).strip() if r.get("買賣人") is not None
+                          and not (isinstance(r.get("買賣人"), float) and pd.isna(r.get("買賣人"))) else "")
+            trader_row = trader_row or trader
             if qty <= 0 or price <= 0 or tdate is None:
                 continue  # 略過尚未填完整的空白／新列
-            fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
-            tax = tax if side == "SELL" else 0.0
+            if auto_fee:
+                fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
+                tax = tax if side == "SELL" else 0.0
+            else:
+                try:
+                    fee = float(r.get("手續費") or 0)
+                except (TypeError, ValueError):
+                    fee = 0.0
+                try:
+                    tax = float(r.get("證交稅") or 0) if side == "SELL" else 0.0
+                except (TypeError, ValueError):
+                    tax = 0.0
 
             if not has_id:
                 # 新增列
-                if not can_access_trader(trader):
+                if not can_access_trader(trader_row):
                     continue
                 sess.add(Trade(
-                    user=trader, stock_id=sid, trade_date=tdate, side=side,
+                    user=trader_row, stock_id=sid, trade_date=tdate, side=side,
                     price=price, quantity=qty, is_daytrade=is_dt, fee=fee, tax=tax,
                 ))
                 continue
@@ -324,8 +348,16 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
             t = sess.query(Trade).filter(Trade.id == rid).first()
             if not t or not can_access_trader(t.user):
                 continue
-            # 股數或買賣方向改變 → 舊沖銷配對已不成立，清掉讓損益重新以 policy 計算
-            core_changed = (int(t.quantity or 0) != qty) or (str(t.side).upper() != side)
+            # 若要改成別的買賣人，需有目標買賣人的權限；否則保留原買賣人
+            if trader_row != (t.user or "") and not can_access_trader(trader_row):
+                trader_row = t.user or trader
+            # 股數／買賣方向／買賣人改變 → 舊沖銷配對已不成立，清掉讓損益重新以 policy 計算
+            core_changed = (
+                (int(t.quantity or 0) != qty)
+                or (str(t.side).upper() != side)
+                or ((t.user or "") != trader_row)
+            )
+            t.user = trader_row
             t.trade_date = tdate
             t.side = side
             t.price = price
@@ -357,11 +389,22 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
 
 
 def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: str, is_etf: bool) -> None:
-    """奇摩股市式可編輯逐筆交易表：買/賣、股數、股價、日期、當沖可直接改；按鈕整批儲存。"""
+    """奇摩股市式可編輯逐筆交易表：買賣人、買/賣、股數、股價、手續費、當沖可直接改；按鈕整批儲存。"""
     orig_by_id = {int(t.id): t for t in stock_ts}
+    # 可選買賣人清單（管理者看全部，一般帳號看有權限者），並含目前表內已出現的人
+    trader_opts = (list_trader_names() if is_admin() else get_allowed_traders()) or []
+    trader_opts = sorted(set(trader_opts) | {trader} | {(t.user or "").strip() for t in stock_ts if (t.user or "").strip()})
+
+    auto_fee = st.checkbox(
+        "自動依費率計算手續費／證交稅",
+        value=st.session_state.get(f"te_txautofee_{sid}", True),
+        key=f"te_txautofee_{sid}",
+        help="勾選：手續費/證交稅依費率自動算（唯讀）。取消勾選：可手動輸入實際金額，用來對帳券商實收（例如國泰證券電子下單折讓後的手續費）。",
+    )
     df = pd.DataFrame([
         {
             "id": int(t.id),
+            "買賣人": (t.user or "").strip() or trader,
             "交易日期": _coerce_date(str(t.trade_date)[:10]),
             "買/賣": "買入" if str(t.side).upper() == "BUY" else "賣出",
             "交易股數": int(t.quantity or 0),
@@ -381,33 +424,42 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
         num_rows="dynamic",
         column_config={
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "買賣人": st.column_config.SelectboxColumn(
+                "買賣人", options=trader_opts, required=False, width="small",
+                help="可改指定這筆交易屬於哪位買賣人；改成他人需有該買賣人的權限。新列留空＝目前選定的買賣人。",
+            ),
             "交易日期": st.column_config.DateColumn("交易日期", format="YYYY/MM/DD"),
             "買/賣": st.column_config.SelectboxColumn("買/賣", options=["買入", "賣出"], required=True, width="small"),
             "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="localized"),
             "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="accounting"),
             "手續費": st.column_config.NumberColumn(
                 "手續費",
-                disabled=True,
+                disabled=auto_fee,
                 format="accounting",
-                help="已記錄的手續費（供核對）。公式：成交價×股數×費率(預設0.1425%)，四捨五入至整數、未滿20元以20元計。改完股數/股價按儲存會依費率自動重算。",
+                help=("自動模式：成交價×股數×費率(預設0.1425%)，四捨五入、最低20元，儲存時自動重算。"
+                      "手動模式（取消上方勾選）：可直接填券商實收金額對帳。"),
             ),
             "證交稅": st.column_config.NumberColumn(
                 "證交稅",
-                disabled=True,
+                disabled=auto_fee,
                 format="accounting",
-                help="賣出才收：成交價×股數×0.3%（ETF 0.1%）；買進為 0。",
+                help="賣出才收：成交價×股數×0.3%（ETF 0.1%；當沖一般個股減半）；買進為 0。手動模式可自行填。",
             ),
             "當沖": st.column_config.CheckboxColumn(
                 "當沖",
                 width="small",
-                help="標記此筆為當日沖銷。勾選後按儲存，賣出證交稅會依現股當沖減半（一般個股 0.3%→0.15%；ETF 維持 0.1%）。手續費不受影響。",
+                help="標記此筆為當日沖銷。自動模式下勾選後儲存，賣出證交稅會依現股當沖減半（一般個股 0.3%→0.15%；ETF 維持 0.1%）。手續費不受影響。",
             ),
             "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="localized"),
         },
     )
-    st.caption("可直接在表格上修改買/賣、股數、股價、日期、當沖；手續費／證交稅為系統依費率自動計算（唯讀，供核對）。刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
+    if auto_fee:
+        st.caption("可直接改買賣人、買/賣、股數、股價、日期、當沖；手續費／證交稅依費率自動計算（唯讀）。刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
+    else:
+        st.caption("🖊️ 手動費用模式：手續費／證交稅可直接填券商實收金額對帳（國泰證券折讓後金額）。其餘欄位照常可改。改完按下方儲存。")
+    st.caption("💡 小提醒：改完最後一格後，先按 Enter 或點一下表格外空白處讓該格生效，再按「儲存修改」，才不會需要按兩次。儲存後此表與下方「當日全部成交」會一起更新。")
     if st.button("💾 儲存修改", key=f"te_txsave_{sid}", type="primary"):
-        _save_tx_edits(sid, orig_by_id, edited, trader, is_etf)
+        _save_tx_edits(sid, orig_by_id, edited, trader, is_etf, auto_fee)
 
 
 def _render_match_table_header():
@@ -710,6 +762,10 @@ def _render_add_stock_expander(masters: dict):
                         added = st.session_state.setdefault("te_added_stocks", [])
                         if picked not in added:
                             added.append(picked)
+                        # 手風琴：新加入並展開此檔前，先收合其他所有檔
+                        for k in list(st.session_state.keys()):
+                            if str(k).startswith("te_open_"):
+                                st.session_state[k] = False
                         st.session_state["te_expand_stock"] = picked
                         st.success(f"已加入 {picked}，請點開下方該股輸入第一筆買進")
                         st.rerun()

@@ -218,11 +218,15 @@ def build_portfolio_df(trades, masters, start_date: date, end_date: date, policy
             elif not q:
                 remaining_cost = 0.0
         avg_cost = remaining_cost / q if q else 0
-        # 數學上「剩餘均價」不可能高於任一本檔買進單價；若發生則必為程式或資料錯誤
-        if q and max_buy_price and avg_cost > max_buy_price + 1.0:
+        # 數學約束只對「價格分量」成立：剩餘各批的加權平均『單價』不可能高於本檔最高買價。
+        # 手續費是合法的額外成本，會讓「含費均價」略高於最高買價——高價股每股手續費可達數元
+        # （例：環球晶 990 元 × 0.1425% ≈ 1.4 元/股），故不可用固定 1 元容忍值去比含費均價，
+        # 否則高價股會誤判違規並讓整頁崩潰。改為只檢查未含費的加權平均單價。
+        avg_price_ex_fee = (sum_remaining_from_lots / sum_remaining_qty_from_lots) if sum_remaining_qty_from_lots else 0
+        if q and max_buy_price and avg_price_ex_fee > max_buy_price + 0.01:
             raise ValueError(
-                f"{sid}: 持倉均價({avg_cost:.2f}) > 本檔最高買價({max_buy_price})，違反數學約束。"
-                f" sum_remaining_from_lots={sum_remaining_from_lots:.0f} remaining_buy_fee={remaining_buy_fee:.0f} q={q}"
+                f"{sid}: 剩餘持倉『價格分量』均價({avg_price_ex_fee:.2f}) > 本檔最高買價({max_buy_price})，違反數學約束。"
+                f" sum_remaining_from_lots={sum_remaining_from_lots:.0f} sum_remaining_qty={sum_remaining_qty_from_lots} q={q}"
             )
         total_buy_cost[sid] = remaining_cost
         buys_detail = []
