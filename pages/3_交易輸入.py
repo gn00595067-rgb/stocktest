@@ -54,7 +54,6 @@ from services.trade_entry_service import (
     combined_match_plan,
     filter_lots_by_time,
     filter_and_sort_lots,
-    preview_avg_cost_after_buy,
     realized_pnl_for_sell_plan,
     compute_realized_in_range,
     safe_int_qty,
@@ -367,6 +366,8 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "買/賣": "買入" if str(t.side).upper() == "BUY" else "賣出",
             "交易股數": int(t.quantity or 0),
             "交易股價": float(t.price or 0),
+            "手續費": float(getattr(t, "fee", 0) or 0),
+            "證交稅": float(getattr(t, "tax", 0) or 0),
             "當沖": bool(getattr(t, "is_daytrade", False)),
             "市值": round(cur_price * int(t.quantity or 0)),
         }
@@ -384,11 +385,27 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "買/賣": st.column_config.SelectboxColumn("買/賣", options=["買入", "賣出"], required=True, width="small"),
             "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="localized"),
             "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="accounting"),
-            "當沖": st.column_config.CheckboxColumn("當沖", width="small"),
+            "手續費": st.column_config.NumberColumn(
+                "手續費",
+                disabled=True,
+                format="accounting",
+                help="已記錄的手續費（供核對）。公式：成交價×股數×費率(預設0.1425%)，四捨五入至整數、未滿20元以20元計。改完股數/股價按儲存會依費率自動重算。",
+            ),
+            "證交稅": st.column_config.NumberColumn(
+                "證交稅",
+                disabled=True,
+                format="accounting",
+                help="賣出才收：成交價×股數×0.3%（ETF 0.1%）；買進為 0。",
+            ),
+            "當沖": st.column_config.CheckboxColumn(
+                "當沖",
+                width="small",
+                help="標記此筆為當日沖銷（僅供辨識分類）；勾選不會改變手續費或證交稅金額。",
+            ),
             "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="localized"),
         },
     )
-    st.caption("可直接在表格上修改買/賣、股數、股價、日期；刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
+    st.caption("可直接在表格上修改買/賣、股數、股價、日期、當沖；手續費／證交稅為系統依費率自動計算（唯讀，供核對）。刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
     if st.button("💾 儲存修改", key=f"te_txsave_{sid}", type="primary"):
         _save_tx_edits(sid, orig_by_id, edited, trader, is_etf)
 
@@ -724,12 +741,11 @@ def _render_stock_trade_panel(
     if not open_now:
         return
     with st.container(border=True):
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("市值", f"{row['market_value']:,.0f}")
         c2.metric("當日已實現", _fmt_pnl(row["realized_today"]), delta_color=_pnl_delta_color(row["realized_today"]))
         c3.metric("期間已實現", _fmt_pnl(row["realized_period"]), delta_color=_pnl_delta_color(row["realized_period"]))
         c4.metric("未實現", _fmt_pnl(row["unrealized"]), delta_color=_pnl_delta_color(row["unrealized"]))
-        c5.metric("買進後均價預覽", "—", help="填寫下方表單後顯示")
 
         pos_map = compute_position_and_cost_by_stock(
             [t for t in trades if (t.user or "").strip() == trader.strip()],
@@ -911,13 +927,6 @@ def _render_stock_trade_panel(
                     price, sell_qty, fee_est, tax_est, match_plan, trade_by_id
                 )
         else:
-            new_qty, new_cost, new_avg = preview_avg_cost_after_buy(
-                cur_qty, cur_cost, price, int(quantity), fee_est
-            )
-            st.info(
-                f"若以此價買進 {int(quantity):,} 股，買進後均價約 **{new_avg:.2f}** 元"
-                f"（持股 {cur_qty:,} → {new_qty:,}）"
-            )
             submit_slot = st.container()
 
         if submit_slot is None:
@@ -1003,7 +1012,7 @@ def _render_stock_trade_panel(
             if t.stock_id == sid and (t.user or "").strip() == trader.strip()
         ]
         stock_ts.sort(key=lambda t: (str(t.trade_date), t.id), reverse=True)
-        st.markdown("**交易明細（每一天、每一筆）**")
+        st.markdown(f"**交易明細（每一天、每一筆）** — {sid} {row['name']}")
         if not stock_ts:
             st.caption("此股尚無交易，於上方輸入第一筆。")
         else:
@@ -1019,7 +1028,7 @@ render_auth_sidebar()
 st.title("交易輸入")
 _inject_trade_entry_css()
 st.caption(
-    "仿奇摩持倉表：在持有股票列直接 Key in 買賣；含手續費/證交稅估算、買進後均價預覽、"
+    "仿奇摩持倉表：在持有股票列直接 Key in 買賣；含手續費/證交稅估算、"
     "賣出時可指定沖銷配對（例如僅配近 3 天買進，不與舊庫存混算）。"
 )
 
@@ -1259,11 +1268,18 @@ if trader:
     day_trades = [t for t in day_trades if (t.user or "").strip() == trader.strip()]
 sess.close()
 
+def _day_stock_label(sid: str) -> str:
+    sid = str(sid).strip()
+    m = masters.get(sid)
+    nm = (getattr(m, "name", None) or "").strip() if m else ""
+    return f"{sid} {nm}".strip() if nm else sid
+
+
 if day_trades:
     df = pd.DataFrame([
         {
             "id": t.id,
-            "股票": t.stock_id,
+            "股票": _day_stock_label(t.stock_id),
             "買賣人": t.user,
             "買/賣": "買入" if str(t.side).upper() == "BUY" else "賣出",
             "價格": t.price,
@@ -1289,6 +1305,13 @@ if day_trades:
                 help="當日沖銷：同一天買進又賣出、當天軋平的交易；標「當沖」表示這筆屬當沖，空白為一般買賣。",
             ),
         },
+    )
+    _fr_now, _tr_now = get_fee_tax_rates()
+    st.caption(
+        f"💡 **手續費公式**：成交價 × 股數 × 手續費率（目前 **{_fr_now:.4%}**），四捨五入至整數、未滿 20 元以 20 元計。"
+        f"　例：2365 × 100 × {_fr_now:.4%} ＝ {2365*100*_fr_now:.2f} → 337 元。"
+        f"　賣出另收證交稅 ＝ 成交價 × 股數 × **{_tr_now:.3%}**（ETF 0.1%）。"
+        "　券商若有打折，可在下方「手續費／證交稅率」或主檔設定調整費率。"
     )
     st.caption("此表為當日成交總覽（唯讀）。要修改／刪除請用上方各股票展開的「交易明細」，或下方輸入交易 ID 刪除。")
     del_id = st.number_input("刪除交易 ID", min_value=0, value=0, step=1, key="te_del_id")
