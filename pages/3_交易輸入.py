@@ -74,7 +74,7 @@ _POLICY_OPTIONS = {
 
 
 def _init_session_defaults():
-    st.session_state.setdefault("fee_rate", 0.001425)
+    st.session_state.setdefault("fee_rate", 0.00035625)  # 公定 0.1425% × 2.5 折
     st.session_state.setdefault("tax_rate", 0.003)
     st.session_state.setdefault("te_date", date.today())
     st.session_state.setdefault("te_period_days", 3)
@@ -436,7 +436,7 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
                 "手續費",
                 disabled=auto_fee,
                 format="accounting",
-                help=("自動模式：成交價×股數×費率(預設0.1425%)，四捨五入、最低20元，儲存時自動重算。"
+                help=("自動模式：成交價×股數×費率(預設0.0356%，即0.1425%打2.5折)，四捨五入、最低20元，儲存時自動重算。"
                       "手動模式（取消上方勾選）：可直接填券商實收金額對帳。"),
             ),
             "證交稅": st.column_config.NumberColumn(
