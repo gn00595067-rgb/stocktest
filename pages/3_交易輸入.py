@@ -1074,6 +1074,52 @@ def _render_stock_trade_panel(
         else:
             _render_stock_tx_list(sid, stock_ts, float(row["price"] or 0), trader, is_etf)
 
+        # ── 從清單移除 / 刪除此股 ──
+        st.divider()
+        if not stock_ts:
+            # 手動加入但還沒輸入任何交易的股：純從畫面清單移除，不動資料庫
+            if st.button("✖ 從清單移除此股", key=f"te_remove_{sid}", use_container_width=True):
+                added = st.session_state.get("te_added_stocks", [])
+                if sid in added:
+                    added.remove(sid)
+                st.session_state.pop(f"te_open_{sid}", None)
+                st.success(f"已從清單移除 {sid} {row['name']}")
+                st.rerun()
+        elif not can_access_trader(trader):
+            st.caption("（僅本人或管理者可刪除此股全部紀錄）")
+        else:
+            with st.expander("🗑 刪除此股全部交易紀錄（危險操作，無法復原）", expanded=False):
+                st.warning(
+                    f"將刪除 **{trader}** 在 **{sid} {row['name']}** 的全部 "
+                    f"**{len(stock_ts)}** 筆交易與相關沖銷配對，無法復原。"
+                )
+                confirm = st.checkbox("我了解，確認刪除此股全部紀錄", key=f"te_delall_confirm_{sid}")
+                if st.button(
+                    "🗑 確認刪除",
+                    key=f"te_delall_{sid}",
+                    disabled=not confirm,
+                    use_container_width=True,
+                ):
+                    sess = get_session()
+                    try:
+                        ids = [int(t.id) for t in stock_ts]
+                        for tid in ids:
+                            sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == tid).delete()
+                            sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == tid).delete()
+                            sess.query(Trade).filter(Trade.id == tid).delete()
+                        sess.commit()
+                        added = st.session_state.get("te_added_stocks", [])
+                        if sid in added:
+                            added.remove(sid)
+                        st.session_state.pop(f"te_open_{sid}", None)
+                        st.success(f"已刪除 {sid} {row['name']} 全部 {len(ids)} 筆交易紀錄（含沖銷配對）")
+                        st.rerun()
+                    except Exception as e:
+                        sess.rollback()
+                        st.error(str(e))
+                    finally:
+                        sess.close()
+
 
 # ---------- 主程式 ----------
 _init_session_defaults()
