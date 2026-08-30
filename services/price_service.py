@@ -576,15 +576,65 @@ def fetch_stock_list_finmind(token: str = None) -> List[dict]:
         return []
 
 
+def _fetch_stock_list_from_sheet() -> List[dict]:
+    """備援：從已設定的 Google Sheet 名錄取股票列表（免 FinMind、免 token）。"""
+    try:
+        from services.stock_list_loader import load_from_google_sheet
+        items, err = load_from_google_sheet()
+        return items or []
+    except Exception:
+        return []
+
+
+def _fetch_stock_list_from_master() -> List[dict]:
+    """最後備援：從本地 stock_master 取已載入的股票（離線也可用）。"""
+    try:
+        from db.database import get_session
+        from db.models import StockMaster
+        sess = get_session()
+        try:
+            rows = []
+            for m in sess.query(StockMaster).all():
+                rows.append({
+                    "stock_id": m.stock_id,
+                    "name": getattr(m, "name", "") or m.stock_id,
+                    "industry_name": getattr(m, "industry_name", "") or "",
+                    "market": getattr(m, "market", "TW") or "TW",
+                    "exchange": getattr(m, "exchange", "TWSE") or "TWSE",
+                    "is_etf": bool(getattr(m, "is_etf", False)),
+                })
+            return rows
+        finally:
+            sess.close()
+    except Exception:
+        return []
+
+
 def fetch_stock_list_cached(ttl_seconds: int = 86400) -> List[dict]:
-    """帶快取的股票列表（預設 24 小時）"""
+    """帶快取的股票列表（預設 24 小時）。
+
+    來源優先序：FinMind → Google Sheet 名錄 → 本地 stock_master。
+    FinMind 額度爆掉/被 ban（回空清單）時會自動退到備援，
+    且「絕不快取空清單」，避免一次失敗把搜尋鎖住整段 TTL。
+    """
     cache_key = "_stock_list_cache"
     cache_ts_key = "_stock_list_cache_ts"
     now = time.time()
+    # 只在快取「非空且未過期」時才短路返回；空快取一律重抓
     if hasattr(fetch_stock_list_cached, cache_ts_key):
-        if now - getattr(fetch_stock_list_cached, cache_ts_key) < ttl_seconds:
-            return getattr(fetch_stock_list_cached, cache_key, [])
+        cached = getattr(fetch_stock_list_cached, cache_key, [])
+        if cached and now - getattr(fetch_stock_list_cached, cache_ts_key) < ttl_seconds:
+            return cached
+
     lst = fetch_stock_list_finmind()
-    setattr(fetch_stock_list_cached, cache_key, lst)
-    setattr(fetch_stock_list_cached, cache_ts_key, now)
-    return lst
+    if not lst:
+        lst = _fetch_stock_list_from_sheet()
+    if not lst:
+        lst = _fetch_stock_list_from_master()
+
+    if lst:
+        setattr(fetch_stock_list_cached, cache_key, lst)
+        setattr(fetch_stock_list_cached, cache_ts_key, now)
+        return lst
+    # 全部來源都失敗：不要快取空清單，回傳先前的（可能較舊）快取以維持可用
+    return getattr(fetch_stock_list_cached, cache_key, [])
