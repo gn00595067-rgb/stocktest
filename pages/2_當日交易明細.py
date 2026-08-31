@@ -15,6 +15,7 @@ from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.prefs import resolve_default_trader
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -56,6 +57,8 @@ def _stock_label(sid: str) -> str:
 
 stock_opts = ["全部"] + [_stock_label(sid) for sid in stock_ids]
 user_opts = ["全部"] + users
+_day_def = resolve_default_trader(users)
+_user_default = [_day_def] if _day_def else ["全部"]
 
 def _label_to_sid(lbl: str):
     if lbl == "全部":
@@ -210,7 +213,7 @@ with tab_day:
     with f2:
         stock_label_day = st.selectbox("股票", options=stock_opts, key="daily_page_stock")
     with f3:
-        picked_users_day = st.multiselect("買賣人", options=user_opts, default=["全部"], key="daily_page_user_multi")
+        picked_users_day = st.multiselect("買賣人", options=user_opts, default=_user_default, key="daily_page_user_multi")
     sid_filter_day = _label_to_sid(stock_label_day)
     daily = [t for t in trades if getattr(t, "trade_date", None) == day]
     selected_users_day = [] if (not picked_users_day or "全部" in picked_users_day) else picked_users_day
@@ -233,7 +236,7 @@ with tab_range:
     with r3:
         stock_label_range = st.selectbox("股票", options=stock_opts, key="range_page_stock")
     with r4:
-        picked_users_range = st.multiselect("買賣人", options=user_opts, default=["全部"], key="range_page_user_multi")
+        picked_users_range = st.multiselect("買賣人", options=user_opts, default=_user_default, key="range_page_user_multi")
     if start_day > end_day:
         start_day, end_day = end_day, start_day
     sid_filter_range = _label_to_sid(stock_label_range)

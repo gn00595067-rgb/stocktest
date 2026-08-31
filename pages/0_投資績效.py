@@ -28,6 +28,7 @@ from services.auth_service import (
     get_allowed_traders,
 )
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
+from services.prefs import resolve_default_trader
 from services.price_service import get_quote_cached
 from services.position_cost import compute_position_and_cost_by_stock
 
@@ -128,10 +129,11 @@ with col_m:
 with col_u:
     if is_admin():
         pl_user_opts = ["全部"] + pl_users
+        _pl_def = resolve_default_trader(pl_users)
         picked_users = st.multiselect(
             "買賣人",
             options=pl_user_opts,
-            default=["全部"],
+            default=([_pl_def] if _pl_def else ["全部"]),
             key="pl_filter_user_multi",
         )
         pl_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users
@@ -139,10 +141,11 @@ with col_u:
         if not pl_users:
             st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
             st.stop()
+        _pl_def = resolve_default_trader(pl_users)
         picked_users = st.multiselect(
             "買賣人",
             options=pl_users,
-            default=pl_users,
+            default=([_pl_def] if _pl_def else pl_users),
             key="pl_filter_user_multi",
         )
         pl_filter_users = picked_users if picked_users else []

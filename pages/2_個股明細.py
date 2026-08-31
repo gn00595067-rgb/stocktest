@@ -14,6 +14,7 @@ from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from reports.stock_detail_report import build_stock_detail
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.prefs import resolve_default_trader
 
 st.set_page_config(page_title="個股明細", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -69,10 +70,11 @@ with c_stock:
     selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), format_func=lambda x: stock_options.get(x, x))
 with c_user:
     user_opts = ["全部"] + detail_users
+    _dt_def = resolve_default_trader(detail_users)
     picked_users = st.multiselect(
         "買賣人",
         options=user_opts,
-        default=["全部"],
+        default=([_dt_def] if _dt_def else ["全部"]),
         key="detail_filter_user_multi",
     )
     detail_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users

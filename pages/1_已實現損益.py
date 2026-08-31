@@ -17,6 +17,7 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.prefs import resolve_default_trader
 from reports.realized_report import (
     build_realized_ledger, summarize_ledger, aggregate_by, monthly_series, LEDGER_COLUMNS,
 )
@@ -68,7 +69,8 @@ fc1, fc2, fc3 = st.columns([1.2, 1.4, 1.4])
 with fc1:
     policy = st.selectbox("沖銷方式", list(policy_labels.keys()), format_func=lambda x: policy_labels.get(x, x))
 with fc2:
-    picked_users = st.multiselect("買賣人（可多選，空=全部）", options=users, default=[])
+    _rz_def = resolve_default_trader(users)
+    picked_users = st.multiselect("買賣人（可多選，空=全部）", options=users, default=([_rz_def] if _rz_def else []))
 with fc3:
     # 預設「當日」，其他區間需要時再自行切換
     range_mode = st.selectbox("賣出日期區間", ["當日", "全部", "今年", "近 12 個月", "本月", "自訂"], index=0)

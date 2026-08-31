@@ -28,6 +28,7 @@ from services.auth_service import (
 )
 from reports.portfolio_report import build_portfolio_df
 from reports.stock_detail_report import build_stock_detail
+from services.prefs import resolve_default_trader
 from services.price_service import get_quote_cached, fetch_daily_prices
 from services.pnl_engine import Lot, compute_matches
 
@@ -555,10 +556,11 @@ with st.container():
     with col_f4:
         if is_admin():
             filter_user_options = ["全部"] + portfolio_users
+            _pf_def = resolve_default_trader(portfolio_users)
             selected_users = st.multiselect(
                 "買賣人",
                 options=filter_user_options,
-                default=["全部"],
+                default=([_pf_def] if _pf_def else ["全部"]),
                 key="portfolio_filter_user_multi",
             )
             portfolio_filter_users = None if (not selected_users or "全部" in selected_users) else selected_users
@@ -566,10 +568,11 @@ with st.container():
             if not portfolio_users:
                 st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
                 st.stop()
+            _pf_def = resolve_default_trader(portfolio_users)
             selected_users = st.multiselect(
                 "買賣人",
                 options=portfolio_users,
-                default=portfolio_users,
+                default=([_pf_def] if _pf_def else portfolio_users),
                 key="portfolio_filter_user_multi",
             )
             portfolio_filter_users = selected_users if selected_users else []

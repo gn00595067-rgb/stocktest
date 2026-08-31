@@ -41,6 +41,7 @@ from services.auth_service import (
     filter_trades_by_permission,
 )
 from services.trade_fees import fees_for_trade, get_fee_tax_rates
+from services.prefs import resolve_default_trader
 from services.trader_service import (
     list_trader_names,
     add_trader,
@@ -1153,7 +1154,8 @@ with tb1:
         trader_names = list_trader_names()
         if trader_names:
             last = st.session_state.get("last_user")
-            idx = trader_names.index(last) if last in trader_names else 0
+            _def = resolve_default_trader(trader_names)
+            idx = trader_names.index(last) if last in trader_names else (trader_names.index(_def) if _def else 0)
             trader = st.selectbox("買賣人", options=trader_names, index=idx, key="te_trader_sel")
         else:
             trader = ""
@@ -1163,7 +1165,8 @@ with tb1:
             st.warning("帳號尚未綁定買賣人，請聯絡管理者。")
             st.stop()
         last = st.session_state.get("last_user")
-        idx = allowed.index(last) if last in allowed else 0
+        _def = resolve_default_trader(allowed)
+        idx = allowed.index(last) if last in allowed else (allowed.index(_def) if _def else 0)
         trader = st.selectbox("買賣人", options=allowed, index=idx, key="te_trader_sel")
 with tb2:
     trade_date = st.date_input("交易日期", value=st.session_state.get("te_date", today), key="te_date_in")
