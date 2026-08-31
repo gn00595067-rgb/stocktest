@@ -17,7 +17,7 @@ except Exception:
     pass
 from db.database import get_session
 from db.models import StockMaster, Trade
-from services.trade_fees import estimate_sell_tax
+from services.trade_fees import estimate_sell_tax, estimate_broker_fee, get_fee_tax_rates
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 from db.seed_data import run_seed
 from db.mock_data import generate_mock_trades
@@ -217,6 +217,65 @@ with st.expander("展開檢查／重算當沖證交稅", expanded=False):
                     st.caption(f"技術細節：{e}")
     finally:
         _msess.close()
+
+st.subheader("🔧 一次性維護：手續費依現行費率重算")
+_fr_now, _tr_now = get_fee_tax_rates()
+st.caption(
+    f"把過去以舊費率記錄的手續費，全部重算為**現行費率 {_fr_now:.4%}**（＝0.1425% 打 2.5 折）、最低 1 元。"
+    "買進與賣出都重算；證交稅不動（當沖稅請用上方工具）。會先預覽差異，確認後才寫回並同步 Google 試算表。"
+)
+with st.expander("展開檢查／重算手續費", expanded=False):
+    _fsess = get_session()
+    try:
+        _all_t = _fsess.query(Trade).all()
+        _masters_f = {m.stock_id: m for m in _fsess.query(StockMaster).all()}
+        _frows = []
+        _fid_to_new = {}
+        for t in _all_t:
+            _new_fee = estimate_broker_fee(float(t.price or 0), int(t.quantity or 0))
+            _old_fee = float(t.fee or 0)
+            if abs(_old_fee - _new_fee) >= 0.5:  # 有差異才需重算
+                _m = _masters_f.get(t.stock_id)
+                _fid_to_new[t.id] = _new_fee
+                _frows.append({
+                    "id": t.id,
+                    "股票": f"{t.stock_id} {getattr(_m, 'name', '') or ''}".strip(),
+                    "買賣人": t.user,
+                    "日期": str(t.trade_date),
+                    "買/賣": (getattr(t, "side", "") or "").upper(),
+                    "價格": float(t.price or 0),
+                    "股數": int(t.quantity or 0),
+                    "原手續費": round(_old_fee),
+                    "重算後": round(_new_fee),
+                    "差額": round(_new_fee - _old_fee),
+                })
+        if not _all_t:
+            st.info("目前沒有任何交易。")
+        elif not _frows:
+            st.success(f"檢查了 {len(_all_t)} 筆交易，手續費全部已是現行費率，無需重算。")
+        else:
+            _fprev = pd.DataFrame(_frows)
+            st.dataframe(_fprev, hide_index=True, use_container_width=True)
+            _ftotal = int(_fprev["差額"].sum())
+            st.warning(
+                f"共 **{len(_frows)}** 筆將重算，手續費合計變動 **{_ftotal:,}** 元（負值＝減少）。"
+                "此動作無法一鍵還原，請先確認上表。"
+            )
+            _fconfirm = st.checkbox("我已確認上表，要套用手續費重算", key="fee_recalc_confirm")
+            if st.button("套用手續費重算", type="primary", disabled=not _fconfirm):
+                for t in _all_t:
+                    if t.id in _fid_to_new:
+                        t.fee = float(_fid_to_new[t.id])
+                try:
+                    _fsess.commit()
+                    st.success(f"已重算 {len(_fid_to_new)} 筆手續費並同步。請至『個股明細／已實現損益』確認。")
+                    st.rerun()
+                except OperationalError as e:
+                    _fsess.rollback()
+                    st.error("無法寫入資料庫（目前環境為唯讀）。請在雲端部署的 App 上以管理者身分執行。")
+                    st.caption(f"技術細節：{e}")
+    finally:
+        _fsess.close()
 
 st.subheader("種子資料")
 if st.button("載入種子資料（2330/2317/3706 等）"):
