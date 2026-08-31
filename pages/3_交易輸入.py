@@ -295,11 +295,12 @@ def _coerce_date(v):
         return None
 
 
-def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: bool, auto_fee: bool = True) -> None:
+def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: bool) -> None:
     """把 data_editor 的修改（改值／新增列／刪除列）寫回資料庫。
 
-    auto_fee=True：手續費/證交稅依費率自動重算（忽略表格內的數字）。
-    auto_fee=False：採用表格內手動輸入的手續費/證交稅（用來對帳券商實收金額，如國泰證券折讓）。
+    費用處理：
+    - 既有列：一律採用表格內的手續費/證交稅（不自動重算），使用者手動修正不會被洗掉。
+    - 新增列（此表加列）：比照初次輸入自動帶入費率計算，方便直接補一筆。
     """
     sess = get_session()
     try:
@@ -321,10 +322,12 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
             trader_row = trader_row or trader
             if qty <= 0 or price <= 0 or tdate is None:
                 continue  # 略過尚未填完整的空白／新列
-            if auto_fee:
+            if not has_id:
+                # 新增列（此表加列）：比照初次輸入自動帶入費率
                 fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
                 tax = tax if side == "SELL" else 0.0
             else:
+                # 既有列：採用表格內手動值，不自動重算（避免手動修正被洗掉）
                 try:
                     fee = float(r.get("手續費") or 0)
                 except (TypeError, ValueError):
@@ -396,12 +399,6 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
     trader_opts = (list_trader_names() if is_admin() else get_allowed_traders()) or []
     trader_opts = sorted(set(trader_opts) | {trader} | {(t.user or "").strip() for t in stock_ts if (t.user or "").strip()})
 
-    auto_fee = st.checkbox(
-        "自動依費率計算手續費／證交稅",
-        value=st.session_state.get(f"te_txautofee_{sid}", True),
-        key=f"te_txautofee_{sid}",
-        help="勾選：手續費/證交稅依費率自動算（唯讀）。取消勾選：可手動輸入實際金額，用來對帳券商實收（例如國泰證券電子下單折讓後的手續費）。",
-    )
     df = pd.DataFrame([
         {
             "id": int(t.id),
@@ -434,33 +431,30 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="localized"),
             "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="accounting"),
             "手續費": st.column_config.NumberColumn(
-                "手續費 🔒自動" if auto_fee else "手續費 ✏️可改",
-                disabled=auto_fee,
+                "手續費 ✏️可改",
                 format="accounting",
-                help=("自動模式（🔒唯讀）：成交價×股數×費率(預設0.0356%，即0.1425%打2.5折)，四捨五入、最低1元，儲存時自動重算。"
-                      "要手動改金額請取消上方「自動依費率計算」勾選。"),
+                help="可直接填券商實收金額（例如折讓後手續費）。儲存時不會自動重算，你改的數字會保留。",
             ),
             "證交稅": st.column_config.NumberColumn(
-                "證交稅 🔒自動" if auto_fee else "證交稅 ✏️可改",
-                disabled=auto_fee,
+                "證交稅 ✏️可改",
                 format="accounting",
-                help="賣出才收：成交價×股數×0.3%（ETF 0.1%；當沖一般個股減半）；買進為 0。要手動填請取消上方「自動依費率計算」勾選。",
+                help="可直接填實際證交稅。賣出才收；買進為 0。儲存時不會自動重算，你改的數字會保留。",
             ),
             "當沖": st.column_config.CheckboxColumn(
                 "當沖",
                 width="small",
-                help="標記此筆為當日沖銷。自動模式下勾選後儲存，賣出證交稅會依現股當沖減半（一般個股 0.3%→0.15%；ETF 維持 0.1%）。手續費不受影響。",
+                help="標記此筆為當日沖銷（僅作記號，不會改動你已填的手續費／證交稅）。",
             ),
             "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="localized"),
         },
     )
-    if auto_fee:
-        st.caption("可直接改買賣人、買/賣、股數、股價、日期、當沖；手續費／證交稅依費率自動計算（唯讀）。刪列＝刪交易、加列＝新增交易。改完按下方儲存。")
-    else:
-        st.caption("🖊️ 手動費用模式：手續費／證交稅可直接填券商實收金額對帳（國泰證券折讓後金額）。其餘欄位照常可改。改完按下方儲存。")
+    st.caption(
+        "✏️ 手續費／證交稅可直接編輯，**儲存時不會自動重算**，你改的數字會保留。"
+        "（自動帶入費率只在最上方『送出此筆交易』新增時計算。）刪列＝刪交易、加列＝新增交易。"
+    )
     st.caption("💡 小提醒：改完最後一格後，先按 Enter 或點一下表格外空白處讓該格生效，再按「儲存修改」，才不會需要按兩次。儲存後此表與下方「當日全部成交」會一起更新。")
     if st.button("💾 儲存修改", key=f"te_txsave_{sid}", type="primary"):
-        _save_tx_edits(sid, orig_by_id, edited, trader, is_etf, auto_fee)
+        _save_tx_edits(sid, orig_by_id, edited, trader, is_etf)
 
 
 def _render_match_table_header():
