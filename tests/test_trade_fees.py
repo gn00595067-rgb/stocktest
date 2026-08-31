@@ -15,9 +15,12 @@ def test_broker_fee_standard_rate():
     assert estimate_broker_fee(487.5, 200, 0.001425) == 139
 
 
-def test_broker_fee_minimum_20():
-    # 小額成交手續費未滿 20 元以 20 元計
-    assert estimate_broker_fee(10, 100, 0.001425) == 20
+def test_broker_fee_minimum_1():
+    # 小額成交手續費未滿最低值以最低 1 元計
+    # 10 × 100 × 0.001425 = 1.425 → round 1，且不低於最低 1 元
+    assert estimate_broker_fee(10, 100, 0.001425) == 1
+    # 更小額（round 後為 0）仍以最低 1 元計
+    assert estimate_broker_fee(1, 100, 0.001425) == 1
 
 
 def test_sell_tax_normal():

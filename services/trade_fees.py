@@ -2,7 +2,7 @@
 """台股手續費與證交稅估算（寫入交易時若未填 fee/tax 則套用）"""
 from typing import Optional, Tuple
 
-BROKER_FEE_MIN = 20.0
+BROKER_FEE_MIN = 1.0  # 電子下單最低手續費 1 元
 # 手續費率預設：公定 0.1425% 打 2.5 折（0.001425 × 25%）= 0.00035625
 DEFAULT_FEE_RATE = 0.00035625
 DEFAULT_TAX_RATE = 0.003
@@ -21,7 +21,7 @@ def get_fee_tax_rates() -> Tuple[float, float]:
 
 
 def estimate_broker_fee(price: float, quantity: int, fee_rate: Optional[float] = None) -> float:
-    """單筆成交手續費（買賣皆收，最低 20 元，四捨五入至整數）。"""
+    """單筆成交手續費（買賣皆收，最低 1 元，四捨五入至整數）。"""
     if quantity <= 0 or price <= 0:
         return 0.0
     rate = fee_rate if fee_rate is not None else get_fee_tax_rates()[0]
