@@ -221,6 +221,25 @@ all_trades = filter_trades_by_permission(all_trades)
 # 保留未篩選交易（供「依買賣人加總」使用）
 all_trades_full = list(all_trades)
 
+# 批次預抓即時報價（TWSE MIS 一次多檔）：warm 快取讓下方各處 get_quote_cached 即時且一致，
+# 並提供「更新報價」強制刷新與報價時間顯示。
+from services.price_service import get_quotes_cached, clear_quote_cache
+_hold_sids = {str(getattr(t, "stock_id", "")).strip() for t in all_trades_full if getattr(t, "stock_id", None)}
+_hold_sids.discard("")
+_rc1, _rc2 = st.columns([1, 4])
+with _rc1:
+    if st.button("🔄 更新報價", key="perf_refresh_quotes", use_container_width=True):
+        clear_quote_cache()
+        st.rerun()
+_ex_map = {sid: getattr(masters.get(sid), "exchange", None) for sid in _hold_sids}
+_quotes_now = get_quotes_cached(list(_hold_sids), exchanges=_ex_map) if _hold_sids else {}
+_qt = next((q.get("time") for q in _quotes_now.values() if q and q.get("time")), None)
+with _rc2:
+    if _qt:
+        st.caption(f"📡 現價來源 TWSE MIS 官方即時，最新報價時間約 **{_qt}**（20 秒快取，按「更新報價」可強制刷新）")
+    else:
+        st.caption("📡 現價來源 TWSE MIS 官方即時（盤後或無成交的冷門股會顯示昨收）")
+
 
 def _pl_realized_unrealized_for_trades(trades_list, _start, _end, _custom_rules, _masters, _policy="CUSTOM"):
     """給定交易列表與區間，回傳 (已實現加總, 未實現加總)。"""

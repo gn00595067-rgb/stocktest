@@ -325,6 +325,11 @@ def get_price_service():
     return MockPriceProvider()
 
 
+def clear_quote_cache() -> None:
+    """清空報價快取，供「更新報價」按鈕強制重抓即時價。"""
+    _price_cache.clear()
+
+
 def get_quote_cached(stock_id: str) -> Optional[dict]:
     now = time.time()
     if stock_id in _price_cache:
