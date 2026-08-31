@@ -433,17 +433,17 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "交易股數": st.column_config.NumberColumn("交易股數", min_value=0, step=1000, format="localized"),
             "交易股價": st.column_config.NumberColumn("交易股價", min_value=0.0, step=0.05, format="accounting"),
             "手續費": st.column_config.NumberColumn(
-                "手續費",
+                "手續費 🔒自動" if auto_fee else "手續費 ✏️可改",
                 disabled=auto_fee,
                 format="accounting",
-                help=("自動模式：成交價×股數×費率(預設0.0356%，即0.1425%打2.5折)，四捨五入、最低1元，儲存時自動重算。"
-                      "手動模式（取消上方勾選）：可直接填券商實收金額對帳。"),
+                help=("自動模式（🔒唯讀）：成交價×股數×費率(預設0.0356%，即0.1425%打2.5折)，四捨五入、最低1元，儲存時自動重算。"
+                      "要手動改金額請取消上方「自動依費率計算」勾選。"),
             ),
             "證交稅": st.column_config.NumberColumn(
-                "證交稅",
+                "證交稅 🔒自動" if auto_fee else "證交稅 ✏️可改",
                 disabled=auto_fee,
                 format="accounting",
-                help="賣出才收：成交價×股數×0.3%（ETF 0.1%；當沖一般個股減半）；買進為 0。手動模式可自行填。",
+                help="賣出才收：成交價×股數×0.3%（ETF 0.1%；當沖一般個股減半）；買進為 0。要手動填請取消上方「自動依費率計算」勾選。",
             ),
             "當沖": st.column_config.CheckboxColumn(
                 "當沖",
