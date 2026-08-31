@@ -109,15 +109,18 @@ def get_engine():
 def get_session():
     global _sheet_synced_once
     if USE_GOOGLE_SHEET and not _sheet_synced_once:
-        _sheet_synced_once = True
         try:
             from services.sheet_sync import sync_from_sheet_to_db
             ok, err = sync_from_sheet_to_db(engine)
-            if not ok and err:
+            if ok:
+                # 只有「載入成功」才標記已同步；失敗則下次 get_session 會重試，
+                # 避免載入失敗後記憶體停在空狀態、又被寫回覆蓋試算表。
+                _sheet_synced_once = True
+            elif err:
                 try:
                     import streamlit as st
                     if hasattr(st, "warning"):
-                        st.warning(f"無法從 Google 試算表載入：{err}")
+                        st.warning(f"無法從 Google 試算表載入：{err}（將於下次重試，暫不寫回以免覆蓋既有資料）")
                 except Exception:
                     pass
         except Exception:

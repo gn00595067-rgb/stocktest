@@ -448,9 +448,21 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         except gspread.WorksheetNotFound:
             ws_trades = spread.add_worksheet(title=SHEET_TRADES, rows=1000, cols=len(TRADES_HEADERS))
         trades_data = [TRADES_HEADERS] + [row_trade(r) for r in r_trades]
-        if trades_data:
-            ws_trades.clear()
-            ws_trades.update(trades_data, value_input_option="USER_ENTERED")
+        # 防呆：記憶體 0 筆交易、但試算表已有資料時，拒絕以空資料整表覆蓋。
+        # 這是資料被洗掉的根因保護：啟動時「從試算表載入」若失敗，記憶體會是空的，
+        # 之後任一次存檔就會用空資料清空試算表；此處直接中止，保住既有資料。
+        if len(r_trades) == 0:
+            try:
+                existing_rows = max(0, len(ws_trades.get_all_values()) - 1)
+            except Exception:
+                existing_rows = 0
+            if existing_rows > 0:
+                return False, (
+                    f"已中止寫回以保護資料：記憶體目前 0 筆交易，但試算表已有 {existing_rows} 筆。"
+                    f"這通常代表啟動時未成功從試算表載入。請『重新啟動（Reboot）app』讓它重新載入後再操作。"
+                )
+        ws_trades.clear()
+        ws_trades.update(trades_data, value_input_option="USER_ENTERED")
 
         # 寫入 custom_match_rules 工作表
         try:
