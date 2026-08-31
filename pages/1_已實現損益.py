@@ -70,8 +70,8 @@ with fc1:
 with fc2:
     picked_users = st.multiselect("買賣人（可多選，空=全部）", options=users, default=[])
 with fc3:
-    # 預設「今天」，其他區間需要時再自行切換
-    range_mode = st.selectbox("賣出日期區間", ["今天", "全部", "今年", "近 12 個月", "本月", "自訂"], index=0)
+    # 預設「當日」，其他區間需要時再自行切換
+    range_mode = st.selectbox("賣出日期區間", ["當日", "全部", "今年", "近 12 個月", "本月", "自訂"], index=0)
 
 today = date.today()
 custom_start = custom_end = None
@@ -94,7 +94,7 @@ if ledger.empty:
 def _in_range(d):
     if d is None or (isinstance(d, float) and pd.isna(d)):
         return False
-    if range_mode == "今天":
+    if range_mode == "當日":
         return d == today
     if range_mode == "全部":
         return True
