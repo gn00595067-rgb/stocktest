@@ -1198,63 +1198,27 @@ with arc2:
 with arc3:
     _maybe_autorefresh()
 
-# ---------- 管理買賣人名單（僅管理者；新增／刪除會同步到 Google 試算表） ----------
-if is_admin():
-    with st.expander("👥 管理買賣人名單（新增／刪除，會存到 Google 試算表）", expanded=False):
-        ma1, ma2 = st.columns([2, 1])
-        with ma1:
-            new_trader = st.text_input("新增買賣人", key="te_new_trader", placeholder="輸入名稱，例如 Jonathan")
-        with ma2:
-            st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-            if st.button("➕ 新增", key="te_add_trader_btn", use_container_width=True):
-                ok, msg = add_trader(new_trader)
-                (st.success if ok else st.warning)(msg)
-                if ok:
-                    st.rerun()
-        names_now = list_trader_names()
-        if names_now:
-            md1, md2 = st.columns([2, 1])
-            with md1:
-                del_trader_name = st.selectbox("刪除買賣人", options=names_now, key="te_del_trader_sel")
-            with md2:
-                st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-                if st.button("🗑️ 刪除", key="te_del_trader_btn", use_container_width=True):
-                    ok, msg = delete_trader(del_trader_name)
-                    (st.success if ok else st.warning)(msg)
-                    if ok:
-                        st.rerun()
-            st.caption("刪除只是把名字從選單移除，該買賣人已輸入的交易與歷史不受影響。")
-
-# ---------- 進階設定（預設已是最常用值，一般免調整） ----------
-with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不用改）", expanded=False):
-    ac1, ac2, ac3 = st.columns([1, 1.4, 1])
-    with ac1:
-        period_days = st.selectbox(
-            "期間獲利",
-            options=[1, 3, 7, 30, 180],
-            format_func=lambda d: {1: "今日", 3: "近3天", 7: "近1週", 30: "近1月", 180: "近半年"}[d],
-            index=[1, 3, 7, 30, 180].index(st.session_state.get("te_period_days", 3))
-            if st.session_state.get("te_period_days", 3) in [1, 3, 7, 30, 180]
-            else 1,
-            key="te_period_sel",
-        )
-        st.session_state["te_period_days"] = period_days
-    with ac2:
-        policy = st.selectbox(
-            "沖銷口徑",
-            options=list(_POLICY_OPTIONS.keys()),
-            format_func=lambda k: _POLICY_OPTIONS[k],
-            index=list(_POLICY_OPTIONS.keys()).index(st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO")),
-            key="te_policy_sel",
-        )
-        st.session_state["te_policy"] = policy
-    with ac3:
-        st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-        st.session_state["te_auto_fifo"] = st.checkbox(
-            "賣出未配對時自動先進先出",
-            value=st.session_state.get("te_auto_fifo", True),
-            key="te_auto_fifo_cb",
-        )
+# ---------- 讀取「進階設定 / 費率」目前值（設定面板已移到頁尾，計算在此先取用） ----------
+# Streamlit 會在重跑前先把 widget 值寫回其 key，故此處讀 widget key 能拿到最新選擇，
+# 設定面板移到頁尾也不會有一次重跑的延遲。
+_PERIOD_OPTS = [1, 3, 7, 30, 180]
+_POLICY_KEYS = list(_POLICY_OPTIONS.keys())
+policy = st.session_state.get("te_policy_sel")
+if policy not in _POLICY_KEYS:
+    policy = st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO")
+st.session_state["te_policy"] = policy
+period_days = st.session_state.get("te_period_sel")
+if period_days not in _PERIOD_OPTS:
+    period_days = st.session_state.get("te_period_days", 3)
+st.session_state["te_period_days"] = period_days
+st.session_state["te_auto_fifo"] = st.session_state.get(
+    "te_auto_fifo_cb", st.session_state.get("te_auto_fifo", True)
+)
+# 費率面板在頁尾：用 widget key 回填 session，讓上方費用估算取到最新值
+if "te_fee_rate" in st.session_state:
+    st.session_state["fee_rate"] = st.session_state["te_fee_rate"]
+if "te_tax_rate" in st.session_state:
+    st.session_state["tax_rate"] = st.session_state["te_tax_rate"]
 
 period_start = trade_date - timedelta(days=max(0, period_days - 1))
 period_end = trade_date
@@ -1310,18 +1274,6 @@ k4.metric(
     f"{daily_total + unrealized_total:,.0f}",
     help="當日已實現 + 未實現（快速掌握盤中狀態）",
 )
-
-with st.expander("⚙️ 手續費 / 證交稅率（寫入交易時自動帶入）", expanded=False):
-    fr, tr = get_fee_tax_rates()
-    cfa, ctb = st.columns(2)
-    with cfa:
-        st.session_state["fee_rate"] = st.number_input(
-            "手續費率", value=fr, format="%.6f", key="te_fee_rate"
-        )
-    with ctb:
-        st.session_state["tax_rate"] = st.number_input(
-            "證交稅率（賣出）", value=tr, format="%.4f", key="te_tax_rate"
-        )
 
 _render_add_stock_expander(masters)
 
@@ -1446,3 +1398,71 @@ with st.expander("報價連線狀態"):
         st.warning("未設定 FINMIND_TOKEN，目前為模擬報價。")
     else:
         st.warning(dbg.get("message", ""))
+
+# ---------- 設定（平常不太需要動，收在頁尾） ----------
+st.markdown("---")
+st.caption("⚙️ 以下為平常不太需要調整的設定，需要時再展開。")
+
+with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不用改）", expanded=False):
+    ac1, ac2, ac3 = st.columns([1, 1.4, 1])
+    with ac1:
+        st.selectbox(
+            "期間獲利",
+            options=_PERIOD_OPTS,
+            format_func=lambda d: {1: "今日", 3: "近3天", 7: "近1週", 30: "近1月", 180: "近半年"}[d],
+            index=_PERIOD_OPTS.index(st.session_state.get("te_period_days", 3))
+            if st.session_state.get("te_period_days", 3) in _PERIOD_OPTS else 1,
+            key="te_period_sel",
+        )
+    with ac2:
+        st.selectbox(
+            "沖銷口徑",
+            options=_POLICY_KEYS,
+            format_func=lambda k: _POLICY_OPTIONS[k],
+            index=_POLICY_KEYS.index(st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO"))
+            if st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO") in _POLICY_KEYS else 0,
+            key="te_policy_sel",
+        )
+    with ac3:
+        st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+        st.checkbox(
+            "賣出未配對時自動先進先出",
+            value=st.session_state.get("te_auto_fifo", True),
+            key="te_auto_fifo_cb",
+        )
+    st.caption("改動會套用到上方『當日／期間已實現』與持股損益的計算（下次互動即生效）。")
+
+with st.expander("⚙️ 手續費 / 證交稅率（寫入交易時自動帶入）", expanded=False):
+    fr, tr = get_fee_tax_rates()
+    cfa, ctb = st.columns(2)
+    with cfa:
+        st.number_input("手續費率", value=fr, format="%.6f", key="te_fee_rate")
+    with ctb:
+        st.number_input("證交稅率（賣出）", value=tr, format="%.4f", key="te_tax_rate")
+    st.caption("預設 0.0356%（0.1425% 打 2.5 折）／證交稅 0.3%。改率只影響之後新輸入或重算的交易。")
+
+if is_admin():
+    with st.expander("👥 管理買賣人名單（新增／刪除，會存到 Google 試算表）", expanded=False):
+        ma1, ma2 = st.columns([2, 1])
+        with ma1:
+            new_trader = st.text_input("新增買賣人", key="te_new_trader", placeholder="輸入名稱，例如 Jonathan")
+        with ma2:
+            st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+            if st.button("➕ 新增", key="te_add_trader_btn", use_container_width=True):
+                ok, msg = add_trader(new_trader)
+                (st.success if ok else st.warning)(msg)
+                if ok:
+                    st.rerun()
+        names_now = list_trader_names()
+        if names_now:
+            md1, md2 = st.columns([2, 1])
+            with md1:
+                del_trader_name = st.selectbox("刪除買賣人", options=names_now, key="te_del_trader_sel")
+            with md2:
+                st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+                if st.button("🗑️ 刪除", key="te_del_trader_btn", use_container_width=True):
+                    ok, msg = delete_trader(del_trader_name)
+                    (st.success if ok else st.warning)(msg)
+                    if ok:
+                        st.rerun()
+            st.caption("刪除只是把名字從選單移除，該買賣人已輸入的交易與歷史不受影響。")
