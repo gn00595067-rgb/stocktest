@@ -21,7 +21,7 @@ def resolve_default_trader(options: List[str]) -> Optional[str]:
 
 
 # 沖銷方式（損益配對口徑）。各頁共用同一個 session key，改一頁其他頁跟著同步。
-DEFAULT_POLICY = "CUSTOM_PLUS_FIFO"
+DEFAULT_POLICY = "CUSTOM_ONLY"
 POLICY_LABELS = {
     "CUSTOM_ONLY": "僅自定沖銷",
     "CUSTOM_PLUS_FIFO": "先進先出（未定沖銷部分）",
