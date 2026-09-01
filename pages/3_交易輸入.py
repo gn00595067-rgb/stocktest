@@ -1311,7 +1311,7 @@ for sid in extra_sids:
 if holdings:
     st.subheader("持有股票（點「輸入」展開該股買賣）")
     _render_holdings_header()
-    for h in sorted(holdings, key=lambda x: (-x["qty"], x["stock_id"])):
+    for h in sorted(holdings, key=lambda x: (-float(x.get("market_value", 0) or 0), x["stock_id"])):
         _render_stock_trade_panel(h, masters, trades, custom_rules, policy, trader, trade_date)
 else:
     st.info("目前無持倉。請用上方「新增股票」加入標的，或至主檔/設定載入種子資料。")
