@@ -399,6 +399,9 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
     trader_opts = (list_trader_names() if is_admin() else get_allowed_traders()) or []
     trader_opts = sorted(set(trader_opts) | {trader} | {(t.user or "").strip() for t in stock_ts if (t.user or "").strip()})
 
+    # 注意：此表只放資料庫的穩定欄位，不放隨即時股價變動的欄（例如市值）。
+    # 因為 st.data_editor 只要輸入表內容和上一次不同，就會把未儲存的編輯重置掉，
+    # 會造成「改了日期/買賣人卻跳回」。市值請看上方持股列。
     df = pd.DataFrame([
         {
             "id": int(t.id),
@@ -410,7 +413,6 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "手續費": float(getattr(t, "fee", 0) or 0),
             "證交稅": float(getattr(t, "tax", 0) or 0),
             "當沖": bool(getattr(t, "is_daytrade", False)),
-            "市值": round(cur_price * int(t.quantity or 0)),
         }
         for t in stock_ts
     ])
@@ -445,7 +447,6 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
                 width="small",
                 help="標記此筆為當日沖銷（僅作記號，不會改動你已填的手續費／證交稅）。",
             ),
-            "市值": st.column_config.NumberColumn("市值(現價×股數)", disabled=True, format="localized"),
         },
     )
     st.caption(
