@@ -79,9 +79,13 @@ def compute_position_and_cost_by_stock(
                 sum_remaining_qty_from_lots += rem
         remaining_buy_fee = total_buy_fee_raw - matched_buy_fee
         remaining_cost = sum_remaining_from_lots + remaining_buy_fee
+        # 純成交均價（不含手續費）：剩餘庫存的每股買進價
+        unit_price = (sum_remaining_from_lots / sum_remaining_qty_from_lots) if sum_remaining_qty_from_lots else 0.0
         if sum_remaining_qty_from_lots != q and q and sum_remaining_qty_from_lots > 0 and sum_remaining_qty_from_lots >= q:
-            remaining_cost = (sum_remaining_from_lots / sum_remaining_qty_from_lots) * q + remaining_buy_fee
+            remaining_cost = unit_price * q + remaining_buy_fee
         elif not q:
             remaining_cost = 0.0
-        result[sid] = {"qty": q, "cost": remaining_cost}
+        # gross_cost = 不含手續費的總成交金額（對應「成交均價」）
+        gross_cost = unit_price * q
+        result[sid] = {"qty": q, "cost": remaining_cost, "gross_cost": gross_cost, "avg_price": unit_price}
     return result

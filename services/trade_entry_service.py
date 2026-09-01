@@ -408,6 +408,7 @@ def build_holdings_summary(
         qty = info["qty"]
         cost = info["cost"]
         avg = cost / qty if qty else 0.0
+        avg_price = info.get("avg_price", (info.get("gross_cost", 0.0) / qty if qty else 0.0))  # 成交均價（不含手續費）
         quote = get_quote_fn(sid) if get_quote_fn else None
         price = float(quote["price"]) if quote else avg
         chg_pct = float(quote.get("change_pct", 0)) if quote else 0.0
@@ -418,6 +419,7 @@ def build_holdings_summary(
             "stock_id": sid,
             "name": (getattr(m, "name", None) or sid) if m else sid,
             "qty": qty,
+            "avg_price": round(avg_price, 4),  # 成交均價（不含手續費）
             "avg_cost": round(avg, 4),
             "total_cost": round(cost, 0),  # 總持股成本（已含買進手續費）
             "price": price,

@@ -205,10 +205,10 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
 
 
 # 持股表格欄寬與對齊（表頭與資料列必須一致）
-_HOLD_COL_WIDTHS = [1.7, 0.8, 0.9, 0.95, 0.9, 1.05, 1.2, 1.15, 0.8]
-_HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "持股成本均價", "總成本", "未實現", ""]
-_HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
-_HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "right", "center"]
+_HOLD_COL_WIDTHS = [1.6, 0.75, 0.85, 0.9, 0.82, 1.0, 1.1, 1.15, 1.1, 0.78]
+_HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "成交均價", "持股成本均價", "總成本", "未實現", ""]
+_HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
+_HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "right", "right", "center"]
 
 
 def _quote_color(change) -> str:
@@ -246,6 +246,7 @@ def _render_holdings_header():
 
 def _render_holding_row(row: dict, sid: str, open_now: bool):
     cols = st.columns(_HOLD_COL_WIDTHS)
+    avg_price = f"{row.get('avg_price', 0):.2f}" if row["qty"] else "—"
     avg = f"{row['avg_cost']:.2f}" if row["qty"] else "—"
     total_cost = f'{row.get("total_cost", 0):,.0f}' if row["qty"] else "—"
     change = row.get("change", 0)
@@ -255,16 +256,17 @@ def _render_holding_row(row: dict, sid: str, open_now: bool):
         _html_price_colored(row["price"], change),
         _html_change_arrow(change, row["change_pct"]),
         f'{row["qty"]:,}',
+        avg_price,
         avg,
         total_cost,
         _html_pnl_amount(row["unrealized"]),
     ]
-    for c, v, jc in zip(cols[:8], values, _HOLD_JUSTIFY[:8]):
+    for c, v, jc in zip(cols[:9], values, _HOLD_JUSTIFY[:9]):
         c.markdown(
             f'<div class="te-hold-td" style="justify-content:{jc}">{v}</div>',
             unsafe_allow_html=True,
         )
-    with cols[8]:
+    with cols[9]:
         if st.button(
             "收合" if open_now else "輸入",
             key=f"te_toggle_{sid}",
@@ -1293,6 +1295,7 @@ for sid in extra_sids:
         "stock_id": sid,
         "name": (getattr(m, "name", None) or sid) if m else sid,
         "qty": 0,
+        "avg_price": 0.0,
         "avg_cost": 0.0,
         "total_cost": 0.0,
         "price": price,
