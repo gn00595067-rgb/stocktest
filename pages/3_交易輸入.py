@@ -1316,6 +1316,45 @@ if holdings:
 else:
     st.info("目前無持倉。請用上方「新增股票」加入標的，或至主檔/設定載入種子資料。")
 
+# ---------- 已清空標的（全部賣出、目前 0 股）：持股列不會顯示，這裡提供刪除入口 ----------
+_trader_trades = [t for t in trades if (not trader or (t.user or "").strip() == (trader or "").strip())]
+_all_traded_sids = {str(t.stock_id).strip() for t in _trader_trades if getattr(t, "stock_id", None)}
+_open_sids = {h["stock_id"] for h in holdings if h.get("qty", 0) > 0}
+_manual_sids = set(st.session_state.get("te_added_stocks", []))
+_closed_sids = sorted(_all_traded_sids - _open_sids - _manual_sids - {""})
+if _closed_sids:
+    with st.expander(f"🗑 已清空標的（全部賣出、目前 0 股，共 {len(_closed_sids)} 檔）— 刪除測試／歷史資料", expanded=False):
+        st.caption("這些標的已全數賣出（0 股），不會出現在上方持股列。若是測試或想清掉，可在此刪除其全部交易紀錄。")
+        _cnames = {sid: f"{sid} {getattr(masters.get(sid), 'name', None) or ''}".strip() for sid in _closed_sids}
+        _pick = st.selectbox(
+            "選擇要刪除的標的",
+            options=_closed_sids,
+            format_func=lambda s: _cnames.get(s, s),
+            key="te_closed_pick",
+        )
+        _pick_tx = [t for t in _trader_trades if str(t.stock_id).strip() == _pick]
+        if not can_access_trader(trader):
+            st.caption("（僅本人或管理者可刪除）")
+        else:
+            st.warning(f"將刪除 **{trader}** 在 **{_cnames.get(_pick, _pick)}** 的全部 **{len(_pick_tx)}** 筆交易與相關沖銷配對，無法復原。")
+            _cfm = st.checkbox("我了解，確認刪除此標的全部紀錄", key="te_closed_confirm")
+            if st.button("🗑 確認刪除", key="te_closed_del", disabled=not _cfm, use_container_width=True):
+                _dsess = get_session()
+                try:
+                    _ids = [int(t.id) for t in _pick_tx]
+                    for _tid in _ids:
+                        _dsess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == _tid).delete()
+                        _dsess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == _tid).delete()
+                        _dsess.query(Trade).filter(Trade.id == _tid).delete()
+                    _dsess.commit()
+                    st.success(f"已刪除 {_cnames.get(_pick, _pick)} 全部 {len(_ids)} 筆交易紀錄（含沖銷配對）")
+                    st.rerun()
+                except Exception as e:
+                    _dsess.rollback()
+                    st.error(str(e))
+                finally:
+                    _dsess.close()
+
 st.divider()
 st.subheader("當日全部成交")
 sess = get_session()
