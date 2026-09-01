@@ -419,6 +419,7 @@ def build_holdings_summary(
             "name": (getattr(m, "name", None) or sid) if m else sid,
             "qty": qty,
             "avg_cost": round(avg, 4),
+            "total_cost": round(cost, 0),  # 總持股成本（已含買進手續費）
             "price": price,
             "change": round(change, 2),
             "change_pct": chg_pct,
