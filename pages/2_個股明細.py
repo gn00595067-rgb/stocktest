@@ -216,10 +216,18 @@ if detail_users:
 # ---------- 匯出 Excel ----------
 buffer = io.BytesIO()
 with pd.ExcelWriter(buffer, engine="openpyxl") as w:
+    _wrote_any = False
     if not sold_df.empty:
         sold_df.to_excel(w, sheet_name="已出售", index=False)
+        _wrote_any = True
     if not inv_df.empty:
         inv_df.to_excel(w, sheet_name="庫存", index=False)
+        _wrote_any = True
+    if not _wrote_any:
+        # 兩張表都空時仍需至少一張工作表，否則 openpyxl 存檔會 IndexError
+        pd.DataFrame({"說明": [f"{company_label} 目前無『已出售』與『庫存』明細"]}).to_excel(
+            w, sheet_name="說明", index=False
+        )
 st.download_button(
     "匯出 Excel（已出售＋庫存）",
     data=buffer.getvalue(),
