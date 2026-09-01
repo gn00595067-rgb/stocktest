@@ -135,6 +135,8 @@ def _build_df(scope_trades):
             "交割應收": settle_in,
             "交割應付": settle_out,
             "單筆損益": round(float(pnl_by_sell_id.get(t.id, 0)), 0) if side == "SELL" else None,
+            # 原始未湊整的每筆損益，供「當日已實現損益」總額只在最後 round 一次（與已實現損益頁一致）
+            "_pnl_raw": float(pnl_by_sell_id.get(t.id, 0)) if side == "SELL" else None,
             "當沖": bool(getattr(t, "is_daytrade", False)),
             "備註": (getattr(t, "note", "") or "")[:40],
         })
@@ -155,6 +157,11 @@ def _build_df(scope_trades):
 
 
 def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
+    # 「當日已實現損益」以原始未湊整值加總、最後 round 一次，與已實現損益頁口徑一致
+    realized = round(float(df["_pnl_raw"].fillna(0).sum())) if "_pnl_raw" in df.columns else (
+        float(df["單筆損益"].fillna(0).sum()) if "單筆損益" in df.columns else 0.0
+    )
+    df = df.drop(columns=["_pnl_raw"]) if "_pnl_raw" in df.columns else df
     fmt = {
         "股數": "{:,.0f}",
         "價格": "{:,.2f}",
@@ -175,7 +182,6 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
     total_in = float(df["交割應收"].sum())
     total_out = float(df["交割應付"].sum())
     net = total_in - total_out
-    realized = float(df["單筆損益"].fillna(0).sum()) if "單筆損益" in df.columns else 0.0
 
     st.markdown("---")
     st.subheader("交割加總")

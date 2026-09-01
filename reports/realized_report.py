@@ -10,7 +10,7 @@ from typing import Optional, List, Tuple, Dict
 
 import pandas as pd
 
-from reports.stock_detail_report import build_stock_sold_df
+from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 
 
 LEDGER_COLUMNS = [
@@ -40,28 +40,42 @@ def build_realized_ledger(
 
     rows: List[dict] = []
     for sid in stock_ids:
-        sold_df, _rev = build_stock_sold_df(sid, trades, masters, policy, custom_rules=custom_rules)
-        if sold_df is None or sold_df.empty:
+        st_tr = [t for t in trades if str(getattr(t, "stock_id", "")).strip() == sid]
+        buys = [
+            Lot(t.id, int(t.quantity or 0), float(t.price or 0), str(t.trade_date))
+            for t in st_tr if (getattr(t, "side", "") or "").strip().upper() in ("BUY", "配股")
+        ]
+        sells = [
+            Lot(t.id, int(t.quantity or 0), float(t.price or 0), str(t.trade_date))
+            for t in st_tr if (getattr(t, "side", "") or "").strip().upper() == "SELL"
+        ]
+        if not buys or not sells:
             continue
+        matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
+        trade_by_id = {t.id: t for t in st_tr}
         m = masters.get(sid)
         name = getattr(m, "name", None) or ""
         industry = (getattr(m, "industry_name", None) or "") or "其他"
-        for _, r in sold_df.iterrows():
-            bd = _to_date(r.get("買賣日"))
-            sd = _to_date(r.get("出售日"))
+        for mt in matches:
+            buy_id, sell_id, qty, buy_price, sell_price, _pnl_gross = mt
+            buy_t = trade_by_id.get(buy_id)
+            sell_t = trade_by_id.get(sell_id)
+            if not buy_t or not sell_t:
+                continue
+            # 淨損益保留「原始未四捨五入」值，供加總時只在最後 round 一次，避免逐筆湊整累積誤差
+            net = net_pnl_for_match(mt, trade_by_id)
+            buy_fee = float(buy_t.fee or 0) * (qty / buy_t.quantity) if buy_t.quantity else 0.0
+            sell_fee = float(sell_t.fee or 0) * (qty / sell_t.quantity) if sell_t.quantity else 0.0
+            tax = float(sell_t.tax or 0) * (qty / sell_t.quantity) if sell_t.quantity else 0.0
+            buy_cost = qty * buy_price + buy_fee
+            sell_amount = qty * sell_price
+            bd = _to_date(buy_t.trade_date)
+            sd = _to_date(sell_t.trade_date)
             hold_days = (sd - bd).days if (bd and sd) else None
-            qty = int(r.get("股數") or 0)
-            buy_price = float(r.get("股價") or 0)
-            sell_price = float(r.get("賣價") or 0)
-            buy_cost = float(r.get("買股票支出") or 0)          # 含買進手續費
-            sell_amount = float(r.get("賣出金額") or 0)
-            buy_fee = float(r.get("手續費") or 0)
-            sell_fee = float(r.get("賣出手續費") or 0)
-            tax = float(r.get("證交稅") or 0)
-            net = float(r.get("單筆損益") or 0)
+            is_day = bool(getattr(sell_t, "is_daytrade", False)) or (buy_t.trade_date == sell_t.trade_date)
             ret_pct = (net / buy_cost * 100) if buy_cost else 0.0
             rows.append({
-                "買賣人": r.get("買賣人") or "",
+                "買賣人": (getattr(buy_t, "user", None) or ""),
                 "代號": sid,
                 "名稱": name,
                 "產業": industry,
@@ -77,9 +91,9 @@ def build_realized_ledger(
                 "賣手續費": round(sell_fee, 0),
                 "證交稅": round(tax, 0),
                 "總費用": round(buy_fee + sell_fee + tax, 0),
-                "淨損益": round(net, 0),
+                "淨損益": net,          # 原始值；顯示端以 {:,.0f} 四捨五入，加總以原始值算
                 "報酬率%": round(ret_pct, 2),
-                "當沖": bool(r.get("當沖")),
+                "當沖": is_day,
             })
 
     if not rows:
