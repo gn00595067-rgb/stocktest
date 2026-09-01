@@ -15,7 +15,7 @@ from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
-from services.prefs import resolve_default_trader
+from services.prefs import resolve_default_trader, shared_policy_selectbox
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -97,7 +97,7 @@ def _compute_pnl_by_sell_ids(all_trades, sell_ids: set[int]) -> dict:
         ]
         if not buys or not sells:
             continue
-        matches = compute_matches(buys, sells, "CUSTOM_PLUS_FIFO", custom_rules=custom_rules)
+        matches = compute_matches(buys, sells, policy, custom_rules=custom_rules)
         for m in matches:
             _buy_id, sell_id, _qty, _bp, _sp, _ = m
             if sell_id in sell_ids:
@@ -209,6 +209,14 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
         key=f"dl_{dl_key}",
     )
 
+
+# 沖銷方式：與「已實現損益」頁共用（改一頁另一頁同步），讓兩頁已實現口徑一致
+_pc1, _pc2 = st.columns([1.3, 3])
+with _pc1:
+    policy = shared_policy_selectbox("沖銷方式")
+with _pc2:
+    st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
+    st.caption("此設定與「已實現損益」頁同步，改這裡兩頁的已實現配對口徑會一起變。")
 
 tab_day, tab_range = st.tabs(["當日交易明細", "區間交易明細"])
 

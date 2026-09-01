@@ -17,7 +17,7 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
-from services.prefs import resolve_default_trader
+from services.prefs import resolve_default_trader, shared_policy_selectbox
 from reports.realized_report import (
     build_realized_ledger, summarize_ledger, aggregate_by, monthly_series, LEDGER_COLUMNS,
 )
@@ -56,18 +56,11 @@ if not all_trades:
 
 # ---------- 篩選 ----------
 st.markdown("#### 篩選條件")
-policy_labels = {
-    "CUSTOM_ONLY": "僅自定沖銷",
-    "CUSTOM_PLUS_FIFO": "先進先出（未定部分）",
-    "CUSTOM_PLUS_CONSERVATIVE": "保守（未定部分）",
-    "CUSTOM_PLUS_OPTIMISTIC": "樂觀（未定部分）",
-    "CUSTOM_PLUS_MEAN": "均值配對（未定部分）",
-}
 users = sorted({(t.user or "").strip() for t in all_trades if (t.user or "").strip()})
 
 fc1, fc2, fc3 = st.columns([1.2, 1.4, 1.4])
 with fc1:
-    policy = st.selectbox("沖銷方式", list(policy_labels.keys()), format_func=lambda x: policy_labels.get(x, x))
+    policy = shared_policy_selectbox("沖銷方式")
 with fc2:
     _rz_def = resolve_default_trader(users)
     picked_users = st.multiselect("買賣人（可多選，空=全部）", options=users, default=([_rz_def] if _rz_def else []))
