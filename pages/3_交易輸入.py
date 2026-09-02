@@ -1256,8 +1256,9 @@ period_total, _ = compute_realized_in_range(
     trades, trader, period_start, period_end, custom_rules, policy
 )
 unrealized_total = sum(h["unrealized"] for h in holdings)
+market_value_total = sum(h["market_value"] for h in holdings)
 
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric(
     "① 當日已實現",
     f"{daily_total:,.0f}",
@@ -1274,6 +1275,11 @@ k3.metric(
     help="以即時價（TWSE 官方報價，盤中約每 5 秒更新）估算，未扣未來賣出費稅",
 )
 k4.metric(
+    "④ 持倉總市值",
+    f"{market_value_total:,.0f}",
+    help="所有持股「即時價 × 持有股數」的加總（TWSE 官方報價）。零股與券商/奇摩因整股vs零股收盤價、抓價時點不同，可能差幾檔屬正常。",
+)
+k5.metric(
     "盤中合計參考",
     f"{daily_total + unrealized_total:,.0f}",
     help="當日已實現 + 未實現（快速掌握盤中狀態）",
