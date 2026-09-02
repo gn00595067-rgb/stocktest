@@ -166,6 +166,29 @@ def _inject_trade_entry_css():
             overflow: hidden;
             text-overflow: ellipsis;
         }
+        /* KPI 摘要（6 欄）：縮小數字字級、單行不換行、縮小欄距，避免大數字被擠成「23,631,...」 */
+        div[data-testid="stMetric"] {
+            padding-left: 0.1rem;
+            padding-right: 0.1rem;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 1.15rem;
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: visible;
+            line-height: 1.25;
+        }
+        div[data-testid="stMetricValue"] > div {
+            white-space: nowrap;
+            overflow: visible;
+        }
+        div[data-testid="stMetricLabel"] {
+            font-size: 0.78rem;
+        }
+        div[data-testid="stMetricLabel"] p {
+            font-size: 0.78rem;
+            white-space: nowrap;
+        }
         </style>
         """,
         unsafe_allow_html=True,
