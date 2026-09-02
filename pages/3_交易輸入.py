@@ -420,11 +420,16 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
         }
         for t in stock_ts
     ])
+    # 全部展開：依列數把 data_editor 高度撐到剛好容納所有列，取消內部捲動
+    # Streamlit 每列約 35px、表頭約 35px、dynamic 會多一列可新增列 + 邊框緩衝
+    _row_h = 35
+    _full_h = _row_h * (len(df) + 2) + 3
     edited = st.data_editor(
         df,
         key=f"te_txedit_{sid}",
         hide_index=True,
         use_container_width=True,
+        height=_full_h,
         num_rows="dynamic",
         column_config={
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
