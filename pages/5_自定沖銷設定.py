@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 from services.price_service import get_quote_cached, fetch_stock_list_cached
 from services.position_cost import compute_position_and_cost_by_stock
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
+from services.trader_service import all_trader_names
 
 st.set_page_config(page_title="自定沖銷設定", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -65,7 +66,8 @@ except Exception:
 
 # 依交易 ID 查詢
 trade_by_id = {t.id: t for t in trades}
-custom_users = sorted(set(t.user for t in trades if getattr(t, "user", None)))
+# 純管理者頁：買賣人可選主檔 ∪ 交易出現過（含剛新增、還沒交易的）
+custom_users = sorted(set(t.user for t in trades if getattr(t, "user", None)) | set(all_trader_names()))
 sells = [t for t in trades if (t.side or "").strip().upper() == "SELL"]
 buys = [t for t in trades if (t.side or "").strip().upper() in ("BUY", "配股")]
 

@@ -29,6 +29,7 @@ from services.auth_service import (
 from reports.portfolio_report import build_portfolio_df
 from reports.stock_detail_report import build_stock_detail
 from services.prefs import resolve_default_trader
+from services.trader_service import all_trader_names
 from services.price_service import get_quote_cached, fetch_daily_prices
 from services.pnl_engine import Lot, compute_matches
 
@@ -525,7 +526,8 @@ with st.container():
         sess.close()
         all_trades = filter_trades_by_permission(all_trades)
         if is_admin():
-            portfolio_users = sorted(set(t.user for t in all_trades if getattr(t, "user", None)))
+            # 主檔 ∪ 交易出現過：剛新增、還沒交易的買賣人也能篩選
+            portfolio_users = all_trader_names()
         else:
             portfolio_users = get_allowed_traders() or []
     except OperationalError:

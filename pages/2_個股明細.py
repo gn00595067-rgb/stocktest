@@ -13,8 +13,9 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from reports.stock_detail_report import build_stock_detail
-from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission, is_admin
 from services.prefs import resolve_default_trader
+from services.trader_service import all_trader_names
 
 st.set_page_config(page_title="個股明細", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -41,7 +42,9 @@ except Exception:
 
 # 有交易紀錄的股票清單與買賣人
 stock_ids = sorted(set(t.stock_id for t in trades))
-detail_users = sorted(set(t.user for t in trades if getattr(t, "user", None)))
+_detail_used = sorted(set(t.user for t in trades if getattr(t, "user", None)))
+# 管理者：補上主檔中「還沒交易」的買賣人；一般帳號維持只看被權限限縮後出現的
+detail_users = sorted(set(_detail_used) | set(all_trader_names())) if is_admin() else _detail_used
 if not stock_ids:
     st.info("尚無交易，無法顯示個股明細")
     st.stop()

@@ -16,8 +16,9 @@ ensure_google_sheet_loaded()
 from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
-from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission, is_admin
 from services.prefs import resolve_default_trader, shared_policy_selectbox
+from services.trader_service import all_trader_names
 from reports.realized_report import (
     build_realized_ledger, summarize_ledger, aggregate_by, monthly_series, LEDGER_COLUMNS,
 )
@@ -56,7 +57,9 @@ if not all_trades:
 
 # ---------- 篩選 ----------
 st.markdown("#### 篩選條件")
-users = sorted({(t.user or "").strip() for t in all_trades if (t.user or "").strip()})
+_used = sorted({(t.user or "").strip() for t in all_trades if (t.user or "").strip()})
+# 管理者：補上主檔中「還沒交易」的買賣人；一般帳號維持只看被權限限縮後出現的
+users = sorted(set(_used) | set(all_trader_names())) if is_admin() else _used
 
 fc1, fc2, fc3 = st.columns([1.2, 1.4, 1.4])
 with fc1:

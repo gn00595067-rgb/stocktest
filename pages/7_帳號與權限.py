@@ -3,7 +3,8 @@
 import streamlit as st
 
 from db.database import get_session, get_engine
-from db.models import Trade, UserAccount, UserTraderBinding
+from db.models import UserAccount, UserTraderBinding
+from services.trader_service import all_trader_names
 from services.auth_service import (
     ROLE_ADMIN,
     ROLE_USER,
@@ -39,11 +40,8 @@ if not is_admin():
 st.title("帳號與權限管理")
 st.caption("角色分為管理者 / 一般。一般帳號可綁定多位買賣人，只能查看與操作綁定資料。")
 
-sess = get_session()
-try:
-    trader_names = sorted({x[0] for x in sess.query(Trade.user).distinct().all() if x[0]})
-finally:
-    sess.close()
+# 買賣人可綁定名單＝主檔 ∪ 交易出現過（含剛新增、還沒任何交易的買賣人）
+trader_names = all_trader_names()
 
 st.subheader("新增帳號")
 with st.form("create_user_form", clear_on_submit=True):

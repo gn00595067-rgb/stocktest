@@ -14,8 +14,9 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
-from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission, is_admin
 from services.prefs import resolve_default_trader, shared_policy_selectbox
+from services.trader_service import all_trader_names
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -46,7 +47,9 @@ if not trades:
     st.stop()
 
 stock_ids = sorted(set(str(t.stock_id).strip() for t in trades if getattr(t, "stock_id", None)))
-users = sorted(set((getattr(t, "user", None) or "").strip() for t in trades if getattr(t, "user", None)))
+_used = sorted(set((getattr(t, "user", None) or "").strip() for t in trades if getattr(t, "user", None)))
+# 管理者：補上主檔中「還沒交易」的買賣人；一般帳號維持只看被權限限縮後出現的
+users = sorted(set(_used) | set(all_trader_names())) if is_admin() else _used
 dates = sorted({t.trade_date for t in trades if getattr(t, "trade_date", None)})
 
 def _stock_label(sid: str) -> str:

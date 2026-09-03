@@ -18,6 +18,29 @@ def list_trader_names() -> list[str]:
         sess.close()
 
 
+def all_trader_names() -> list[str]:
+    """買賣人主檔 ∪ 交易中曾出現的買賣人（依名稱排序、去重）。
+
+    供管理者在「權限綁定 / 各頁篩選」時使用：連「剛在主檔新增、還沒有任何
+    交易」的買賣人也選得到（否則只列 Trade.user 會漏掉新名字）。
+    非管理者請勿使用此清單（會外洩全部買賣人）；非管理者一律用 get_allowed_traders()。
+    """
+    sess = get_session()
+    try:
+        master = [r.name for r in sess.query(Trader).order_by(Trader.id).all() if r.name]
+        used = [u[0] for u in sess.query(Trade.user).distinct().all() if u[0]]
+    finally:
+        sess.close()
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in list(master) + list(used):
+        n2 = (n or "").strip()
+        if n2 and n2 not in seen:
+            seen.add(n2)
+            out.append(n2)
+    return sorted(out)
+
+
 def ensure_traders_seeded() -> None:
     """名單為空時，用既有交易中出現過的買賣人自動補齊（保留原有資料，方便首次使用）。"""
     sess = get_session()

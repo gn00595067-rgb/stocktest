@@ -29,6 +29,7 @@ from services.auth_service import (
 )
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.prefs import resolve_default_trader
+from services.trader_service import all_trader_names
 from services.price_service import get_quote_cached
 from services.position_cost import compute_position_and_cost_by_stock
 
@@ -90,9 +91,8 @@ if btn_all:
 # 先查詢買賣人列表（供篩選用）
 try:
     if is_admin():
-        _sess = get_session()
-        pl_users = sorted(set(u[0] for u in _sess.query(Trade.user).distinct().all() if u[0]))
-        _sess.close()
+        # 主檔 ∪ 交易出現過：剛新增、還沒交易的買賣人也能篩選
+        pl_users = all_trader_names()
     else:
         pl_users = get_allowed_traders() or []
 except OperationalError:

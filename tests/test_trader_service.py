@@ -50,6 +50,24 @@ def test_delete_missing_rejected(mem_session):
     assert ok is False
 
 
+def test_all_trader_names_union_master_and_trades(mem_session):
+    """主檔 ∪ 交易出現過：含『剛新增、還沒任何交易』的買賣人，且去重排序。"""
+    from datetime import date
+    # 交易裡有 Peggy、王小姐；主檔另外新增了還沒交易的雅雲姐
+    sess = mem_session()
+    sess.add_all([
+        Trade(user="Peggy", stock_id="2330", trade_date=date(2026, 1, 2), side="BUY", price=1000, quantity=1000),
+        Trade(user="王小姐", stock_id="2317", trade_date=date(2026, 1, 3), side="BUY", price=100, quantity=1000),
+    ])
+    sess.commit()
+    sess.close()
+    ts.add_trader("雅雲姐")  # 只在主檔，還沒任何交易
+
+    names = ts.all_trader_names()
+    # 三個都要在（含還沒交易的雅雲姐），排序去重
+    assert names == sorted({"Peggy", "王小姐", "雅雲姐"})
+
+
 def test_seed_from_existing_trades(mem_session):
     from datetime import date
     sess = mem_session()
