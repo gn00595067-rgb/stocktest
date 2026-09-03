@@ -839,7 +839,7 @@ def _render_stock_trade_panel(
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("市值", f"{row['market_value']:,.0f}")
         c2.metric("當日已實現", _fmt_pnl(row["realized_today"]), delta_color=_pnl_delta_color(row["realized_today"]))
-        c3.metric("期間已實現", _fmt_pnl(row["realized_period"]), delta_color=_pnl_delta_color(row["realized_period"]))
+        c3.metric("當月已實現", _fmt_pnl(row["realized_period"]), delta_color=_pnl_delta_color(row["realized_period"]))
         c4.metric("未實現", _fmt_pnl(row["unrealized"]), delta_color=_pnl_delta_color(row["unrealized"]))
 
         pos_map = compute_position_and_cost_by_stock(
@@ -1035,22 +1035,46 @@ def _render_stock_trade_panel(
                     f"依目前配對，預估本次賣出淨損益：**{_fmt_pnl(est_realized)}** 元"
                     "（含手續費與證交稅）"
                 )
+            confirm_key = f"te_confirm_{sid}"
+            # 第一步：按「送出」→ 先驗證 → 進入確認（此步不寫入 DB）
             if st.button("✅ 送出此筆交易", key=f"te_submit_{sid}", type="primary"):
+                _ok = True
                 if not can_access_trader(trader):
-                    st.error("無此買賣人權限。")
-                    return
-                if float(price) <= 0 or int(quantity) <= 0:
-                    st.error("請先輸入成交價與股數。")
-                    return
-                if side == "SELL" and open_lots:
+                    st.error("無此買賣人權限。"); _ok = False
+                elif float(price) <= 0 or int(quantity) <= 0:
+                    st.error("請先輸入成交價與股數。"); _ok = False
+                elif side == "SELL" and open_lots:
                     if not match_plan and not st.session_state.get("te_auto_fifo"):
-                        st.error("請設定沖銷配對，或勾選上方「賣出未配對時自動先進先出」。")
-                        return
-                    plan_sum = sum(q for _, q in match_plan)
-                    if match_plan and plan_sum != int(quantity):
-                        st.error("請調整沖銷配對，使合計股數等於賣出股數。")
-                        return
-                # 防連點：2 秒內送出「同一筆」（同股同方向同價量同日同買賣人）視為重複點擊，忽略
+                        st.error("請設定沖銷配對，或勾選上方「賣出未配對時自動先進先出」。"); _ok = False
+                    else:
+                        _ps = sum(q for _, q in match_plan)
+                        if match_plan and _ps != int(quantity):
+                            st.error("請調整沖銷配對，使合計股數等於賣出股數。"); _ok = False
+                if _ok:
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+
+            # 第二步：確認框（普通網站的「再確認一次」機制，避免誤送/重複送）
+            do_submit = False
+            if st.session_state.get(confirm_key):
+                _act = "買進" if side == "BUY" else "賣出"
+                st.warning(
+                    f"⚠️ 確認送出這筆交易？　**{sid} {row['name']}**｜"
+                    f"**{_act} {int(quantity):,} 股 @ {float(price):.2f}**｜{entry_date}｜{trader}"
+                    + ("｜當沖" if is_daytrade else "")
+                )
+                _cy, _cn = st.columns(2)
+                with _cy:
+                    if st.button("✅ 確認送出", key=f"te_confirm_yes_{sid}", type="primary", use_container_width=True):
+                        st.session_state.pop(confirm_key, None)
+                        do_submit = True
+                with _cn:
+                    if st.button("✖ 取消", key=f"te_confirm_no_{sid}", use_container_width=True):
+                        st.session_state.pop(confirm_key, None)
+                        st.rerun()
+
+            if do_submit:
+                # 防連點：2 秒內同一筆重複視為重複點擊，忽略（確認鍵被連點也擋）
                 _sig = (sid, side, str(entry_date), float(price), int(quantity), trader, (note or ""))
                 _last = st.session_state.get("te_last_submit")
                 if _last and _last[0] == _sig and (time.monotonic() - _last[1]) < 2.0:
@@ -1258,10 +1282,6 @@ policy = st.session_state.get("te_policy_sel")
 if policy not in _POLICY_KEYS:
     policy = st.session_state.get("te_policy", "CUSTOM_PLUS_FIFO")
 st.session_state["te_policy"] = policy
-period_days = st.session_state.get("te_period_sel")
-if period_days not in _PERIOD_OPTS:
-    period_days = st.session_state.get("te_period_days", 3)
-st.session_state["te_period_days"] = period_days
 st.session_state["te_auto_fifo"] = st.session_state.get(
     "te_auto_fifo_cb", st.session_state.get("te_auto_fifo", True)
 )
@@ -1271,7 +1291,8 @@ if "te_fee_rate" in st.session_state:
 if "te_tax_rate" in st.session_state:
     st.session_state["tax_rate"] = st.session_state["te_tax_rate"]
 
-period_start = trade_date - timedelta(days=max(0, period_days - 1))
+# 當月已實現：從交易日所在月份的 1 號到交易日（月初至今）
+period_start = trade_date.replace(day=1)
 period_end = trade_date
 
 # 批次預抓即時報價（TWSE MIS 一次一包），暖快取後下面逐檔取價直接命中
@@ -1313,9 +1334,9 @@ k1.metric(
     help="賣出日=所選交易日的已實現淨損益（扣費稅）",
 )
 k2.metric(
-    "② 期間已實現",
+    "② 當月已實現",
     f"{period_total:,.0f}",
-    help=f"{period_start}～{period_end}",
+    help=f"當月已實現淨損益（扣費稅）：{period_start}～{period_end}",
 )
 k3.metric(
     "③ 持倉未實現",
@@ -1474,17 +1495,8 @@ with st.expander("報價連線狀態"):
 st.markdown("---")
 st.caption("⚙️ 以下為平常不太需要調整的設定，需要時再展開。")
 
-with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不用改）", expanded=False):
-    ac1, ac2, ac3 = st.columns([1, 1.4, 1])
-    with ac1:
-        st.selectbox(
-            "期間獲利",
-            options=_PERIOD_OPTS,
-            format_func=lambda d: {1: "今日", 3: "近3天", 7: "近1週", 30: "近1月", 180: "近半年"}[d],
-            index=_PERIOD_OPTS.index(st.session_state.get("te_period_days", 3))
-            if st.session_state.get("te_period_days", 3) in _PERIOD_OPTS else 1,
-            key="te_period_sel",
-        )
+with st.expander("⚙️ 進階設定（沖銷口徑…通常不用改）", expanded=False):
+    ac2, ac3 = st.columns([1.4, 1])
     with ac2:
         st.selectbox(
             "沖銷口徑",
@@ -1501,7 +1513,7 @@ with st.expander("⚙️ 進階設定（期間獲利、沖銷口徑…通常不�
             value=st.session_state.get("te_auto_fifo", True),
             key="te_auto_fifo_cb",
         )
-    st.caption("改動會套用到上方『當日／期間已實現』與持股損益的計算（下次互動即生效）。")
+    st.caption("改動會套用到上方『當日／當月已實現』與持股損益的計算（下次互動即生效）。")
 
 with st.expander("⚙️ 手續費 / 證交稅率（寫入交易時自動帶入）", expanded=False):
     fr, tr = get_fee_tax_rates()
