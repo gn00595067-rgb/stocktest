@@ -152,7 +152,11 @@ for u in users:
                 finally:
                     sess2.close()
 
-        if u.role == ROLE_USER:
+        # 依「角色下拉當下的選擇」即時顯示買賣人綁定區（不是等存檔後才出現）。
+        # 管理者可看全部買賣人、不需綁定，故只有選「一般」時才顯示。
+        if role == ROLE_USER:
+            if u.role != ROLE_USER:
+                st.info("此帳號目前仍是「管理者」。請先按上方『儲存帳號設定』把角色改為一般，下面的買賣人綁定才會生效。")
             selected = st.multiselect(
                 "可操作買賣人（多選）",
                 options=trader_names,
@@ -174,3 +178,5 @@ for u in users:
                         st.error(f"已更新 {u.username} 綁定，但同步到 Google Sheet 失敗：{err}")
                 finally:
                     sess3.close()
+        else:
+            st.caption("👑 管理者可檢視／操作全部買賣人，無需綁定。若要限制只能看特定買賣人，請把「角色」改為『一般』並儲存。")
