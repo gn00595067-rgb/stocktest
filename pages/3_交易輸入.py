@@ -82,7 +82,6 @@ def _init_session_defaults():
     st.session_state.setdefault("te_period_days", 3)
     st.session_state.setdefault("te_policy", "CUSTOM_PLUS_FIFO")
     st.session_state.setdefault("te_auto_fifo", True)
-    st.session_state.setdefault("te_added_stocks", [])
     st.session_state.setdefault("te_autorefresh", True)
     st.session_state.setdefault("te_ar_interval", 20)
 
@@ -102,6 +101,11 @@ def _pnl_delta_color(v):
     if v is None:
         return "off"
     return "normal" if float(v) >= 0 else "inverse"
+
+
+def _added_stocks_key(trader: str) -> str:
+    """每位買賣人各自的『手動加入股票』清單 key；避免切換買賣人時看到別人加的股。"""
+    return f"te_added_stocks::{(trader or '').strip()}"
 
 
 # 沖銷表欄寬（表頭與資料列必須一致）；末欄含股數輸入＋補滿/清0/只此快捷鈕，較寬
@@ -796,7 +800,7 @@ def _maybe_autorefresh():
     st.caption(f"🟢 自動更新中：每 {interval} 秒（僅盤中、且未展開個股時）。")
 
 
-def _render_add_stock_expander(masters: dict):
+def _render_add_stock_expander(masters: dict, trader: str):
     with st.expander("➕ 新增股票（搜尋台股代號或名稱）", expanded=False):
         kw = st.text_input("搜尋", placeholder="2330、台積電…", key="te_stock_search")
         if kw and len(kw.strip()) >= 1:
@@ -819,7 +823,7 @@ def _render_add_stock_expander(masters: dict):
                         sess = get_session()
                         _ensure_stock_in_master(sess, picked, masters)
                         sess.close()
-                        added = st.session_state.setdefault("te_added_stocks", [])
+                        added = st.session_state.setdefault(_added_stocks_key(trader), [])
                         if picked not in added:
                             added.append(picked)
                         # 手風琴：新加入並展開此檔前，先收合其他所有檔
@@ -1027,7 +1031,7 @@ def _render_stock_trade_panel(
         if not stock_ts:
             # 手動加入但還沒輸入任何交易的股：純從畫面清單移除，不動資料庫
             if st.button("✖ 從清單移除此股", key=f"te_remove_{sid}", use_container_width=True):
-                added = st.session_state.get("te_added_stocks", [])
+                added = st.session_state.get(_added_stocks_key(trader), [])
                 if sid in added:
                     added.remove(sid)
                 st.session_state.pop(f"te_open_{sid}", None)
@@ -1056,7 +1060,7 @@ def _render_stock_trade_panel(
                             sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == tid).delete()
                             sess.query(Trade).filter(Trade.id == tid).delete()
                         sess.commit()
-                        added = st.session_state.get("te_added_stocks", [])
+                        added = st.session_state.get(_added_stocks_key(trader), [])
                         if sid in added:
                             added.remove(sid)
                         st.session_state.pop(f"te_open_{sid}", None)
@@ -1172,7 +1176,7 @@ _sids_for_quote = {
     t.stock_id for t in trades
     if (not trader or (t.user or "").strip() == trader.strip())
 }
-_sids_for_quote |= set(st.session_state.get("te_added_stocks", []))
+_sids_for_quote |= set(st.session_state.get(_added_stocks_key(trader), []))
 if _sids_for_quote:
     _ex_map = {sid: getattr(masters.get(sid), "exchange", None) for sid in _sids_for_quote}
     get_quotes_cached(list(_sids_for_quote), exchanges=_ex_map)
@@ -1208,7 +1212,7 @@ _render_kpi(k4, "④ 已投入成本", invested_cost_total, "目前持股的總�
 _render_kpi(k5, "⑤ 持倉總市值", market_value_total, "所有持股「即時價 × 持有股數」的加總（TWSE 官方報價）。零股與券商/奇摩因整股vs零股收盤價、抓價時點不同，可能差幾檔屬正常。", pnl=False)
 _render_kpi(k6, "盤中合計參考", daily_total + unrealized_total, "當日已實現 + 未實現（快速掌握盤中狀態）")
 
-_render_add_stock_expander(masters)
+_render_add_stock_expander(masters, trader)
 
 # 今日有交易但已無持倉的標的
 today_trades_all = [
@@ -1218,7 +1222,7 @@ today_trades_all = [
 today_sids = {t.stock_id for t in today_trades_all}
 holding_sids = {h["stock_id"] for h in holdings}
 # 手動「加入持倉列表」但尚未有交易的股票，也補一列（0 股）供輸入第一筆買進
-manual_sids = set(st.session_state.get("te_added_stocks", []))
+manual_sids = set(st.session_state.get(_added_stocks_key(trader), []))
 # 該買賣人所有曾交易過的標的（含已全部賣出＝0 股者），一律保留在持股列表，
 # 要刪就點該股展開後自行刪除（不另設「已清空」區）。
 traded_sids = {
