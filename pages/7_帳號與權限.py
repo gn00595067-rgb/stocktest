@@ -5,7 +5,7 @@ from sqlalchemy import func
 
 from db.database import get_session, get_engine
 from db.models import UserAccount, UserTraderBinding
-from services.trader_service import all_trader_names
+from services.trader_service import all_trader_names, ensure_traders_seeded
 from services.auth_service import (
     ROLE_ADMIN,
     ROLE_USER,
@@ -41,8 +41,15 @@ if not is_admin():
 st.title("帳號與權限管理")
 st.caption("角色分為管理者 / 一般。一般帳號可綁定多位買賣人，只能查看與操作綁定資料。")
 
-# 買賣人可綁定名單＝主檔 ∪ 交易出現過（含剛新增、還沒任何交易的買賣人）
+# 買賣人可綁定名單＝主檔 ∪ 交易出現過（含剛新增、還沒任何交易的買賣人）。
+# 先用既有交易自動補回買賣人主檔（重開機/重載後主檔可能為空，交易卻還在）。
+ensure_traders_seeded()
 trader_names = all_trader_names()
+if not trader_names:
+    st.warning(
+        "目前沒有任何買賣人可綁定。請先到「交易輸入」頁的『管理買賣人名單』新增買賣人"
+        "（例如：王小姐），或先輸入一筆該買賣人的交易；買賣人建立後，這裡就能綁定。"
+    )
 
 st.subheader("新增帳號")
 with st.form("create_user_form", clear_on_submit=True):
@@ -157,10 +164,13 @@ for u in users:
         if role == ROLE_USER:
             if u.role != ROLE_USER:
                 st.info("此帳號目前仍是「管理者」。請先按上方『儲存帳號設定』把角色改為一般，下面的買賣人綁定才會生效。")
+            _bound = bind_map.get(int(u.id), set())
+            # 選項永遠含「此帳號已綁的名字」，即使主檔暫時查不到也不會弄丟既有綁定
+            _opts = sorted(set(trader_names) | set(_bound))
             selected = st.multiselect(
                 "可操作買賣人（多選）",
-                options=trader_names,
-                default=sorted(bind_map.get(int(u.id), set())),
+                options=_opts,
+                default=sorted(_bound),
                 key=f"binds_{u.id}",
             )
             if st.button("儲存綁定", key=f"save_bind_{u.id}"):
