@@ -221,6 +221,27 @@ def _html_pnl_amount(amount: float, decimals: int = 0) -> str:
     return f'<span style="color:{color};font-weight:600">{text}</span>'
 
 
+def _render_kpi(col, label: str, value, help_text: str = "", pnl: bool = True) -> None:
+    """KPI 卡：損益數字上色（賠=紅、賺=藍、中性不上色）並保留 +/− 號；
+    非損益（成本/市值 pnl=False）不上色、不加正負號。"""
+    v = float(value or 0)
+    if pnl and v > 0:
+        color, text = "#1565c0", f"+{v:,.0f}"        # 賺 → 藍
+    elif pnl and v < 0:
+        color, text = "#c62828", f"-{abs(v):,.0f}"   # 賠 → 紅
+    elif pnl:
+        color, text = "#334155", "0"                 # 中性（0）→ 不上色
+    else:
+        color, text = "#334155", f"{v:,.0f}"         # 非損益 → 不上色、無正負號
+    col.markdown(
+        f'<div title="{help_text}">'
+        f'<div style="font-size:0.82rem;color:#64748b;white-space:nowrap">{label}</div>'
+        f'<div style="font-size:1.2rem;font-weight:700;color:{color};white-space:nowrap;line-height:1.3">{text}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _html_price_diff(sell_price: float, buy_price: float) -> str:
     """單股價差（賣價 − 買價）；台股習慣：賺紅、賠綠。"""
     diff = round(float(sell_price) - float(buy_price), 2)
@@ -1328,36 +1349,13 @@ market_value_total = sum(h["market_value"] for h in holdings)
 invested_cost_total = sum(h["total_cost"] for h in holdings)
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.metric(
-    "① 當日已實現",
-    f"{daily_total:,.0f}",
-    help="賣出日=所選交易日的已實現淨損益（扣費稅）",
-)
-k2.metric(
-    "② 當月已實現",
-    f"{period_total:,.0f}",
-    help=f"當月已實現淨損益（扣費稅）：{period_start}～{period_end}",
-)
-k3.metric(
-    "③ 持倉未實現",
-    f"{unrealized_total:,.0f}",
-    help="以即時價（TWSE 官方報價，盤中約每 5 秒更新）估算，未扣未來賣出費稅",
-)
-k4.metric(
-    "④ 已投入成本",
-    f"{invested_cost_total:,.0f}",
-    help="目前持股的總買進成本（已含買進手續費）。＝持倉總市值 − 持倉未實現。",
-)
-k5.metric(
-    "⑤ 持倉總市值",
-    f"{market_value_total:,.0f}",
-    help="所有持股「即時價 × 持有股數」的加總（TWSE 官方報價）。零股與券商/奇摩因整股vs零股收盤價、抓價時點不同，可能差幾檔屬正常。",
-)
-k6.metric(
-    "盤中合計參考",
-    f"{daily_total + unrealized_total:,.0f}",
-    help="當日已實現 + 未實現（快速掌握盤中狀態）",
-)
+# 損益數字：賠=紅、賺=藍、中性不上色、保留 +/− 號；成本/市值為中性不上色不加號
+_render_kpi(k1, "① 當日已實現", daily_total, "賣出日=所選交易日的已實現淨損益（扣費稅）")
+_render_kpi(k2, "② 當月已實現", period_total, f"當月已實現淨損益（扣費稅）：{period_start}～{period_end}")
+_render_kpi(k3, "③ 持倉未實現", unrealized_total, "以即時價（TWSE 官方報價，盤中約每 5 秒更新）估算，未扣未來賣出費稅")
+_render_kpi(k4, "④ 已投入成本", invested_cost_total, "目前持股的總買進成本（已含買進手續費）。＝持倉總市值 − 持倉未實現。", pnl=False)
+_render_kpi(k5, "⑤ 持倉總市值", market_value_total, "所有持股「即時價 × 持有股數」的加總（TWSE 官方報價）。零股與券商/奇摩因整股vs零股收盤價、抓價時點不同，可能差幾檔屬正常。", pnl=False)
+_render_kpi(k6, "盤中合計參考", daily_total + unrealized_total, "當日已實現 + 未實現（快速掌握盤中狀態）")
 
 _render_add_stock_expander(masters)
 
