@@ -2,6 +2,7 @@
 """交易輸入（仿奇摩）：持倉清單內直接 Key in 買賣，即時損益與沖銷配對"""
 import os
 import sys
+import time
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -1049,6 +1050,13 @@ def _render_stock_trade_panel(
                     if match_plan and plan_sum != int(quantity):
                         st.error("請調整沖銷配對，使合計股數等於賣出股數。")
                         return
+                # 防連點：2 秒內送出「同一筆」（同股同方向同價量同日同買賣人）視為重複點擊，忽略
+                _sig = (sid, side, str(entry_date), float(price), int(quantity), trader, (note or ""))
+                _last = st.session_state.get("te_last_submit")
+                if _last and _last[0] == _sig and (time.monotonic() - _last[1]) < 2.0:
+                    st.warning("偵測到快速重複送出，已忽略這一次（避免重複記錄）。")
+                    return
+                st.session_state["te_last_submit"] = (_sig, time.monotonic())
                 sess = get_session()
                 try:
                     t = Trade(
