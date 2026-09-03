@@ -910,21 +910,20 @@ def _render_stock_trade_panel(
                 key=f"te_r_{sid}_{_rid}_qty", label_visibility="collapsed",
             )
             _dt = _c4.checkbox("當沖", key=f"te_r_{sid}_{_rid}_dt", label_visibility="collapsed")
-            # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對
+            # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對。
+            # 用與其他欄同款的唯讀輸入框顯示，高度自動對齊（桌機/平板皆然）。
             if _p is not None and _q is not None and float(_p) > 0 and int(_q) > 0:
                 _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt)
                 _fee_txt = f"{_rf:,.0f}"
                 _tax_txt = f"{_rt:,.0f}" if _s == "SELL" else "—"  # 買進不收證交稅
             else:
                 _fee_txt = _tax_txt = "—"
-            _cfee.markdown(
-                f"<div style='padding-top:0.5rem;text-align:right;color:#334155'>{_fee_txt}</div>",
-                unsafe_allow_html=True,
-            )
-            _ctax.markdown(
-                f"<div style='padding-top:0.5rem;text-align:right;color:#334155'>{_tax_txt}</div>",
-                unsafe_allow_html=True,
-            )
+            _fk = f"te_r_{sid}_{_rid}_feeview"
+            _tk = f"te_r_{sid}_{_rid}_taxview"
+            st.session_state[_fk] = _fee_txt
+            st.session_state[_tk] = _tax_txt
+            _cfee.text_input("手續費", key=_fk, disabled=True, label_visibility="collapsed")
+            _ctax.text_input("證交稅", key=_tk, disabled=True, label_visibility="collapsed")
             _n = _c5.text_input("備註", key=f"te_r_{sid}_{_rid}_note", label_visibility="collapsed")
             with _c6:
                 if len(rowids) > 1:
