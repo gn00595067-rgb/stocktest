@@ -55,20 +55,9 @@ for sid in stock_ids:
     name = getattr(m, "name", None) or ""
     stock_options[sid] = f"{sid} {name}".strip() if name else sid
 
-c_policy, c_stock, c_user = st.columns([1, 1.5, 1])
-with c_policy:
-    policy_labels = {
-        "CUSTOM_ONLY": "僅顯示自定沖銷",
-        "CUSTOM_PLUS_FIFO": "先進先出（未定沖銷部分）",
-        "CUSTOM_PLUS_CONSERVATIVE": "保守（未定沖銷部分）",
-        "CUSTOM_PLUS_OPTIMISTIC": "樂觀（未定沖銷部分）",
-        "CUSTOM_PLUS_MEAN": "均值配對（未定沖銷部分）",
-    }
-    policy = st.selectbox(
-        "損益沖銷方式",
-        list(policy_labels.keys()),
-        format_func=lambda x: policy_labels.get(x, x),
-    )
+# 沖銷口徑固定為「自定沖銷＋其餘先進先出」（所有賣出都計入、且尊重自定沖銷規則）
+policy = "CUSTOM_PLUS_FIFO"
+c_stock, c_user = st.columns([1.5, 1])
 with c_stock:
     selected_id = st.selectbox("選擇股票", options=list(stock_options.keys()), format_func=lambda x: stock_options.get(x, x))
 with c_user:

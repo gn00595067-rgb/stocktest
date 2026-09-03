@@ -20,8 +20,9 @@ def resolve_default_trader(options: List[str]) -> Optional[str]:
     return None
 
 
-# 沖銷方式（損益配對口徑）。各頁共用同一個 session key，改一頁其他頁跟著同步。
-DEFAULT_POLICY = "CUSTOM_ONLY"
+# 沖銷方式（損益配對口徑）。固定用「自定沖銷＋其餘先進先出」：
+# 所有賣出都納入計算、且尊重自定沖銷規則。原本可切「僅自定沖銷」會漏算沒規則的賣出。
+DEFAULT_POLICY = "CUSTOM_PLUS_FIFO"
 POLICY_LABELS = {
     "CUSTOM_ONLY": "僅自定沖銷",
     "CUSTOM_PLUS_FIFO": "先進先出（未定沖銷部分）",
@@ -33,15 +34,10 @@ _SHARED_POLICY_KEY = "shared_pnl_policy"
 
 
 def shared_policy_selectbox(label: str = "沖銷方式") -> str:
-    """共用的「沖銷方式」下拉：所有頁面用同一個 session key，選擇會跨頁同步，
-    確保『已實現損益』『當日交易明細』等頁口徑一致。回傳選定的 policy 鍵。
+    """沖銷口徑固定為『自定沖銷＋其餘先進先出』，不再提供下拉切換
+    （原本可切「僅自定沖銷」會漏算沒有自定規則的賣出，造成數字偏低）。
+    保留此函式簽名讓呼叫端無需改動；改為顯示固定口徑說明並回傳固定 policy。
     """
     import streamlit as st
-    keys = list(POLICY_LABELS.keys())
-    cur = st.session_state.get(_SHARED_POLICY_KEY, DEFAULT_POLICY)
-    if cur not in keys:
-        cur = DEFAULT_POLICY
-    return st.selectbox(
-        label, keys, index=keys.index(cur),
-        format_func=lambda k: POLICY_LABELS.get(k, k), key=_SHARED_POLICY_KEY,
-    )
+    st.caption(f"{label}：自定沖銷 ＋ 其餘先進先出（固定；所有賣出都計入）")
+    return DEFAULT_POLICY

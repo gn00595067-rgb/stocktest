@@ -536,25 +536,13 @@ with st.container():
     except Exception:
         st.stop()
 
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    # 沖銷口徑固定為「自定沖銷＋其餘先進先出」（所有賣出都計入、且尊重自定沖銷規則）
+    policy = "CUSTOM_PLUS_FIFO"
+    col_f1, col_f2, col_f4 = st.columns([1, 1, 1.4])
     with col_f1:
         start_date = st.date_input("開始日期", key="portfolio_start")
     with col_f2:
         end_date = st.date_input("結束日期", key="portfolio_end")
-    with col_f3:
-        policy_labels = {
-            "CUSTOM_ONLY": "僅顯示自定沖銷",
-            "CUSTOM_PLUS_FIFO": "先進先出（未定沖銷部分）",
-            "CUSTOM_PLUS_CONSERVATIVE": "保守（未定沖銷部分）",
-            "CUSTOM_PLUS_OPTIMISTIC": "樂觀（未定沖銷部分）",
-            "CUSTOM_PLUS_MEAN": "均值配對（未定沖銷部分）",
-        }
-        policy = st.selectbox(
-            "損益沖銷方式",
-            list(policy_labels.keys()),
-            format_func=lambda x: policy_labels.get(x, x),
-            key="portfolio_policy",
-        )
     with col_f4:
         if is_admin():
             filter_user_options = ["全部"] + portfolio_users
