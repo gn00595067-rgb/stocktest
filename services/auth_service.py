@@ -231,6 +231,8 @@ def login_guard() -> None:
             if remembered:
                 st.session_state["auth_logged_in"] = True
                 st.session_state["auth_user"] = remembered
+                # 記住 token，之後每一輪都把它重寫回網址（跨頁不掉、閒置斷線也能自動登入）
+                st.session_state["_remember_token"] = str(token)
                 st.rerun()
 
     # cookie 不可用/被擋（iPad Safari）時的後備：以網址 token 自動登入
@@ -241,6 +243,7 @@ def login_guard() -> None:
             if remembered:
                 st.session_state["auth_logged_in"] = True
                 st.session_state["auth_user"] = remembered
+                st.session_state["_remember_token"] = url_token
                 st.rerun()
 
     st.title("請先登入")
@@ -278,10 +281,12 @@ def login_guard() -> None:
                     st.session_state["_pending_remember"] = token
                 # 網址 token：iPad Safari 擋 cookie 時的後備，立即寫進網址
                 _set_url_token(token)
+                st.session_state["_remember_token"] = token
                 st.session_state.pop("_remember_disabled", None)
             else:
                 st.session_state["_pending_remember_clear"] = True
                 st.session_state["_remember_disabled"] = True
+                st.session_state.pop("_remember_token", None)
                 _clear_url_token()
             st.rerun()
         finally:
@@ -307,6 +312,14 @@ def render_auth_sidebar() -> None:
         except Exception:
             pass
 
+    # 每一頁都把記住我 token 重寫回網址：Streamlit 多頁切換會把 ?rt= 洗掉，
+    # 若不補回，等 iPad 閒置斷線、session 重置時網址已無 token（cookie 又被 Safari 擋）
+    # 就會被登出。持續補回後，任何時刻斷線都能靠網址 token 自動登入。
+    if not st.session_state.get("_remember_disabled"):
+        _rt = st.session_state.get("_remember_token")
+        if _rt:
+            _set_url_token(_rt)
+
     role_text = "管理者" if user.get("role") == ROLE_ADMIN else "一般"
     st.sidebar.markdown("---")
     st.sidebar.caption(f"👤 {user.get('username')}（{role_text}）")
@@ -314,6 +327,7 @@ def render_auth_sidebar() -> None:
         # 標記清除 cookie 並略過本 session 的自動登入，交由下一輪 login_guard 刪除
         st.session_state["_pending_remember_clear"] = True
         st.session_state["_remember_disabled"] = True
+        st.session_state.pop("_remember_token", None)
         _clear_url_token()  # 一併清掉網址上的記住我 token
         st.session_state.pop("auth_logged_in", None)
         st.session_state.pop("auth_user", None)
