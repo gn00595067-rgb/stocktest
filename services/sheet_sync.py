@@ -505,21 +505,30 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                     f"這通常代表啟動時未成功從試算表載入。請『重新啟動（Reboot）app』讓它重新載入後再操作。"
                 )
 
-        # 一次批次清空 + 一次批次寫入：把原本每表 clear+update（5 表共 10 個 write 請求）
-        # 降到 2 個 write 請求，避免觸發 Google Sheets「每分鐘每人 60 write」配額（429）。
-        clear_ranges = [SHEET_TRADES, SHEET_RULES, SHEET_USERS, SHEET_USER_BINDINGS, SHEET_TRADERS]
-        _retry_on_quota(lambda: spread.values_batch_clear(body={"ranges": clear_ranges}))
+        # 安全寫回策略：先「寫入」再「修剪」，而不是先清空全部再寫。
+        # 若寫入那步失敗（如 429），試算表維持原本資料、不會被清空——
+        # 修掉先前「先清空全部、寫回失敗＝整份資料不見」的風險。
+        # 仍維持批次：1 個 batch_update + 1 個 batch_clear（僅 2 個 write 請求，避開 429 配額）。
+        sheets = [
+            (SHEET_TRADES, trades_data),
+            (SHEET_RULES, rules_data),
+            (SHEET_USERS, users_data),
+            (SHEET_USER_BINDINGS, user_bindings_data),
+            (SHEET_TRADERS, traders_data),
+        ]
         body = {
             "valueInputOption": "USER_ENTERED",
-            "data": [
-                {"range": f"{SHEET_TRADES}!A1", "values": trades_data},
-                {"range": f"{SHEET_RULES}!A1", "values": rules_data},
-                {"range": f"{SHEET_USERS}!A1", "values": users_data},
-                {"range": f"{SHEET_USER_BINDINGS}!A1", "values": user_bindings_data},
-                {"range": f"{SHEET_TRADERS}!A1", "values": traders_data},
-            ],
+            "data": [{"range": f"{title}!A1", "values": vals} for title, vals in sheets],
         }
         _retry_on_quota(lambda: spread.values_batch_update(body))
+
+        # 寫入成功後，清掉每張表「新資料列數以下」的殘留舊列（只有資料變短時才有作用）。
+        # 修剪失敗只會殘留幾列舊資料、不影響正確性，故不視為同步失敗。
+        trim_ranges = [f"{title}!A{len(vals) + 1}:Z" for title, vals in sheets]
+        try:
+            _retry_on_quota(lambda: spread.values_batch_clear(body={"ranges": trim_ranges}))
+        except Exception:
+            pass
 
         return True, None
     except Exception as e:
