@@ -9,17 +9,30 @@ from services.trade_fees import estimate_broker_fee, estimate_sell_tax, fees_for
 
 
 def test_broker_fee_standard_rate():
+    # 國泰基準：無條件捨去至整數（非四捨五入）
     # 2365 × 100 × 0.1425% = 337.0125 → 337
     assert estimate_broker_fee(2365, 100, 0.001425) == 337
-    # 487.5 × 200 × 0.1425% = 138.9375 → 139
-    assert estimate_broker_fee(487.5, 200, 0.001425) == 139
+    # 487.5 × 200 × 0.1425% = 138.9375 → floor 138（舊制四捨五入會是 139）
+    assert estimate_broker_fee(487.5, 200, 0.001425) == 138
+
+
+def test_broker_fee_floor_not_round():
+    # 明確驗證「無條件捨去」：99.99 元不進位為 100
+    # 100000 × 0.0009999 = 99.99 → floor 99
+    assert estimate_broker_fee(100000, 1, 0.0009999) == 99
+
+
+def test_broker_fee_default_rate_cathay():
+    # 預設費率 0.1425% × 2.5 折 = 0.00035625，無條件捨去
+    # 4275 × 400 × 0.00035625 = 609.1875 → 609
+    assert estimate_broker_fee(4275, 400) == 609
 
 
 def test_broker_fee_minimum_1():
     # 小額成交手續費未滿最低值以最低 1 元計
-    # 10 × 100 × 0.001425 = 1.425 → round 1，且不低於最低 1 元
+    # 10 × 100 × 0.001425 = 1.425 → floor 1，且不低於最低 1 元
     assert estimate_broker_fee(10, 100, 0.001425) == 1
-    # 更小額（round 後為 0）仍以最低 1 元計
+    # 更小額（floor 後為 0）仍以最低 1 元計
     assert estimate_broker_fee(1, 100, 0.001425) == 1
 
 

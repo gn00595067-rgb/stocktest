@@ -149,9 +149,9 @@ if uploaded:
         st.error(str(e))
 
 st.subheader("手續費/稅率設定")
-fee_rate = st.number_input("手續費率（若 trades.fee 為空則用此估算，預設 0.1425% 打 2.5 折）", value=0.00035625, format="%.6f")
+fee_rate = st.number_input("手續費率（若 trades.fee 為空則用此估算，預設 0.1425% × 2.5 折＝0.00035625，國泰基準）", value=0.00035625, format="%.8f")
 tax_rate = st.number_input("證交稅率（賣出）", value=0.003, format="%.4f")
-st.caption("trades 有填 fee/tax 則以實際為準，否則用上述估算。估算邏輯可在寫入交易時套用。")
+st.caption("trades 有填 fee/tax 則以實際為準，否則用上述估算。手續費與證交稅皆無條件捨去至整數（國泰基準）。")
 
 if "fee_rate" not in st.session_state:
     st.session_state["fee_rate"] = fee_rate

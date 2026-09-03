@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""台股手續費與證交稅估算（寫入交易時若未填 fee/tax 則套用）"""
+"""台股手續費與證交稅估算（寫入交易時若未填 fee/tax 則套用）
+
+計算基準：以國泰證券為準——手續費率 0.1425% × 2.5 折，金額一律「無條件捨去」
+到整數元（小數不計），非四捨五入。證交稅同樣無條件捨去。
+"""
+import math
 from typing import Optional, Tuple
 
 BROKER_FEE_MIN = 1.0  # 電子下單最低手續費 1 元
@@ -21,12 +26,12 @@ def get_fee_tax_rates() -> Tuple[float, float]:
 
 
 def estimate_broker_fee(price: float, quantity: int, fee_rate: Optional[float] = None) -> float:
-    """單筆成交手續費（買賣皆收，最低 1 元，四捨五入至整數）。"""
+    """單筆成交手續費（買賣皆收，最低 1 元，無條件捨去至整數，國泰基準）。"""
     if quantity <= 0 or price <= 0:
         return 0.0
     rate = fee_rate if fee_rate is not None else get_fee_tax_rates()[0]
     amount = price * quantity
-    return float(max(BROKER_FEE_MIN, round(amount * rate)))
+    return float(max(BROKER_FEE_MIN, math.floor(amount * rate)))
 
 
 def estimate_sell_tax(
@@ -36,7 +41,7 @@ def estimate_sell_tax(
     tax_rate: Optional[float] = None,
     is_daytrade: bool = False,
 ) -> float:
-    """賣出證交稅（四捨五入至整數）。
+    """賣出證交稅（無條件捨去至整數，國泰基準）。
 
     現股當沖：一般個股證交稅減半（0.3% → 0.15%）。ETF 本即 0.1%，不再另外減半。
     """
@@ -48,7 +53,7 @@ def estimate_sell_tax(
         rate = tax_rate if tax_rate is not None else get_fee_tax_rates()[1]
         if is_daytrade:
             rate = rate / 2.0  # 現股當沖證交稅減半
-    return float(round(price * quantity * rate))
+    return float(math.floor(price * quantity * rate))
 
 
 def fees_for_trade(

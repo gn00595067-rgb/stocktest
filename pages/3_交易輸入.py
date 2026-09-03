@@ -1422,8 +1422,8 @@ if day_trades:
     )
     _fr_now, _tr_now = get_fee_tax_rates()
     st.caption(
-        f"💡 **手續費公式**：成交價 × 股數 × 手續費率（目前 **{_fr_now:.4%}**），四捨五入至整數、未滿 1 元以 1 元計。"
-        f"　例：2365 × 100 × {_fr_now:.4%} ＝ {2365*100*_fr_now:.2f} → 337 元。"
+        f"💡 **手續費公式**（國泰基準）：成交價 × 股數 × 手續費率（目前 **{_fr_now:.4%}**），無條件捨去至整數、未滿 1 元以 1 元計。"
+        f"　例：2365 × 100 × {_fr_now:.4%} ＝ {2365*100*_fr_now:.2f} → {int(2365*100*_fr_now)} 元。"
         f"　賣出另收證交稅 ＝ 成交價 × 股數 × **{_tr_now:.3%}**（ETF 0.1%；勾當沖則一般個股減半為 {_tr_now/2:.3%}）。"
         "　券商若有打折，可在下方「手續費／證交稅率」或主檔設定調整費率。"
     )
@@ -1493,10 +1493,10 @@ with st.expander("⚙️ 手續費 / 證交稅率（寫入交易時自動帶入�
     fr, tr = get_fee_tax_rates()
     cfa, ctb = st.columns(2)
     with cfa:
-        st.number_input("手續費率", value=fr, format="%.6f", key="te_fee_rate")
+        st.number_input("手續費率", value=fr, format="%.8f", key="te_fee_rate")
     with ctb:
         st.number_input("證交稅率（賣出）", value=tr, format="%.4f", key="te_tax_rate")
-    st.caption("預設 0.0356%（0.1425% 打 2.5 折）／證交稅 0.3%。改率只影響之後新輸入或重算的交易。")
+    st.caption("預設 0.035625%（0.1425% × 2.5 折，國泰基準）／證交稅 0.3%。手續費與稅皆無條件捨去至整數。改率只影響之後新輸入或重算的交易。")
 
 if is_admin():
     with st.expander("👥 管理買賣人名單（新增／刪除，會存到 Google 試算表）", expanded=False):
