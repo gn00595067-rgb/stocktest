@@ -1159,6 +1159,90 @@ def _render_stock_trade_panel(
                 finally:
                     sess.close()
 
+        # ── 一次輸入多筆（快速批次）：按「多輸入一筆」往下加列，最後一次送出全部 ──
+        with st.expander("🧾 一次輸入多筆（買賣可混；按「多輸入一筆」加列）", expanded=False):
+            _bn_key = f"te_bn_{sid}"
+            # 送出成功後標記重置：在建立 widget 前清掉舊列的值，並回到 1 列
+            if st.session_state.pop(f"te_breset_{sid}", False):
+                for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(f"te_b_{sid}_")]:
+                    del st.session_state[_k]
+                st.session_state[_bn_key] = 1
+            _nrows = st.session_state.setdefault(_bn_key, 1)
+            st.caption(
+                "每列填「買/賣・日期・成交價・股數」；成交價或股數為 0 的列會自動略過。"
+                "賣出的已實現損益依上方設定的沖銷口徑（先進先出等）自動計算，此處不逐筆手動配對。"
+            )
+            _bw = [1, 1.15, 1, 1, 0.7, 1.4]
+            _hc = st.columns(_bw)
+            for _c, _lab in zip(_hc, ["買/賣", "日期", "成交價", "股數", "當沖", "備註"]):
+                _c.caption(_lab)
+            _brows = []
+            for _i in range(_nrows):
+                _c0, _c1, _c2, _c3, _c4, _c5 = st.columns(_bw)
+                _bs = _c0.selectbox(
+                    "買/賣", ["BUY", "SELL"], key=f"te_b_{sid}_{_i}_side",
+                    format_func=lambda x: "買入" if x == "BUY" else "賣出",
+                    label_visibility="collapsed",
+                )
+                _bd = _c1.date_input(
+                    "日期", value=st.session_state.get(f"te_b_{sid}_{_i}_date", entry_date),
+                    key=f"te_b_{sid}_{_i}_date", label_visibility="collapsed",
+                )
+                _bp = _c2.number_input(
+                    "成交價", min_value=0.0, value=0.0, step=0.01, format="%.2f",
+                    key=f"te_b_{sid}_{_i}_price", label_visibility="collapsed",
+                )
+                _bq = _c3.number_input(
+                    "股數", min_value=0, value=0, step=100,
+                    key=f"te_b_{sid}_{_i}_qty", label_visibility="collapsed",
+                )
+                _bdt = _c4.checkbox("當沖", key=f"te_b_{sid}_{_i}_dt")
+                _bnote = _c5.text_input(
+                    "備註", key=f"te_b_{sid}_{_i}_note", label_visibility="collapsed",
+                )
+                _brows.append((_bs, _bd, _bp, _bq, _bdt, _bnote))
+
+            # 「多輸入一筆」：往下再長一列（按鈕在最下面那列的下方）
+            if st.button("➕ 多輸入一筆", key=f"te_baddrow_{sid}"):
+                st.session_state[_bn_key] = _nrows + 1
+                st.rerun()
+
+            _valid = [r for r in _brows if float(r[2]) > 0 and int(r[3]) > 0]
+            if st.button(
+                f"✅ 送出全部（{len(_valid)} 筆）", key=f"te_bsubmit_{sid}",
+                type="primary", disabled=(len(_valid) == 0),
+            ):
+                if not can_access_trader(trader):
+                    st.error("無此買賣人權限。")
+                else:
+                    # 防連點：同一批 2 秒內重複送出視為誤觸
+                    _bsig = tuple((s, str(d), float(p), int(q), bool(dt), (n or ""))
+                                  for (s, d, p, q, dt, n) in _valid)
+                    _bl = st.session_state.get("te_last_batch")
+                    if _bl and _bl[0] == _bsig and (time.monotonic() - _bl[1]) < 2.0:
+                        st.warning("偵測到快速重複送出，已忽略這一次。")
+                    else:
+                        st.session_state["te_last_batch"] = (_bsig, time.monotonic())
+                        sess = get_session()
+                        try:
+                            for (_s, _d, _p, _q, _dt, _n) in _valid:
+                                _f, _t = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt)
+                                sess.add(Trade(
+                                    user=trader, stock_id=sid, trade_date=_d, side=_s,
+                                    price=float(_p), quantity=int(_q), is_daytrade=_dt,
+                                    fee=_f, tax=(_t if _s == "SELL" else 0.0), note=(_n or None),
+                                ))
+                            sess.commit()
+                            st.session_state[f"te_breset_{sid}"] = True
+                            st.session_state["last_user"] = trader
+                            st.success(f"已新增 {len(_valid)} 筆交易（{sid} {row['name']}）。")
+                            st.rerun()
+                        except Exception as _e:
+                            sess.rollback()
+                            st.error(str(_e))
+                        finally:
+                            sess.close()
+
         # 該股全部交易明細（每一天、每一筆；奇摩股市式逐筆列表，可逐筆刪除）
         stock_ts = [
             t for t in trades
