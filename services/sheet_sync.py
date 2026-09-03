@@ -33,6 +33,36 @@ TRADERS_HEADERS = ["id", "name", "created_at"]
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
 
 
+def _is_quota_error(e) -> bool:
+    """判斷是否為 Google Sheets 配額／限流錯誤（429 或 5xx 暫時性）。"""
+    msg = str(e)
+    if "429" in msg or "Quota exceeded" in msg or "RESOURCE_EXHAUSTED" in msg.upper():
+        return True
+    resp = getattr(e, "response", None)
+    try:
+        if resp is not None and getattr(resp, "status_code", None) in (429, 500, 503):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _retry_on_quota(fn, attempts: int = 3, backoff=(3, 8)):
+    """呼叫 fn；遇到配額/限流（429）時退避重試，其餘錯誤直接拋出。
+
+    寫入請求已批次化（每次同步僅 2 個 write），故只需輕量重試吸收短暫尖峰；
+    若仍失敗，交由呼叫端回報友善訊息（資料已存 DB，不會遺失）。
+    """
+    import time
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            if not _is_quota_error(e) or i == attempts - 1:
+                raise
+            time.sleep(backoff[min(i, len(backoff) - 1)])
+
+
 def _get_credentials_and_sheet_id():
     """從 st.secrets 或環境變數取得憑證與試算表 ID。支援 JSON 字串、dict、或 base64 編碼。"""
     creds_json = None
@@ -442,12 +472,25 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                 r[0], r[1], _datetime_str(r[2]),
             ]
 
-        # 寫入 trades 工作表
-        try:
-            ws_trades = spread.worksheet(SHEET_TRADES)
-        except gspread.WorksheetNotFound:
-            ws_trades = spread.add_worksheet(title=SHEET_TRADES, rows=1000, cols=len(TRADES_HEADERS))
+        # 準備各表資料（含表頭）
         trades_data = [TRADES_HEADERS] + [row_trade(r) for r in r_trades]
+        rules_data = [RULES_HEADERS] + [row_rule(r) for r in r_rules]
+        users_data = [USERS_HEADERS] + [row_user(r) for r in r_users]
+        user_bindings_data = [USER_BINDINGS_HEADERS] + [row_user_binding(r) for r in r_user_bindings]
+        traders_data = [TRADERS_HEADERS] + [row_trader(r) for r in r_traders]
+
+        # 確保 5 張工作表存在（缺才建，通常只有第一次）
+        def _ensure_ws(title, cols):
+            try:
+                return spread.worksheet(title)
+            except gspread.WorksheetNotFound:
+                return spread.add_worksheet(title=title, rows=1000, cols=cols)
+        ws_trades = _ensure_ws(SHEET_TRADES, len(TRADES_HEADERS))
+        _ensure_ws(SHEET_RULES, len(RULES_HEADERS))
+        _ensure_ws(SHEET_USERS, len(USERS_HEADERS))
+        _ensure_ws(SHEET_USER_BINDINGS, len(USER_BINDINGS_HEADERS))
+        _ensure_ws(SHEET_TRADERS, len(TRADERS_HEADERS))
+
         # 防呆：記憶體 0 筆交易、但試算表已有資料時，拒絕以空資料整表覆蓋。
         # 這是資料被洗掉的根因保護：啟動時「從試算表載入」若失敗，記憶體會是空的，
         # 之後任一次存檔就會用空資料清空試算表；此處直接中止，保住既有資料。
@@ -461,48 +504,29 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                     f"已中止寫回以保護資料：記憶體目前 0 筆交易，但試算表已有 {existing_rows} 筆。"
                     f"這通常代表啟動時未成功從試算表載入。請『重新啟動（Reboot）app』讓它重新載入後再操作。"
                 )
-        ws_trades.clear()
-        ws_trades.update(trades_data, value_input_option="USER_ENTERED")
 
-        # 寫入 custom_match_rules 工作表
-        try:
-            ws_rules = spread.worksheet(SHEET_RULES)
-        except gspread.WorksheetNotFound:
-            ws_rules = spread.add_worksheet(title=SHEET_RULES, rows=500, cols=len(RULES_HEADERS))
-        rules_data = [RULES_HEADERS] + [row_rule(r) for r in r_rules]
-        if rules_data:
-            ws_rules.clear()
-            ws_rules.update(rules_data, value_input_option="USER_ENTERED")
-
-        # 寫入 user_accounts 工作表
-        try:
-            ws_users = spread.worksheet(SHEET_USERS)
-        except gspread.WorksheetNotFound:
-            ws_users = spread.add_worksheet(title=SHEET_USERS, rows=500, cols=len(USERS_HEADERS))
-        users_data = [USERS_HEADERS] + [row_user(r) for r in r_users]
-        if users_data:
-            ws_users.clear()
-            ws_users.update(users_data, value_input_option="USER_ENTERED")
-
-        # 寫入 user_trader_bindings 工作表
-        try:
-            ws_user_bindings = spread.worksheet(SHEET_USER_BINDINGS)
-        except gspread.WorksheetNotFound:
-            ws_user_bindings = spread.add_worksheet(title=SHEET_USER_BINDINGS, rows=1000, cols=len(USER_BINDINGS_HEADERS))
-        user_bindings_data = [USER_BINDINGS_HEADERS] + [row_user_binding(r) for r in r_user_bindings]
-        if user_bindings_data:
-            ws_user_bindings.clear()
-            ws_user_bindings.update(user_bindings_data, value_input_option="USER_ENTERED")
-
-        # 寫入 traders 工作表（買賣人名單）
-        try:
-            ws_traders = spread.worksheet(SHEET_TRADERS)
-        except gspread.WorksheetNotFound:
-            ws_traders = spread.add_worksheet(title=SHEET_TRADERS, rows=200, cols=len(TRADERS_HEADERS))
-        traders_data = [TRADERS_HEADERS] + [row_trader(r) for r in r_traders]
-        ws_traders.clear()
-        ws_traders.update(traders_data, value_input_option="USER_ENTERED")
+        # 一次批次清空 + 一次批次寫入：把原本每表 clear+update（5 表共 10 個 write 請求）
+        # 降到 2 個 write 請求，避免觸發 Google Sheets「每分鐘每人 60 write」配額（429）。
+        clear_ranges = [SHEET_TRADES, SHEET_RULES, SHEET_USERS, SHEET_USER_BINDINGS, SHEET_TRADERS]
+        _retry_on_quota(lambda: spread.values_batch_clear(body={"ranges": clear_ranges}))
+        body = {
+            "valueInputOption": "USER_ENTERED",
+            "data": [
+                {"range": f"{SHEET_TRADES}!A1", "values": trades_data},
+                {"range": f"{SHEET_RULES}!A1", "values": rules_data},
+                {"range": f"{SHEET_USERS}!A1", "values": users_data},
+                {"range": f"{SHEET_USER_BINDINGS}!A1", "values": user_bindings_data},
+                {"range": f"{SHEET_TRADERS}!A1", "values": traders_data},
+            ],
+        }
+        _retry_on_quota(lambda: spread.values_batch_update(body))
 
         return True, None
     except Exception as e:
+        if _is_quota_error(e):
+            return False, (
+                "Google Sheet 寫入配額暫時用盡（429：每分鐘上限）。"
+                "你的變更已存進資料庫、不會遺失；請稍等約 1 分鐘再操作，"
+                "或下次任何存檔時會一併把它寫回試算表。"
+            )
         return False, f"{type(e).__name__}: {e}"
