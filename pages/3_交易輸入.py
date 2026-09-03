@@ -163,8 +163,18 @@ def _inject_trade_entry_css():
             align-items: center;
             padding: 0.1rem 0.15rem;
             white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            /* 不裁切：靠右對齊的數字若放不下，ellipsis 會從左邊吃掉最高位
+               （例：4275 被切成 275），寧可讓它完整顯示也不能少一位數。 */
+            overflow: visible;
+        }
+        /* 平板／窄螢幕：把持股表數字字級與欄距略縮，讓 4～5 位數股價塞得下，
+           避免欄位被擠到需要裁切。 */
+        @media (max-width: 1200px) {
+            .te-hold-td { font-size: 0.82rem; padding: 0.1rem 0.08rem; }
+            .te-hold-th { font-size: 0.68rem; padding-left: 0.08rem; padding-right: 0.08rem; }
+        }
+        @media (max-width: 560px) {
+            .te-hold-td { font-size: 0.78rem; }
         }
         /* KPI 摘要（6 欄）：縮小數字字級、單行不換行、縮小欄距，避免大數字被擠成「23,631,...」 */
         div[data-testid="stMetric"] {
@@ -228,7 +238,7 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
 
 
 # 持股表格欄寬與對齊（表頭與資料列必須一致）
-_HOLD_COL_WIDTHS = [1.6, 0.75, 0.85, 0.9, 0.82, 1.0, 1.1, 1.15, 1.1, 0.78]
+_HOLD_COL_WIDTHS = [1.5, 0.7, 1.0, 0.9, 0.82, 1.0, 1.1, 1.15, 1.1, 0.7]
 _HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "成交均價", "持股成本均價", "總成本", "未實現", ""]
 _HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
 _HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "right", "right", "center"]
