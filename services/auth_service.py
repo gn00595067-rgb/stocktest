@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Iterable
 
 import streamlit as st
+from sqlalchemy import func
 
 from db.database import get_session
 from db.models import UserAccount, UserTraderBinding
@@ -64,7 +65,11 @@ def _verify_remember_token(token: str) -> dict | None:
         return None
     sess = get_session()
     try:
-        user = sess.query(UserAccount).filter(UserAccount.username == str(username).strip()).first()
+        user = (
+            sess.query(UserAccount)
+            .filter(func.lower(UserAccount.username) == str(username).strip().lower())
+            .first()
+        )
         if (not user) or (not user.is_active):
             return None
         expected = hmac.new(
@@ -212,7 +217,12 @@ def login_guard() -> None:
     if submitted:
         sess = get_session()
         try:
-            user = sess.query(UserAccount).filter(UserAccount.username == username.strip()).first()
+            # 帳號登入不分大小寫（ELSA / elsa 皆可登入）
+            user = (
+                sess.query(UserAccount)
+                .filter(func.lower(UserAccount.username) == username.strip().lower())
+                .first()
+            )
             if (not user) or (not user.is_active):
                 st.error("帳號不存在或已停用。")
                 return

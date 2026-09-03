@@ -90,3 +90,26 @@ def test_garbage_token_rejected(monkeypatch):
     assert _verify_remember_token("") is None
     assert _verify_remember_token("no-dot") is None
     assert _verify_remember_token("not_base64.abc") is None
+
+
+def test_username_lookup_is_case_insensitive(monkeypatch):
+    """登入不分大小寫：DB 存 'Elsa'，以 'ELSA' 簽發的 token 仍能對應到同一帳號。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from db.models import Base, UserAccount
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    pw = hash_password("secret123")
+    s = Session()
+    s.add(UserAccount(username="Elsa", password_hash=pw, role="user", is_active=True))
+    s.commit()
+    s.close()
+    monkeypatch.setattr(auth, "get_session", lambda: Session())
+
+    token = _make_remember_token("ELSA", pw)  # 大寫簽發
+    got = _verify_remember_token(token)
+    assert got is not None
+    assert got["username"] == "Elsa"  # 回傳 DB 中實際保存的大小寫
+    assert got["role"] == "user"

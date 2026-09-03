@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """管理者頁：帳號與買賣人權限綁定"""
 import streamlit as st
+from sqlalchemy import func
 
 from db.database import get_session, get_engine
 from db.models import UserAccount, UserTraderBinding
@@ -60,9 +61,14 @@ if create_submitted:
     else:
         sess = get_session()
         try:
-            exists = sess.query(UserAccount).filter(UserAccount.username == new_username.strip()).first()
+            # 帳號不分大小寫視為同一個（避免 ELSA / elsa 併存造成登入混淆）
+            exists = (
+                sess.query(UserAccount)
+                .filter(func.lower(UserAccount.username) == new_username.strip().lower())
+                .first()
+            )
             if exists:
-                st.error("帳號已存在。")
+                st.error(f"帳號已存在（大小寫視為相同）：{exists.username}")
             else:
                 sess.add(
                     UserAccount(
@@ -100,6 +106,7 @@ for u in users:
     with st.container(border=True):
         role_label = "管理者" if u.role == ROLE_ADMIN else "一般"
         st.markdown(f"**{u.username}**（{role_label}）")
+        new_name = st.text_input("帳號（可修改，大小寫皆可；登入時不分大小寫）", value=u.username, key=f"uname_{u.id}")
         c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.8, 1.2])
         with c1:
             active = st.toggle("啟用", value=bool(u.is_active), key=f"active_{u.id}")
@@ -113,17 +120,35 @@ for u in users:
                 try:
                     target = sess2.query(UserAccount).filter(UserAccount.id == int(u.id)).first()
                     if target:
-                        target.is_active = bool(active)
-                        target.role = role
-                        if new_pwd.strip():
-                            target.password_hash = hash_password(new_pwd.strip())
-                        sess2.commit()
-                        ok, err = _sync_to_sheet_after_auth_change()
-                        if ok:
-                            st.success(f"已更新 {u.username}，且已同步到 Google Sheet。")
-                            st.rerun()
+                        # 改帳號：不可空白；與其他帳號不分大小寫不可重複
+                        uname = (new_name or "").strip()
+                        name_error = None
+                        if not uname:
+                            name_error = "帳號不可空白。"
+                        elif uname.lower() != (u.username or "").lower():
+                            dup = (
+                                sess2.query(UserAccount)
+                                .filter(func.lower(UserAccount.username) == uname.lower())
+                                .filter(UserAccount.id != int(u.id))
+                                .first()
+                            )
+                            if dup:
+                                name_error = f"帳號已被使用（大小寫視為相同）：{dup.username}"
+                        if name_error:
+                            st.error(name_error)
                         else:
-                            st.error(f"已更新 {u.username}，但同步到 Google Sheet 失敗：{err}")
+                            target.username = uname
+                            target.is_active = bool(active)
+                            target.role = role
+                            if new_pwd.strip():
+                                target.password_hash = hash_password(new_pwd.strip())
+                            sess2.commit()
+                            ok, err = _sync_to_sheet_after_auth_change()
+                            if ok:
+                                st.success(f"已更新 {uname}，且已同步到 Google Sheet。")
+                                st.rerun()
+                            else:
+                                st.error(f"已更新 {uname}，但同步到 Google Sheet 失敗：{err}")
                 finally:
                     sess2.close()
 
