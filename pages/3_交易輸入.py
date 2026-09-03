@@ -883,14 +883,14 @@ def _render_stock_trade_panel(
         rowids = st.session_state.setdefault(rowids_key, [0])
         st.session_state.setdefault(seq_key, 1)
 
-        _bw = [1.0, 1.15, 1.0, 1.0, 0.7, 1.5, 0.5]
+        _bw = [1.0, 1.1, 0.95, 0.95, 0.6, 0.85, 0.85, 1.15, 0.45]
         _hc = st.columns(_bw)
-        for _c, _lab in zip(_hc, ["買/賣", "交易日期", "成交價", "股數", "當沖", "備註", ""]):
+        for _c, _lab in zip(_hc, ["買/賣", "交易日期", "成交價", "股數", "當沖", "手續費", "證交稅", "備註", ""]):
             _c.caption(_lab)
 
         rows = []
         for _rid in rowids:
-            _c0, _c1, _c2, _c3, _c4, _c5, _c6 = st.columns(_bw)
+            _c0, _c1, _c2, _c3, _c4, _cfee, _ctax, _c5, _c6 = st.columns(_bw)
             _s = _c0.selectbox(
                 "買/賣", ["BUY", "SELL"], key=f"te_r_{sid}_{_rid}_side",
                 format_func=lambda x: "買入" if x == "BUY" else "賣出",
@@ -910,6 +910,21 @@ def _render_stock_trade_panel(
                 key=f"te_r_{sid}_{_rid}_qty", label_visibility="collapsed",
             )
             _dt = _c4.checkbox("當沖", key=f"te_r_{sid}_{_rid}_dt", label_visibility="collapsed")
+            # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對
+            if _p is not None and _q is not None and float(_p) > 0 and int(_q) > 0:
+                _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt)
+                _fee_txt = f"{_rf:,.0f}"
+                _tax_txt = f"{_rt:,.0f}" if _s == "SELL" else "—"  # 買進不收證交稅
+            else:
+                _fee_txt = _tax_txt = "—"
+            _cfee.markdown(
+                f"<div style='padding-top:0.5rem;text-align:right;color:#334155'>{_fee_txt}</div>",
+                unsafe_allow_html=True,
+            )
+            _ctax.markdown(
+                f"<div style='padding-top:0.5rem;text-align:right;color:#334155'>{_tax_txt}</div>",
+                unsafe_allow_html=True,
+            )
             _n = _c5.text_input("備註", key=f"te_r_{sid}_{_rid}_note", label_visibility="collapsed")
             with _c6:
                 if len(rowids) > 1:
