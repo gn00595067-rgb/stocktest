@@ -934,7 +934,7 @@ def _render_stock_trade_panel(
         st.caption(
             f"估算（{len(valid)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
             f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
-            "　賣出的已實現損益依設定的沖銷口徑（先進先出/接近均價等）自動計算。"
+            "　賣出一律以「接近均價」自動沖銷配對計算已實現損益。"
         )
 
         confirm_key = f"te_confirm_{sid}"
@@ -969,13 +969,36 @@ def _render_stock_trade_panel(
                     st.session_state["te_last_submit"] = (_sig, time.monotonic())
                     sess = get_session()
                     try:
+                        # 賣出以「接近均價」自動配對現有未沖銷買進批次；
+                        # 多筆賣出依序扣減剩餘庫存，批次內的買進也納入可配對池
+                        avail_lots = [dict(l) for l in get_open_buy_lots(trades, sid, trader, custom_rules, policy)]
                         for (s, d, p, q, dt, n) in valid:
                             _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt)
-                            sess.add(Trade(
+                            _tr = Trade(
                                 user=trader, stock_id=sid, trade_date=d, side=s,
                                 price=p, quantity=q, is_daytrade=dt,
                                 fee=_f, tax=(_t if s == "SELL" else 0.0), note=(n or None),
-                            ))
+                            )
+                            sess.add(_tr)
+                            sess.flush()
+                            if s == "BUY":
+                                avail_lots.append({
+                                    "trade_id": _tr.id, "date": str(d), "price": float(p),
+                                    "remaining_qty": int(q), "original_qty": int(q), "fee": float(_f),
+                                })
+                            else:  # 賣出：接近均價配對
+                                _plan = combined_match_plan(int(q), avail_lots, "all", "nearest_avg", float(p))
+                                _consumed = {}
+                                for _bid, _mq in _plan:
+                                    sess.add(CustomMatchRule(
+                                        sell_trade_id=_tr.id, buy_trade_id=int(_bid), matched_qty=int(_mq),
+                                    ))
+                                    _consumed[int(_bid)] = _consumed.get(int(_bid), 0) + int(_mq)
+                                for _lot in avail_lots:
+                                    _c = _consumed.get(int(_lot["trade_id"]), 0)
+                                    if _c:
+                                        _lot["remaining_qty"] = int(_lot["remaining_qty"]) - _c
+                                avail_lots = [l for l in avail_lots if int(l["remaining_qty"]) > 0]
                         sess.commit()
                         st.session_state[f"te_rreset_{sid}"] = True
                         st.session_state["last_user"] = trader
