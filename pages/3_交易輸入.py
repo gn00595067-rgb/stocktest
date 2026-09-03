@@ -862,19 +862,21 @@ def _render_stock_trade_panel(
                 key=f"te_edate_{sid}",
             )
         with fc3:
+            # 預設 0，讓使用者自行輸入成交價（不自動帶現價）
             price = st.number_input(
                 "成交價",
                 min_value=0.0,
-                value=float(default_price),
+                value=0.0,
                 step=0.01,
                 format="%.2f",
                 key=f"te_price_{sid}",
             )
         with fc4:
+            # 預設 0，讓使用者自行輸入股數
             quantity = st.number_input(
                 "股數",
-                min_value=1,
-                value=1000,
+                min_value=0,
+                value=0,
                 step=100,
                 key=f"te_qty_{sid}",
             )
@@ -1035,6 +1037,9 @@ def _render_stock_trade_panel(
             if st.button("✅ 送出此筆交易", key=f"te_submit_{sid}", type="primary"):
                 if not can_access_trader(trader):
                     st.error("無此買賣人權限。")
+                    return
+                if float(price) <= 0 or int(quantity) <= 0:
+                    st.error("請先輸入成交價與股數。")
                     return
                 if side == "SELL" and open_lots:
                     if not match_plan and not st.session_state.get("te_auto_fifo"):
