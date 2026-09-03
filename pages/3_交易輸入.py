@@ -911,7 +911,8 @@ def _render_stock_trade_panel(
                 time_key_ss = f"te_time_{sid}"
                 sort_key_ss = f"te_sortmode_{sid}"
                 time_now = st.session_state.setdefault(time_key_ss, "all")
-                sort_now = st.session_state.setdefault(sort_key_ss, "fifo")
+                # 預設排序＝接近均價；使用者可再點其他按鈕改
+                sort_now = st.session_state.setdefault(sort_key_ss, "nearest_avg")
 
                 def _reapply_match():
                     """依目前『時間 × 賺賠』兩軸選擇重算配對並填入各列。"""
@@ -922,7 +923,7 @@ def _render_stock_trade_panel(
                             sell_qty,
                             open_lots,
                             st.session_state.get(time_key_ss, "all"),
-                            st.session_state.get(sort_key_ss, "fifo"),
+                            st.session_state.get(sort_key_ss, "nearest_avg"),
                             sell_price_now,
                         ),
                         open_lots,
@@ -973,7 +974,7 @@ def _render_stock_trade_panel(
 
                 # 依目前『時間 × 賺賠』兩軸篩選+排序顯示（與配對計畫一致）
                 _time_key_now = st.session_state.get(time_key_ss, "all")
-                _sort_key_now = st.session_state.get(sort_key_ss, "fifo")
+                _sort_key_now = st.session_state.get(sort_key_ss, "nearest_avg")
                 _time_lots = filter_lots_by_time(open_lots, _time_key_now)
                 open_lots = filter_and_sort_lots(_time_lots, _sort_key_now, sell_price_now)
                 if not open_lots:
