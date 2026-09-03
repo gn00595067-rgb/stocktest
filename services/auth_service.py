@@ -23,7 +23,33 @@ ROLE_USER = "user"
 
 # ---------- 「記住我」cookie 設定 ----------
 REMEMBER_COOKIE = "st_remember"
-REMEMBER_DAYS = 30
+REMEMBER_DAYS = 90
+# 網址上的記住我 token：iPad Safari「防止跨網站追蹤」會擋掉元件（iframe）cookie，
+# 此時改用網址參數自動登入。token 與 cookie 同一枚（HMAC 簽章、綁密碼、會過期）。
+REMEMBER_QP = "rt"
+
+
+def _get_url_token() -> str | None:
+    try:
+        v = st.query_params.get(REMEMBER_QP)
+        return str(v) if v else None
+    except Exception:
+        return None
+
+
+def _set_url_token(token: str) -> None:
+    try:
+        st.query_params[REMEMBER_QP] = token
+    except Exception:
+        pass
+
+
+def _clear_url_token() -> None:
+    try:
+        if REMEMBER_QP in st.query_params:
+            del st.query_params[REMEMBER_QP]
+    except Exception:
+        pass
 
 
 def _cookie_manager():
@@ -207,12 +233,22 @@ def login_guard() -> None:
                 st.session_state["auth_user"] = remembered
                 st.rerun()
 
+    # cookie 不可用/被擋（iPad Safari）時的後備：以網址 token 自動登入
+    if not st.session_state.get("_remember_disabled"):
+        url_token = _get_url_token()
+        if url_token:
+            remembered = _verify_remember_token(url_token)
+            if remembered:
+                st.session_state["auth_logged_in"] = True
+                st.session_state["auth_user"] = remembered
+                st.rerun()
+
     st.title("請先登入")
     st.caption("預設管理者：`admin / admin1234`（首次登入後請立即修改密碼）")
     with st.form("login_form", clear_on_submit=False):
         username = st.text_input("帳號")
         password = st.text_input("密碼", type="password")
-        remember = st.checkbox("記住我（30 天內免登入）", value=True)
+        remember = st.checkbox("記住我（90 天內免登入）", value=True)
         submitted = st.form_submit_button("登入", type="primary")
     if submitted:
         sess = get_session()
@@ -235,15 +271,18 @@ def login_guard() -> None:
                 "username": user.username,
                 "role": user.role,
             }
-            if remember and cm is not None:
-                # 於下一輪（已登入、乾淨畫面）寫入 cookie，確保確實落地
-                st.session_state["_pending_remember"] = _make_remember_token(
-                    user.username, user.password_hash or ""
-                )
+            if remember:
+                token = _make_remember_token(user.username, user.password_hash or "")
+                # cookie：於下一輪（已登入、乾淨畫面）寫入，確保確實落地
+                if cm is not None:
+                    st.session_state["_pending_remember"] = token
+                # 網址 token：iPad Safari 擋 cookie 時的後備，立即寫進網址
+                _set_url_token(token)
                 st.session_state.pop("_remember_disabled", None)
             else:
                 st.session_state["_pending_remember_clear"] = True
                 st.session_state["_remember_disabled"] = True
+                _clear_url_token()
             st.rerun()
         finally:
             sess.close()
@@ -275,6 +314,7 @@ def render_auth_sidebar() -> None:
         # 標記清除 cookie 並略過本 session 的自動登入，交由下一輪 login_guard 刪除
         st.session_state["_pending_remember_clear"] = True
         st.session_state["_remember_disabled"] = True
+        _clear_url_token()  # 一併清掉網址上的記住我 token
         st.session_state.pop("auth_logged_in", None)
         st.session_state.pop("auth_user", None)
         st.rerun()
