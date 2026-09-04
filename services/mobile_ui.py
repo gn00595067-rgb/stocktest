@@ -66,9 +66,9 @@ _CSS = """
     [data-testid="stDataFrame"] { -webkit-overflow-scrolling: touch; }
 }
 
-/* ============ 直向 / 窄平板（≤ 820px）============ */
-@media (max-width: 820px) {
-    /* 側邊欄改為浮層疊加，不再壓縮主內容寬度（直向最大的體驗改善） */
+/* ============ 平板直向 / 窄視窗（≤ 1024px）：側邊欄改浮層，點右邊遮罩即收合 ============ */
+@media (max-width: 1024px) {
+    /* 側邊欄改為浮層疊加，不再壓縮主內容寬度（平板體驗最大改善） */
     section[data-testid="stSidebar"] {
         position: fixed !important;
         z-index: 999 !important;
@@ -96,6 +96,53 @@ _CSS = """
 """
 
 
+# 平板（≤1024px）側邊欄浮層：加半透明遮罩，點右邊畫面任一處即收合側邊欄。
+# 以 component（同源 iframe）操作 parent DOM；Streamlit rerun 會重建 DOM，故定時重掛。
+_SIDEBAR_AUTOCLOSE_JS = """
+<script>
+(function(){
+  try {
+    var doc = window.parent.document, win = window.parent;
+    if (doc.__sbAutoClose) return; doc.__sbAutoClose = true;
+    var bd = doc.getElementById('__sb_backdrop');
+    if (!bd) {
+      bd = doc.createElement('div');
+      bd.id = '__sb_backdrop';
+      bd.style.cssText = 'position:fixed;inset:0;z-index:998;background:rgba(0,0,0,0.35);display:none;';
+      doc.body.appendChild(bd);
+    }
+    function sidebar(){ return doc.querySelector('section[data-testid="stSidebar"]'); }
+    function collapseBtn(){
+      return doc.querySelector('[data-testid="stSidebarCollapseButton"] button')
+          || doc.querySelector('[data-testid="stSidebarCollapseButton"]')
+          || doc.querySelector('[data-testid="baseButton-headerNoPadding"]')
+          || doc.querySelector('[data-testid="collapsedControl"] button');
+    }
+    function narrow(){ return win.innerWidth <= 1024; }
+    function open(){
+      var sb = sidebar(); if (!sb) return false;
+      var e = sb.getAttribute('aria-expanded');
+      if (e !== null) return e === 'true';
+      return sb.offsetWidth > 50;
+    }
+    function sync(){ bd.style.display = (narrow() && open()) ? 'block' : 'none'; }
+    bd.addEventListener('click', function(){ var b = collapseBtn(); if (b) b.click(); setTimeout(sync, 60); });
+    var obs = new MutationObserver(sync);
+    function attach(){ var sb = sidebar(); if (sb) { try { obs.observe(sb, {attributes:true, attributeFilter:['aria-expanded','style','class']}); } catch(_){} } }
+    attach(); win.addEventListener('resize', sync);
+    setInterval(function(){ attach(); sync(); }, 800);
+    sync();
+  } catch(_){}
+})();
+</script>
+"""
+
+
 def inject_mobile_css() -> None:
-    """注入全站響應式／觸控 CSS。每頁在 set_page_config 之後呼叫一次。"""
+    """注入全站響應式／觸控 CSS ＋ 平板側邊欄「點右邊即收合」。每頁在 set_page_config 之後呼叫一次。"""
     st.markdown(_CSS, unsafe_allow_html=True)
+    try:
+        import streamlit.components.v1 as components
+        components.html(_SIDEBAR_AUTOCLOSE_JS, height=0)
+    except Exception:
+        pass
