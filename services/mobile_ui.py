@@ -66,14 +66,20 @@ _CSS = """
     [data-testid="stDataFrame"] { -webkit-overflow-scrolling: touch; }
 }
 
-/* ============ 平板直向 / 窄視窗（≤ 1024px）：側邊欄改浮層，點右邊遮罩即收合 ============ */
+/* ============ 平板/手機（≤ 1024px）：側邊欄疊在遮罩上、收合鈕放大、點右邊即收合 ============ */
 @media (max-width: 1024px) {
-    /* 側邊欄改為浮層疊加，不再壓縮主內容寬度（平板體驗最大改善） */
+    /* 側邊欄疊在遮罩之上（可點），不改 Streamlit 原生收合（讓它能正常收） */
     section[data-testid="stSidebar"] {
-        position: fixed !important;
-        z-index: 999 !important;
-        height: 100% !important;
-        box-shadow: 2px 0 12px rgba(0,0,0,0.15);
+        z-index: 100001 !important;
+        box-shadow: 2px 0 14px rgba(0,0,0,0.25);
+    }
+    /* 收合鈕放大，觸控好點 */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapseButton"] button,
+    [data-testid="baseButton-headerNoPadding"],
+    [data-testid="stBaseButton-headerNoPadding"] {
+        transform: scale(1.5);
+        transform-origin: center;
     }
     /* 註：此處刻意不動多欄排版，保持沖銷配對等資料表對齊。
        只有到手機寬度（≤ 560px）才改成單欄堆疊。 */
@@ -103,34 +109,32 @@ _SIDEBAR_AUTOCLOSE_JS = """
 (function(){
   try {
     var doc = window.parent.document, win = window.parent;
-    if (doc.__sbAutoClose) return; doc.__sbAutoClose = true;
-    var bd = doc.getElementById('__sb_backdrop');
+    function sidebar(){ return doc.querySelector('section[data-testid="stSidebar"]'); }
+    function narrow(){ return win.innerWidth <= 1024; }
+    function isOpen(){
+      var sb = sidebar(); if (!sb) return false;
+      var r = sb.getBoundingClientRect();
+      return r.width > 60 && r.right > 20;   // 在畫面上且有寬度＝展開
+    }
+    function collapse(){
+      var sels = ['[data-testid="stSidebarCollapseButton"] button',
+                  'button[data-testid="stSidebarCollapseButton"]',
+                  '[data-testid="stSidebarCollapseButton"]',
+                  '[data-testid="baseButton-headerNoPadding"]',
+                  '[data-testid="stBaseButton-headerNoPadding"]',
+                  'section[data-testid="stSidebar"] button[kind="headerNoPadding"]'];
+      for (var i=0;i<sels.length;i++){ var b = doc.querySelector(sels[i]); if (b){ b.click(); return; } }
+    }
+    var bd = doc.getElementById('__sb_bd');
     if (!bd) {
       bd = doc.createElement('div');
-      bd.id = '__sb_backdrop';
-      bd.style.cssText = 'position:fixed;inset:0;z-index:998;background:rgba(0,0,0,0.35);display:none;';
+      bd.id = '__sb_bd';
+      bd.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.4);display:none;';
+      bd.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); collapse(); setTimeout(sync, 120); }, true);
       doc.body.appendChild(bd);
     }
-    function sidebar(){ return doc.querySelector('section[data-testid="stSidebar"]'); }
-    function collapseBtn(){
-      return doc.querySelector('[data-testid="stSidebarCollapseButton"] button')
-          || doc.querySelector('[data-testid="stSidebarCollapseButton"]')
-          || doc.querySelector('[data-testid="baseButton-headerNoPadding"]')
-          || doc.querySelector('[data-testid="collapsedControl"] button');
-    }
-    function narrow(){ return win.innerWidth <= 1024; }
-    function open(){
-      var sb = sidebar(); if (!sb) return false;
-      var e = sb.getAttribute('aria-expanded');
-      if (e !== null) return e === 'true';
-      return sb.offsetWidth > 50;
-    }
-    function sync(){ bd.style.display = (narrow() && open()) ? 'block' : 'none'; }
-    bd.addEventListener('click', function(){ var b = collapseBtn(); if (b) b.click(); setTimeout(sync, 60); });
-    var obs = new MutationObserver(sync);
-    function attach(){ var sb = sidebar(); if (sb) { try { obs.observe(sb, {attributes:true, attributeFilter:['aria-expanded','style','class']}); } catch(_){} } }
-    attach(); win.addEventListener('resize', sync);
-    setInterval(function(){ attach(); sync(); }, 800);
+    function sync(){ bd.style.display = (narrow() && isOpen()) ? 'block' : 'none'; }
+    if (!doc.__sbBd){ doc.__sbBd = true; win.addEventListener('resize', sync); setInterval(sync, 500); }
     sync();
   } catch(_){}
 })();
