@@ -50,43 +50,22 @@ if "pl_end" not in st.session_state:
     st.session_state["pl_end"] = today
 
 st.markdown("#### 篩選條件")
+
+
+def _pl_set_range(days=None, all_time=False):
+    """快速區間：用 on_click callback 設定日期（callback 在 widget 建立前執行，
+    改 date_input 的 pl_start/pl_end 才會可靠生效並連動到下方結果）。"""
+    st.session_state["pl_start"] = date(2000, 1, 1) if all_time else (today - timedelta(days=days))
+    st.session_state["pl_end"] = today
+
+
 b1, b2, b3, b4, b5, b6 = st.columns(6)
-with b1:
-    btn_3d = st.button("近3天", key="pl_btn_3d")
-with b2:
-    btn_1w = st.button("近1週", key="pl_btn_1w")
-with b3:
-    btn_1m = st.button("近1個月", key="pl_btn_1m")
-with b4:
-    btn_6m = st.button("近半年", key="pl_btn_6m")
-with b5:
-    btn_1y = st.button("近1年", key="pl_btn_1y")
-with b6:
-    btn_all = st.button("全部", key="pl_btn_all")
-if btn_3d:
-    st.session_state["pl_start"] = today - timedelta(days=3)
-    st.session_state["pl_end"] = today
-    st.rerun()
-if btn_1w:
-    st.session_state["pl_start"] = today - timedelta(weeks=1)
-    st.session_state["pl_end"] = today
-    st.rerun()
-if btn_1m:
-    st.session_state["pl_start"] = today - timedelta(days=30)
-    st.session_state["pl_end"] = today
-    st.rerun()
-if btn_6m:
-    st.session_state["pl_start"] = today - timedelta(days=180)
-    st.session_state["pl_end"] = today
-    st.rerun()
-if btn_1y:
-    st.session_state["pl_start"] = today - timedelta(days=365)
-    st.session_state["pl_end"] = today
-    st.rerun()
-if btn_all:
-    st.session_state["pl_start"] = date(2000, 1, 1)
-    st.session_state["pl_end"] = today
-    st.rerun()
+b1.button("近3天", key="pl_btn_3d", on_click=_pl_set_range, kwargs={"days": 3}, use_container_width=True)
+b2.button("近1週", key="pl_btn_1w", on_click=_pl_set_range, kwargs={"days": 7}, use_container_width=True)
+b3.button("近1個月", key="pl_btn_1m", on_click=_pl_set_range, kwargs={"days": 30}, use_container_width=True)
+b4.button("近半年", key="pl_btn_6m", on_click=_pl_set_range, kwargs={"days": 180}, use_container_width=True)
+b5.button("近1年", key="pl_btn_1y", on_click=_pl_set_range, kwargs={"days": 365}, use_container_width=True)
+b6.button("全部", key="pl_btn_all", on_click=_pl_set_range, kwargs={"all_time": True}, use_container_width=True)
 
 # 先查詢買賣人列表（供篩選用）
 try:

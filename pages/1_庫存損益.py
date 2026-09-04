@@ -478,44 +478,18 @@ with st.container():
     if "portfolio_end" not in st.session_state:
         st.session_state["portfolio_end"] = today
 
-    # 快捷區間按鈕（一排橫向，點選後會更新下方日期；下方日期也可手動輸入）
+    # 快捷區間按鈕：用 on_click callback 才會可靠連動到下方日期與結果
+    def _pf_set_range(days=None, all_time=False):
+        st.session_state["portfolio_start"] = date(2000, 1, 1) if all_time else (today - timedelta(days=days))
+        st.session_state["portfolio_end"] = today
+
     b1, b2, b3, b4, b5, b6 = st.columns(6)
-    with b1:
-        btn_3d = st.button("近3天", key="btn_3d")
-    with b2:
-        btn_1w = st.button("近1週", key="btn_1w")
-    with b3:
-        btn_1m = st.button("近1個月", key="btn_1m")
-    with b4:
-        btn_6m = st.button("近半年", key="btn_6m")
-    with b5:
-        btn_1y = st.button("近1年", key="btn_1y")
-    with b6:
-        btn_all = st.button("全部", key="btn_all")
-    if btn_3d:
-        st.session_state["portfolio_start"] = today - timedelta(days=3)
-        st.session_state["portfolio_end"] = today
-        st.rerun()
-    if btn_1w:
-        st.session_state["portfolio_start"] = today - timedelta(weeks=1)
-        st.session_state["portfolio_end"] = today
-        st.rerun()
-    if btn_1m:
-        st.session_state["portfolio_start"] = today - timedelta(days=30)
-        st.session_state["portfolio_end"] = today
-        st.rerun()
-    if btn_6m:
-        st.session_state["portfolio_start"] = today - timedelta(days=180)
-        st.session_state["portfolio_end"] = today
-        st.rerun()
-    if btn_1y:
-        st.session_state["portfolio_start"] = today - timedelta(days=365)
-        st.session_state["portfolio_end"] = today
-        st.rerun()
-    if btn_all:
-        st.session_state["portfolio_start"] = date(2000, 1, 1)
-        st.session_state["portfolio_end"] = today
-        st.rerun()
+    b1.button("近3天", key="btn_3d", on_click=_pf_set_range, kwargs={"days": 3}, use_container_width=True)
+    b2.button("近1週", key="btn_1w", on_click=_pf_set_range, kwargs={"days": 7}, use_container_width=True)
+    b3.button("近1個月", key="btn_1m", on_click=_pf_set_range, kwargs={"days": 30}, use_container_width=True)
+    b4.button("近半年", key="btn_6m", on_click=_pf_set_range, kwargs={"days": 180}, use_container_width=True)
+    b5.button("近1年", key="btn_1y", on_click=_pf_set_range, kwargs={"days": 365}, use_container_width=True)
+    b6.button("全部", key="btn_all", on_click=_pf_set_range, kwargs={"all_time": True}, use_container_width=True)
 
     # 先載入資料供篩選與報表使用
     try:
