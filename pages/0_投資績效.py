@@ -64,14 +64,44 @@ def _pl_set_range(days=None, all_time=False, today_only=False):
     st.session_state["pl_end"] = today
 
 
-b0, b1, b2, b3, b4, b5, b6 = st.columns(7)
-b0.button("當日", key="pl_btn_today", on_click=_pl_set_range, kwargs={"today_only": True}, use_container_width=True)
-b1.button("近3天", key="pl_btn_3d", on_click=_pl_set_range, kwargs={"days": 3}, use_container_width=True)
-b2.button("近1週", key="pl_btn_1w", on_click=_pl_set_range, kwargs={"days": 7}, use_container_width=True)
-b3.button("近1個月", key="pl_btn_1m", on_click=_pl_set_range, kwargs={"days": 30}, use_container_width=True)
-b4.button("近半年", key="pl_btn_6m", on_click=_pl_set_range, kwargs={"days": 180}, use_container_width=True)
-b5.button("近1年", key="pl_btn_1y", on_click=_pl_set_range, kwargs={"days": 365}, use_container_width=True)
-b6.button("全部", key="pl_btn_all", on_click=_pl_set_range, kwargs={"all_time": True}, use_container_width=True)
+def _pl_range_active_index(start_date, end_date, today):
+    """回傳目前區間對應的快捷鈕索引 0..6（當日、近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
+    if end_date != today:
+        return -1
+    if start_date == today:
+        return 0
+    d = (today - start_date).days
+    if start_date == date(2000, 1, 1):
+        return 6
+    if d <= 4 and start_date == today - timedelta(days=3):
+        return 1
+    if 6 <= d <= 8 and start_date == today - timedelta(days=7):
+        return 2
+    if 28 <= d <= 32 and start_date == today - timedelta(days=30):
+        return 3
+    if 178 <= d <= 182 and start_date == today - timedelta(days=180):
+        return 4
+    if 363 <= d <= 367 and start_date == today - timedelta(days=365):
+        return 5
+    return -1
+
+
+# 直接用 type="primary" 高亮當前區間鈕（從 session_state 算，最準；不靠全域 CSS 猜位置）
+_pl_active = _pl_range_active_index(st.session_state.get("pl_start"), st.session_state.get("pl_end"), today)
+_pl_cols = st.columns(7)
+for _i, (_lab, _key, _kw) in enumerate([
+    ("當日", "pl_btn_today", {"today_only": True}),
+    ("近3天", "pl_btn_3d", {"days": 3}),
+    ("近1週", "pl_btn_1w", {"days": 7}),
+    ("近1個月", "pl_btn_1m", {"days": 30}),
+    ("近半年", "pl_btn_6m", {"days": 180}),
+    ("近1年", "pl_btn_1y", {"days": 365}),
+    ("全部", "pl_btn_all", {"all_time": True}),
+]):
+    _pl_cols[_i].button(
+        _lab, key=_key, on_click=_pl_set_range, kwargs=_kw,
+        use_container_width=True, type=("primary" if _pl_active == _i else "secondary"),
+    )
 
 # 先查詢買賣人列表（供篩選用）
 try:
@@ -139,45 +169,6 @@ st.caption(
     "　⚠️ 日期區間只影響「**已實現**」（依賣出日）；「未實現」「持倉市值」一律是**目前**的、不隨區間變。"
 )
 
-
-def _pl_range_active_index(start_date, end_date, today):
-    """若目前區間與某快捷按鈕一致，回傳該按鈕索引 0..5（近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
-    if end_date != today:
-        return -1
-    d = (today - start_date).days
-    if start_date == date(2000, 1, 1):
-        return 5
-    if d <= 4 and start_date == today - timedelta(days=3):
-        return 0
-    if 6 <= d <= 8 and start_date == today - timedelta(weeks=1):
-        return 1
-    if 28 <= d <= 32 and start_date == today - timedelta(days=30):
-        return 2
-    if 178 <= d <= 182 and start_date == today - timedelta(days=180):
-        return 3
-    if 363 <= d <= 367 and start_date == today - timedelta(days=365):
-        return 4
-    return -1
-
-
-def _pl_inject_range_button_highlight(active_index):
-    """當區間與快捷按鈕重合時，將該按鈕以深色高亮。"""
-    if active_index < 0:
-        return
-    n = active_index + 1
-    st.markdown(f"""
-    <style>
-    [data-testid="stHorizontalBlock"] > div:nth-child({n}) button {{
-        background-color: #262730 !important;
-        color: white !important;
-        border-color: #262730;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
-
-
-# ---------- 注入區間按鈕高亮（與目前日期區間一致時） ----------
-_pl_inject_range_button_highlight(_pl_range_active_index(start_date, end_date, today))
 
 # ---------- KPI 樣式（與庫存損益字卡一致） ----------
 def _inject_kpi_style():

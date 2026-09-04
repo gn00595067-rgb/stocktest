@@ -81,39 +81,25 @@ def _inject_page_style():
 
 
 def _range_active_index(start_date, end_date, today):
-    """若目前區間與某快捷按鈕一致，回傳該按鈕索引 0..5（近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
+    """回傳目前區間對應的快捷鈕索引 0..6（當日、近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
     if end_date != today:
         return -1
+    if start_date == today:
+        return 0  # 當日
     d = (today - start_date).days
     if start_date == date(2000, 1, 1):
-        return 5   # 全部
+        return 6  # 全部
     if d <= 4 and start_date == today - timedelta(days=3):
-        return 0  # 近3天
-    if 6 <= d <= 8 and start_date == today - timedelta(weeks=1):
-        return 1  # 近1週
+        return 1  # 近3天
+    if 6 <= d <= 8 and start_date == today - timedelta(days=7):
+        return 2  # 近1週
     if 28 <= d <= 32 and start_date == today - timedelta(days=30):
-        return 2  # 近1個月
+        return 3  # 近1個月
     if 178 <= d <= 182 and start_date == today - timedelta(days=180):
-        return 3  # 近半年
+        return 4  # 近半年
     if 363 <= d <= 367 and start_date == today - timedelta(days=365):
-        return 4  # 近1年
+        return 5  # 近1年
     return -1
-
-
-def _inject_range_button_highlight(active_index):
-    """當區間與快捷按鈕重合時，將該按鈕以深色高亮（第一排 6 欄為快捷按鈕）。"""
-    if active_index < 0:
-        return
-    n = active_index + 1
-    st.markdown(f"""
-    <style>
-    [data-testid="stHorizontalBlock"] > div:nth-child({n}) button {{
-        background-color: #262730 !important;
-        color: white !important;
-        border-color: #262730;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
 
 
 def _pnl_color(val):
@@ -488,14 +474,22 @@ with st.container():
             st.session_state["portfolio_start"] = today - timedelta(days=days)
         st.session_state["portfolio_end"] = today
 
-    b0, b1, b2, b3, b4, b5, b6 = st.columns(7)
-    b0.button("當日", key="btn_today", on_click=_pf_set_range, kwargs={"today_only": True}, use_container_width=True)
-    b1.button("近3天", key="btn_3d", on_click=_pf_set_range, kwargs={"days": 3}, use_container_width=True)
-    b2.button("近1週", key="btn_1w", on_click=_pf_set_range, kwargs={"days": 7}, use_container_width=True)
-    b3.button("近1個月", key="btn_1m", on_click=_pf_set_range, kwargs={"days": 30}, use_container_width=True)
-    b4.button("近半年", key="btn_6m", on_click=_pf_set_range, kwargs={"days": 180}, use_container_width=True)
-    b5.button("近1年", key="btn_1y", on_click=_pf_set_range, kwargs={"days": 365}, use_container_width=True)
-    b6.button("全部", key="btn_all", on_click=_pf_set_range, kwargs={"all_time": True}, use_container_width=True)
+    # 直接用 type="primary" 高亮當前區間鈕（從 session_state 算，最準；不靠全域 CSS）
+    _pf_active = _range_active_index(st.session_state.get("portfolio_start"), st.session_state.get("portfolio_end"), today)
+    _pf_cols = st.columns(7)
+    for _i, (_lab, _key, _kw) in enumerate([
+        ("當日", "btn_today", {"today_only": True}),
+        ("近3天", "btn_3d", {"days": 3}),
+        ("近1週", "btn_1w", {"days": 7}),
+        ("近1個月", "btn_1m", {"days": 30}),
+        ("近半年", "btn_6m", {"days": 180}),
+        ("近1年", "btn_1y", {"days": 365}),
+        ("全部", "btn_all", {"all_time": True}),
+    ]):
+        _pf_cols[_i].button(
+            _lab, key=_key, on_click=_pf_set_range, kwargs=_kw,
+            use_container_width=True, type=("primary" if _pf_active == _i else "secondary"),
+        )
 
     # 先載入資料供篩選與報表使用
     try:
@@ -546,7 +540,6 @@ with st.container():
                 key="portfolio_filter_user_multi",
             )
             portfolio_filter_users = selected_users if selected_users else []
-    _inject_range_button_highlight(_range_active_index(start_date, end_date, today))
     st.caption("持倉與損益會先套用 **自定沖銷** 規則；若選擇「未定沖銷部分」策略，則會對尚未被規則覆蓋的部分自動補配。")
     st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
 
