@@ -361,6 +361,8 @@ pnl_col = display_mode
 total_pnl = df[pnl_col].sum()
 realized_sum = df["已實現"].sum()
 unrealized_sum = df["未實現"].sum()
+# 總損益卡固定＝區間已實現 ＋ 目前未實現（真實總額），不隨顯示模式變
+grand_total = realized_sum + unrealized_sum
 realized_ret_pct = (realized_sum / realized_cost_sum * 100) if realized_cost_sum > 0 else None
 unrealized_ret_pct = (unrealized_sum / unrealized_cost_sum * 100) if unrealized_cost_sum > 0 else None
 win_stocks = (df[pnl_col] > 0).sum()
@@ -473,7 +475,7 @@ with r1_1:
     st.markdown(f"""
     <div class="portfolio-kpi-card">
         <div class="portfolio-kpi-label">總損益</div>
-        <div class="portfolio-kpi-value {pnl_class(total_pnl)}">{fmt_money_compact(total_pnl)}</div>
+        <div class="portfolio-kpi-value {pnl_class(grand_total)}">{fmt_money_compact(grand_total)}</div>
         <div class="portfolio-kpi-meta">區間已實現 ＋ 目前未實現</div>
     </div>""", unsafe_allow_html=True)
 with r1_2:
@@ -548,7 +550,8 @@ with r3_2:
     st.markdown(f"""
     <div class="portfolio-kpi-card">
         <div class="portfolio-kpi-label">最大回撤</div>
-        <div class="portfolio-kpi-value">{fmt_money_compact(max_dd)}</div>
+        <div class="portfolio-kpi-value">{('-' + fmt_money_compact(max_dd).lstrip('+')) if max_dd > 0 else '0'}</div>
+        <div class="portfolio-kpi-meta">累積已實現的最大回落</div>
     </div>""", unsafe_allow_html=True)
 with r3_3:
     st.markdown(f"""
