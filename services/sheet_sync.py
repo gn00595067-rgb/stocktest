@@ -491,19 +491,24 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         _ensure_ws(SHEET_USER_BINDINGS, len(USER_BINDINGS_HEADERS))
         _ensure_ws(SHEET_TRADERS, len(TRADERS_HEADERS))
 
-        # 防呆：記憶體 0 筆交易、但試算表已有資料時，拒絕以空資料整表覆蓋。
-        # 這是資料被洗掉的根因保護：啟動時「從試算表載入」若失敗，記憶體會是空的，
-        # 之後任一次存檔就會用空資料清空試算表；此處直接中止，保住既有資料。
-        if len(r_trades) == 0:
-            try:
-                existing_rows = max(0, len(ws_trades.get_all_values()) - 1)
-            except Exception:
-                existing_rows = 0
-            if existing_rows > 0:
-                return False, (
-                    f"已中止寫回以保護資料：記憶體目前 0 筆交易，但試算表已有 {existing_rows} 筆。"
-                    f"這通常代表啟動時未成功從試算表載入。請『重新啟動（Reboot）app』讓它重新載入後再操作。"
-                )
+        # 防呆：比對「記憶體筆數」與「試算表現有筆數」。記憶體若明顯變少，代表
+        # 啟動載入不完整或記憶體過期，強行寫回會用殘缺資料覆蓋掉試算表——這正是
+        # 交易被一批批消失的根因。此時直接中止，保住試算表既有資料。
+        try:
+            existing_rows = max(0, len(ws_trades.get_all_values()) - 1)
+        except Exception:
+            existing_rows = 0
+        mem_rows = len(r_trades)
+        if existing_rows > 0 and (
+            mem_rows == 0
+            or (mem_rows < existing_rows * 0.85 and (existing_rows - mem_rows) >= 10)
+        ):
+            return False, (
+                f"已中止寫回以保護資料：記憶體目前 {mem_rows} 筆交易，但試算表已有 {existing_rows} 筆"
+                f"（少了 {existing_rows - mem_rows} 筆）。這通常代表 app 記憶體不是最新，"
+                f"強行寫回會蓋掉試算表資料。請先『Reboot』讓 app 重新載入最新資料後再操作；"
+                f"若你確實剛大量刪除，Reboot 後再刪一次即可。"
+            )
 
         # 安全寫回策略：先「寫入」再「修剪」，而不是先清空全部再寫。
         # 若寫入那步失敗（如 429），試算表維持原本資料、不會被清空——
