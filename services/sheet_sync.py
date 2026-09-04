@@ -21,6 +21,7 @@ SHEET_RULES = "custom_match_rules"
 SHEET_USERS = "user_accounts"
 SHEET_USER_BINDINGS = "user_trader_bindings"
 SHEET_TRADERS = "traders"
+SHEET_TRADES_BACKUP = "trades_backup"  # 自動備份：每次健康同步後保存 trades 快照
 
 # 欄位順序（與 DB 對應）
 TRADES_HEADERS = ["id", "user", "stock_id", "trade_date", "side", "price", "quantity", "is_daytrade", "fee", "tax", "note"]
@@ -491,29 +492,31 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         _ensure_ws(SHEET_USER_BINDINGS, len(USER_BINDINGS_HEADERS))
         _ensure_ws(SHEET_TRADERS, len(TRADERS_HEADERS))
 
-        # 防呆：比對「記憶體筆數」與「試算表現有筆數」。記憶體若明顯變少，代表
-        # 啟動載入不完整或記憶體過期，強行寫回會用殘缺資料覆蓋掉試算表——這正是
-        # 交易被一批批消失的根因。此時直接中止，保住試算表既有資料。
+        # ③ 防呆（逐筆 id 比對）：抓試算表現有交易 id 與記憶體比對。記憶體若明顯變少，
+        # 代表載入不完整/記憶體過期，強行寫回會用殘缺資料覆蓋掉試算表——這是交易一批批
+        # 消失的根因。此時直接中止，並列出「少了哪幾筆 id」方便核對。
         try:
-            existing_rows = max(0, len(ws_trades.get_all_values()) - 1)
+            existing_values = ws_trades.get_all_values()
         except Exception:
-            existing_rows = 0
+            existing_values = []
+        existing_rows = max(0, len(existing_values) - 1)
+        sheet_ids = {str(row[0]).strip() for row in existing_values[1:] if row and str(row[0]).strip()}
+        mem_ids = {str(r[0]).strip() for r in r_trades}
+        missing_ids = [i for i in sheet_ids if i not in mem_ids]
         mem_rows = len(r_trades)
         if existing_rows > 0 and (
             mem_rows == 0
             or (mem_rows < existing_rows * 0.85 and (existing_rows - mem_rows) >= 10)
         ):
+            _eg = "、".join(sorted(missing_ids, key=lambda x: (len(x), x))[:8])
             return False, (
-                f"已中止寫回以保護資料：記憶體目前 {mem_rows} 筆交易，但試算表已有 {existing_rows} 筆"
-                f"（少了 {existing_rows - mem_rows} 筆）。這通常代表 app 記憶體不是最新，"
-                f"強行寫回會蓋掉試算表資料。請先『Reboot』讓 app 重新載入最新資料後再操作；"
-                f"若你確實剛大量刪除，Reboot 後再刪一次即可。"
+                f"已中止寫回以保護資料：記憶體 {mem_rows} 筆、試算表 {existing_rows} 筆"
+                f"（記憶體少了 {len(missing_ids)} 筆交易，例如 id {_eg}…）。"
+                f"這通常代表 app 記憶體不是最新，強行寫回會蓋掉試算表。"
+                f"請先『Reboot』重新載入最新資料再操作；若你確實剛大量刪除，Reboot 後再刪一次即可。"
             )
 
-        # 安全寫回策略：先「寫入」再「修剪」，而不是先清空全部再寫。
-        # 若寫入那步失敗（如 429），試算表維持原本資料、不會被清空——
-        # 修掉先前「先清空全部、寫回失敗＝整份資料不見」的風險。
-        # 仍維持批次：1 個 batch_update + 1 個 batch_clear（僅 2 個 write 請求，避開 429 配額）。
+        # 安全寫回：先「寫入」再「修剪」（寫失敗不清空），批次 2 個 write 請求避開 429。
         sheets = [
             (SHEET_TRADES, trades_data),
             (SHEET_RULES, rules_data),
@@ -527,11 +530,29 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         }
         _retry_on_quota(lambda: spread.values_batch_update(body))
 
-        # 寫入成功後，清掉每張表「新資料列數以下」的殘留舊列（只有資料變短時才有作用）。
-        # 修剪失敗只會殘留幾列舊資料、不影響正確性，故不視為同步失敗。
         trim_ranges = [f"{title}!A{len(vals) + 1}:Z" for title, vals in sheets]
         try:
             _retry_on_quota(lambda: spread.values_batch_clear(body={"ranges": trim_ranges}))
+        except Exception:
+            pass
+
+        # ② 寫入後回讀驗證：讀回 trades 筆數與應寫入比對，明顯不足代表沒寫完整 → 回報失敗。
+        try:
+            back_rows = max(0, len(ws_trades.get_all_values()) - 1)
+            if back_rows < len(r_trades):
+                return False, (
+                    f"寫入後回讀只有 {back_rows} 筆、預期 {len(r_trades)} 筆，可能未完整寫入。"
+                    f"請 Reboot 後核對交易明細；若不符請告知，資料在版本紀錄與備份中皆可還原。"
+                )
+        except Exception:
+            pass
+
+        # ① 自動備份：通過防呆的健康資料才會來到這，把 trades 快照存到備份工作表；
+        # 萬一日後又出事，可從這份或 Google 版本紀錄一鍵救回（備份失敗不影響主流程）。
+        try:
+            ws_bak = _ensure_ws(SHEET_TRADES_BACKUP, len(TRADES_HEADERS))
+            _retry_on_quota(lambda: ws_bak.clear())
+            _retry_on_quota(lambda: ws_bak.update(trades_data, value_input_option="USER_ENTERED"))
         except Exception:
             pass
 
