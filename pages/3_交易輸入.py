@@ -940,23 +940,30 @@ def _render_stock_trade_panel(
             st.session_state[rowids_key] = rowids + [_nid]
             st.rerun()
 
-        # ── 單筆賣出：恢復手動沖銷配對介面（預設「接近均價」，可用快捷鍵改、可逐批微調）──
+        # ── 單筆賣出：手動沖銷配對介面（一選「賣出」就顯示；預設「接近均價」，可快捷鍵改、逐批微調）──
         _match_key = f"te_match_{sid}"
         manual_plan = None
-        _single_sell = (
-            len(rows) == 1 and rows[0][0] == "SELL"
-            and rows[0][2] is not None and rows[0][3] is not None
-            and float(rows[0][2]) > 0 and int(rows[0][3]) > 0
-        )
-        if _single_sell:
-            _sp = float(rows[0][2]); _sq = int(rows[0][3]); _sdt = bool(rows[0][4])
+        _single_sell = False
+        _r0 = rows[0] if len(rows) == 1 else None
+        if _r0 is not None and _r0[0] == "SELL":
             _open = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
-            if _open:
+            _sp = float(_r0[2]) if _r0[2] not in (None, "") else 0.0
+            _sq = int(_r0[3]) if _r0[3] not in (None, "") else 0
+            _sdt = bool(_r0[4])
+            if not _open:
+                st.markdown("**沖銷配對**")
+                st.caption("此檔目前沒有可沖銷的買進庫存。")
+            elif _sp <= 0 or _sq <= 0:
+                st.markdown("**沖銷配對**")
+                st.info("👉 請在上方輸入『成交價』與『股數』，下方就會依『接近均價』自動配好對應的買進批次（也可用快捷鍵或手動改）。")
+            else:
+                _single_sell = True
                 # 送出後標記重置：在沖銷 number_input 建立前清掉舊值
                 if st.session_state.pop(f"te_reset_match_{sid}", False):
                     for _mk in [k for k in list(st.session_state.keys()) if str(k).startswith(f"te_mq_{sid}_")]:
                         del st.session_state[_mk]
                     st.session_state.pop(_match_key, None)
+                    st.session_state.pop(f"te_match_autoq_{sid}", None)
                 _tkey = f"te_time_{sid}"; _skey = f"te_sortmode_{sid}"
                 st.session_state.setdefault(_tkey, "all")
                 st.session_state.setdefault(_skey, "nearest_avg")
@@ -967,9 +974,10 @@ def _render_stock_trade_panel(
                         _sq, _lots, st.session_state.get(_tkey, "all"),
                         st.session_state.get(_skey, "nearest_avg"), _sp), _lots)
 
-                # 尚未配過 → 預設用「接近均價」先自動配一次
-                if not st.session_state.get(_match_key):
+                # 股數一改就依目前策略重配（同一股數內的手動微調會保留）
+                if st.session_state.get(f"te_match_autoq_{sid}") != _sq:
                     _reapply_manual()
+                    st.session_state[f"te_match_autoq_{sid}"] = _sq
 
                 st.markdown("**沖銷配對** — 這筆賣出要沖銷哪些買進批次（預設『接近均價』，可用快捷鍵改，或在表格逐批微調；空白視為 0）")
                 st.caption("① 時間範圍")
