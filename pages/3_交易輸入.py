@@ -943,6 +943,7 @@ def _render_stock_trade_panel(
         # ── 單筆賣出：手動沖銷配對介面（一選「賣出」就顯示；預設「接近均價」，可快捷鍵改、逐批微調）──
         _match_key = f"te_match_{sid}"
         manual_plan = None
+        _submit_slot = None
         _single_sell = False
         _r0 = rows[0] if len(rows) == 1 else None
         if _r0 is not None and _r0[0] == "SELL":
@@ -1000,105 +1001,109 @@ def _render_stock_trade_panel(
                 if st.button("🧹 清空配對", key=f"te_clr_{sid}"):
                     _apply_match_plan(sid, _match_key, [], _open)
                     st.rerun()
+                _submit_slot = st.container()
                 _fe, _te = fees_for_trade("SELL", _sp, _sq, is_etf=is_etf, is_daytrade=_sdt)
                 _shown = filter_and_sort_lots(
                     filter_lots_by_time(_open, st.session_state.get(_tkey, "all")),
                     st.session_state.get(_skey, "nearest_avg"), _sp)
                 manual_plan = _render_match_panel(sid, _match_key, _shown, _sq, _sp, trades, _fe, _te)
 
-        # 有效列＝成交價與股數都有填（>0）
-        valid = [(s, d, float(p), int(q), dt, n) for (s, d, p, q, dt, n) in rows
-                 if p is not None and q is not None and float(p) > 0 and int(q) > 0]
-        _fee_sum = 0.0
-        _tax_sum = 0.0
-        for (_s, _d, _p, _q, _dt, _n) in valid:
-            _f, _t = fees_for_trade(_s, _p, _q, is_etf=is_etf, is_daytrade=_dt)
-            _fee_sum += _f
-            _tax_sum += _t
-        st.caption(
-            f"估算（{len(valid)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
-            f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
-            "　賣出沖銷：單筆可在下方『沖銷配對』選擇（預設接近均價）；多筆一律接近均價自動配。"
-        )
-
-        confirm_key = f"te_confirm_{sid}"
-        _btn_label = "✅ 送出此筆交易" if len(valid) <= 1 else f"✅ 送出全部（{len(valid)} 筆）"
-        # 第一步：送出 → 驗證 → 進入確認
-        if st.button(_btn_label, key=f"te_submit_{sid}", type="primary", disabled=(len(valid) == 0)):
-            if not can_access_trader(trader):
-                st.error("無此買賣人權限。")
-            else:
-                st.session_state[confirm_key] = True
-                st.rerun()
-
-        # 第二步：確認框
-        if st.session_state.get(confirm_key):
-            _lines = "；".join(
-                f"{'買入' if s == 'BUY' else '賣出'} {q:,}股 @ {p:.2f}" for (s, d, p, q, dt, n) in valid
+        # 送出鈕改放在清空配對下方、沖銷表上方，單筆賣出免滑到底
+        _sc = _submit_slot if _submit_slot is not None else st.container()
+        with _sc:
+            # 有效列＝成交價與股數都有填（>0）
+            valid = [(s, d, float(p), int(q), dt, n) for (s, d, p, q, dt, n) in rows
+                     if p is not None and q is not None and float(p) > 0 and int(q) > 0]
+            _fee_sum = 0.0
+            _tax_sum = 0.0
+            for (_s, _d, _p, _q, _dt, _n) in valid:
+                _f, _t = fees_for_trade(_s, _p, _q, is_etf=is_etf, is_daytrade=_dt)
+                _fee_sum += _f
+                _tax_sum += _t
+            st.caption(
+                f"估算（{len(valid)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
+                f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
+                "　賣出沖銷：單筆可在下方『沖銷配對』選擇（預設接近均價）；多筆一律接近均價自動配。"
             )
-            st.warning(f"⚠️ 確認送出 {len(valid)} 筆（{sid} {row['name']}）？　{_lines}")
-            _cy, _cn = st.columns(2)
-            _go = _cy.button("✅ 確認送出", key=f"te_confirm_yes_{sid}", type="primary", use_container_width=True)
-            if _cn.button("✖ 取消", key=f"te_confirm_no_{sid}", use_container_width=True):
-                st.session_state.pop(confirm_key, None)
-                st.rerun()
-            if _go:
-                st.session_state.pop(confirm_key, None)
-                # 防連點：同一批 2 秒內重複送出視為誤觸
-                _sig = tuple((s, str(d), p, q, bool(dt), (n or "")) for (s, d, p, q, dt, n) in valid)
-                _last = st.session_state.get("te_last_submit")
-                if _last and _last[0] == _sig and (time.monotonic() - _last[1]) < 2.0:
-                    st.warning("偵測到快速重複送出，已忽略這一次（避免重複記錄）。")
+
+            confirm_key = f"te_confirm_{sid}"
+            _btn_label = "✅ 送出此筆交易" if len(valid) <= 1 else f"✅ 送出全部（{len(valid)} 筆）"
+            # 第一步：送出 → 驗證 → 進入確認
+            if st.button(_btn_label, key=f"te_submit_{sid}", type="primary", disabled=(len(valid) == 0)):
+                if not can_access_trader(trader):
+                    st.error("無此買賣人權限。")
                 else:
-                    st.session_state["te_last_submit"] = (_sig, time.monotonic())
-                    sess = get_session()
-                    try:
-                        # 賣出以「接近均價」自動配對現有未沖銷買進批次；
-                        # 多筆賣出依序扣減剩餘庫存，批次內的買進也納入可配對池
-                        avail_lots = [dict(l) for l in get_open_buy_lots(trades, sid, trader, custom_rules, policy)]
-                        for (s, d, p, q, dt, n) in valid:
-                            _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt)
-                            _tr = Trade(
-                                user=trader, stock_id=sid, trade_date=d, side=s,
-                                price=p, quantity=q, is_daytrade=dt,
-                                fee=_f, tax=(_t if s == "SELL" else 0.0), note=(n or None),
-                            )
-                            sess.add(_tr)
-                            sess.flush()
-                            if s == "BUY":
-                                avail_lots.append({
-                                    "trade_id": _tr.id, "date": str(d), "price": float(p),
-                                    "remaining_qty": int(q), "original_qty": int(q), "fee": float(_f),
-                                })
-                            else:  # 賣出
-                                if _single_sell and manual_plan:
-                                    # 單筆賣出：用使用者在沖銷面板選定/微調的配對
-                                    _plan = [(int(b), int(mq)) for b, mq in manual_plan if int(mq) > 0]
-                                else:
-                                    # 多筆：接近均價自動配對
-                                    _plan = combined_match_plan(int(q), avail_lots, "all", "nearest_avg", float(p))
-                                _consumed = {}
-                                for _bid, _mq in _plan:
-                                    sess.add(CustomMatchRule(
-                                        sell_trade_id=_tr.id, buy_trade_id=int(_bid), matched_qty=int(_mq),
-                                    ))
-                                    _consumed[int(_bid)] = _consumed.get(int(_bid), 0) + int(_mq)
-                                for _lot in avail_lots:
-                                    _c = _consumed.get(int(_lot["trade_id"]), 0)
-                                    if _c:
-                                        _lot["remaining_qty"] = int(_lot["remaining_qty"]) - _c
-                                avail_lots = [l for l in avail_lots if int(l["remaining_qty"]) > 0]
-                        sess.commit()
-                        st.session_state[f"te_rreset_{sid}"] = True
-                        st.session_state[f"te_reset_match_{sid}"] = True
-                        st.session_state["last_user"] = trader
-                        st.success(f"已新增 {len(valid)} 筆交易（{sid} {row['name']}）。")
-                        st.rerun()
-                    except Exception as e:
-                        sess.rollback()
-                        st.error(str(e))
-                    finally:
-                        sess.close()
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+
+            # 第二步：確認框
+            if st.session_state.get(confirm_key):
+                _lines = "；".join(
+                    f"{'買入' if s == 'BUY' else '賣出'} {q:,}股 @ {p:.2f}" for (s, d, p, q, dt, n) in valid
+                )
+                st.warning(f"⚠️ 確認送出 {len(valid)} 筆（{sid} {row['name']}）？　{_lines}")
+                _cy, _cn = st.columns(2)
+                _go = _cy.button("✅ 確認送出", key=f"te_confirm_yes_{sid}", type="primary", use_container_width=True)
+                if _cn.button("✖ 取消", key=f"te_confirm_no_{sid}", use_container_width=True):
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
+                if _go:
+                    st.session_state.pop(confirm_key, None)
+                    # 防連點：同一批 2 秒內重複送出視為誤觸
+                    _sig = tuple((s, str(d), p, q, bool(dt), (n or "")) for (s, d, p, q, dt, n) in valid)
+                    _last = st.session_state.get("te_last_submit")
+                    if _last and _last[0] == _sig and (time.monotonic() - _last[1]) < 2.0:
+                        st.warning("偵測到快速重複送出，已忽略這一次（避免重複記錄）。")
+                    else:
+                        st.session_state["te_last_submit"] = (_sig, time.monotonic())
+                        sess = get_session()
+                        try:
+                            # 賣出以「接近均價」自動配對現有未沖銷買進批次；
+                            # 多筆賣出依序扣減剩餘庫存，批次內的買進也納入可配對池
+                            avail_lots = [dict(l) for l in get_open_buy_lots(trades, sid, trader, custom_rules, policy)]
+                            for (s, d, p, q, dt, n) in valid:
+                                _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt)
+                                _tr = Trade(
+                                    user=trader, stock_id=sid, trade_date=d, side=s,
+                                    price=p, quantity=q, is_daytrade=dt,
+                                    fee=_f, tax=(_t if s == "SELL" else 0.0), note=(n or None),
+                                )
+                                sess.add(_tr)
+                                sess.flush()
+                                if s == "BUY":
+                                    avail_lots.append({
+                                        "trade_id": _tr.id, "date": str(d), "price": float(p),
+                                        "remaining_qty": int(q), "original_qty": int(q), "fee": float(_f),
+                                    })
+                                else:  # 賣出
+                                    if _single_sell and manual_plan:
+                                        # 單筆賣出：用使用者在沖銷面板選定/微調的配對
+                                        _plan = [(int(b), int(mq)) for b, mq in manual_plan if int(mq) > 0]
+                                    else:
+                                        # 多筆：接近均價自動配對
+                                        _plan = combined_match_plan(int(q), avail_lots, "all", "nearest_avg", float(p))
+                                    _consumed = {}
+                                    for _bid, _mq in _plan:
+                                        sess.add(CustomMatchRule(
+                                            sell_trade_id=_tr.id, buy_trade_id=int(_bid), matched_qty=int(_mq),
+                                        ))
+                                        _consumed[int(_bid)] = _consumed.get(int(_bid), 0) + int(_mq)
+                                    for _lot in avail_lots:
+                                        _c = _consumed.get(int(_lot["trade_id"]), 0)
+                                        if _c:
+                                            _lot["remaining_qty"] = int(_lot["remaining_qty"]) - _c
+                                    avail_lots = [l for l in avail_lots if int(l["remaining_qty"]) > 0]
+                            sess.commit()
+                            st.session_state[f"te_rreset_{sid}"] = True
+                            st.session_state[f"te_reset_match_{sid}"] = True
+                            st.session_state["last_user"] = trader
+                            st.success(f"已新增 {len(valid)} 筆交易（{sid} {row['name']}）。")
+                            st.rerun()
+                        except Exception as e:
+                            sess.rollback()
+                            st.error(str(e))
+                        finally:
+                            sess.close()
 
         # 該股全部交易明細（每一天、每一筆；奇摩股市式逐筆列表，可逐筆刪除）
         stock_ts = [
