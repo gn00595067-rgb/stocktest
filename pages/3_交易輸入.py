@@ -940,6 +940,64 @@ def _render_stock_trade_panel(
             st.session_state[rowids_key] = rowids + [_nid]
             st.rerun()
 
+        # ── 單筆賣出：恢復手動沖銷配對介面（預設「接近均價」，可用快捷鍵改、可逐批微調）──
+        _match_key = f"te_match_{sid}"
+        manual_plan = None
+        _single_sell = (
+            len(rows) == 1 and rows[0][0] == "SELL"
+            and rows[0][2] is not None and rows[0][3] is not None
+            and float(rows[0][2]) > 0 and int(rows[0][3]) > 0
+        )
+        if _single_sell:
+            _sp = float(rows[0][2]); _sq = int(rows[0][3]); _sdt = bool(rows[0][4])
+            _open = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
+            if _open:
+                # 送出後標記重置：在沖銷 number_input 建立前清掉舊值
+                if st.session_state.pop(f"te_reset_match_{sid}", False):
+                    for _mk in [k for k in list(st.session_state.keys()) if str(k).startswith(f"te_mq_{sid}_")]:
+                        del st.session_state[_mk]
+                    st.session_state.pop(_match_key, None)
+                _tkey = f"te_time_{sid}"; _skey = f"te_sortmode_{sid}"
+                st.session_state.setdefault(_tkey, "all")
+                st.session_state.setdefault(_skey, "nearest_avg")
+
+                def _reapply_manual():
+                    _lots = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
+                    _apply_match_plan(sid, _match_key, combined_match_plan(
+                        _sq, _lots, st.session_state.get(_tkey, "all"),
+                        st.session_state.get(_skey, "nearest_avg"), _sp), _lots)
+
+                # 尚未配過 → 預設用「接近均價」先自動配一次
+                if not st.session_state.get(_match_key):
+                    _reapply_manual()
+
+                st.markdown("**沖銷配對** — 這筆賣出要沖銷哪些買進批次（預設『接近均價』，可用快捷鍵改，或在表格逐批微調；空白視為 0）")
+                st.caption("① 時間範圍")
+                for _col, (_k, _lab) in zip(st.columns(3), [("all", "全部"), ("3d", "近3天"), ("5d", "近5天")]):
+                    if _col.button(_lab, key=f"te_tbtn_{sid}_{_k}", use_container_width=True,
+                                   type="primary" if st.session_state.get(_tkey) == _k else "secondary"):
+                        st.session_state[_tkey] = _k
+                        _reapply_manual()
+                        st.rerun()
+                st.caption("② 沖銷方式（大賺＝賺多、大賠＝賠多…）")
+                for _col, (_k, _lab) in zip(st.columns(6), [
+                    ("nearest_avg", "⚖️接近均價"), ("fifo", "先進先出"),
+                    ("profit_max", "💰賺多"), ("profit_min", "🪙賺少"),
+                    ("loss_max", "🔻賠多"), ("loss_min", "🩹賠少")]):
+                    if _col.button(_lab, key=f"te_sbtn_{sid}_{_k}", use_container_width=True,
+                                   type="primary" if st.session_state.get(_skey) == _k else "secondary"):
+                        st.session_state[_skey] = _k
+                        _reapply_manual()
+                        st.rerun()
+                if st.button("🧹 清空配對", key=f"te_clr_{sid}"):
+                    _apply_match_plan(sid, _match_key, [], _open)
+                    st.rerun()
+                _fe, _te = fees_for_trade("SELL", _sp, _sq, is_etf=is_etf, is_daytrade=_sdt)
+                _shown = filter_and_sort_lots(
+                    filter_lots_by_time(_open, st.session_state.get(_tkey, "all")),
+                    st.session_state.get(_skey, "nearest_avg"), _sp)
+                manual_plan = _render_match_panel(sid, _match_key, _shown, _sq, _sp, trades, _fe, _te)
+
         # 有效列＝成交價與股數都有填（>0）
         valid = [(s, d, float(p), int(q), dt, n) for (s, d, p, q, dt, n) in rows
                  if p is not None and q is not None and float(p) > 0 and int(q) > 0]
@@ -952,7 +1010,7 @@ def _render_stock_trade_panel(
         st.caption(
             f"估算（{len(valid)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
             f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
-            "　賣出一律以「接近均價」自動沖銷配對計算已實現損益。"
+            "　賣出沖銷：單筆可在下方『沖銷配對』選擇（預設接近均價）；多筆一律接近均價自動配。"
         )
 
         confirm_key = f"te_confirm_{sid}"
@@ -1004,8 +1062,13 @@ def _render_stock_trade_panel(
                                     "trade_id": _tr.id, "date": str(d), "price": float(p),
                                     "remaining_qty": int(q), "original_qty": int(q), "fee": float(_f),
                                 })
-                            else:  # 賣出：接近均價配對
-                                _plan = combined_match_plan(int(q), avail_lots, "all", "nearest_avg", float(p))
+                            else:  # 賣出
+                                if _single_sell and manual_plan:
+                                    # 單筆賣出：用使用者在沖銷面板選定/微調的配對
+                                    _plan = [(int(b), int(mq)) for b, mq in manual_plan if int(mq) > 0]
+                                else:
+                                    # 多筆：接近均價自動配對
+                                    _plan = combined_match_plan(int(q), avail_lots, "all", "nearest_avg", float(p))
                                 _consumed = {}
                                 for _bid, _mq in _plan:
                                     sess.add(CustomMatchRule(
@@ -1019,6 +1082,7 @@ def _render_stock_trade_panel(
                                 avail_lots = [l for l in avail_lots if int(l["remaining_qty"]) > 0]
                         sess.commit()
                         st.session_state[f"te_rreset_{sid}"] = True
+                        st.session_state[f"te_reset_match_{sid}"] = True
                         st.session_state["last_user"] = trader
                         st.success(f"已新增 {len(valid)} 筆交易（{sid} {row['name']}）。")
                         st.rerun()
