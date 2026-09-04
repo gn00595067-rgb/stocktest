@@ -104,8 +104,12 @@ with col_d2:
 with col_m:
     display_mode = st.selectbox(
         "顯示模式",
-        ["合計", "已實現", "未實現"],
-        format_func=lambda x: {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(x, x),
+        ["已實現", "合計", "未實現"],  # 預設「已實現」：只看區間、會隨時間變，最直覺
+        format_func=lambda x: {
+            "已實現": "已實現（區間內、隨時間變）",
+            "合計": "合計（已實現＋未實現；未實現為目前）",
+            "未實現": "未實現（目前、不隨區間變）",
+        }.get(x, x),
     )
 with col_u:
     if is_admin():
@@ -130,7 +134,10 @@ with col_u:
             key="pl_filter_user_multi",
         )
         pl_filter_users = picked_users if picked_users else []
-st.caption("上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。")
+st.caption(
+    "上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。"
+    "　⚠️ 日期區間只影響「**已實現**」（依賣出日）；「未實現」「持倉市值」一律是**目前**的、不隨區間變。"
+)
 
 
 def _pl_range_active_index(start_date, end_date, today):
@@ -476,20 +483,21 @@ with r1_1:
     <div class="portfolio-kpi-card">
         <div class="portfolio-kpi-label">總損益</div>
         <div class="portfolio-kpi-value {pnl_class(total_pnl)}">{fmt_money_compact(total_pnl)}</div>
+        <div class="portfolio-kpi-meta">區間已實現 ＋ 目前未實現</div>
     </div>""", unsafe_allow_html=True)
 with r1_2:
     st.markdown(f"""
     <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">已實現</div>
+        <div class="portfolio-kpi-label">已實現（區間）</div>
         <div class="portfolio-kpi-value {pnl_class(realized_sum)}">{fmt_money_compact(realized_sum)}</div>
         <div class="portfolio-kpi-meta">報酬率 {fmt_pct_signed(realized_ret_pct)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_3:
     st.markdown(f"""
     <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">未實現</div>
+        <div class="portfolio-kpi-label">未實現（目前）</div>
         <div class="portfolio-kpi-value {pnl_class(unrealized_sum)}">{fmt_money_compact(unrealized_sum)}</div>
-        <div class="portfolio-kpi-meta">報酬率 {fmt_pct_signed(unrealized_ret_pct)}</div>
+        <div class="portfolio-kpi-meta">不隨區間變 · 報酬率 {fmt_pct_signed(unrealized_ret_pct)}</div>
     </div>""", unsafe_allow_html=True)
 with r1_4:
     st.markdown(f"""
