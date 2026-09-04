@@ -52,14 +52,20 @@ if "pl_end" not in st.session_state:
 st.markdown("#### 篩選條件")
 
 
-def _pl_set_range(days=None, all_time=False):
+def _pl_set_range(days=None, all_time=False, today_only=False):
     """快速區間：用 on_click callback 設定日期（callback 在 widget 建立前執行，
     改 date_input 的 pl_start/pl_end 才會可靠生效並連動到下方結果）。"""
-    st.session_state["pl_start"] = date(2000, 1, 1) if all_time else (today - timedelta(days=days))
+    if all_time:
+        st.session_state["pl_start"] = date(2000, 1, 1)
+    elif today_only:
+        st.session_state["pl_start"] = today
+    else:
+        st.session_state["pl_start"] = today - timedelta(days=days)
     st.session_state["pl_end"] = today
 
 
-b1, b2, b3, b4, b5, b6 = st.columns(6)
+b0, b1, b2, b3, b4, b5, b6 = st.columns(7)
+b0.button("當日", key="pl_btn_today", on_click=_pl_set_range, kwargs={"today_only": True}, use_container_width=True)
 b1.button("近3天", key="pl_btn_3d", on_click=_pl_set_range, kwargs={"days": 3}, use_container_width=True)
 b2.button("近1週", key="pl_btn_1w", on_click=_pl_set_range, kwargs={"days": 7}, use_container_width=True)
 b3.button("近1個月", key="pl_btn_1m", on_click=_pl_set_range, kwargs={"days": 30}, use_container_width=True)

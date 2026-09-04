@@ -479,11 +479,17 @@ with st.container():
         st.session_state["portfolio_end"] = today
 
     # 快捷區間按鈕：用 on_click callback 才會可靠連動到下方日期與結果
-    def _pf_set_range(days=None, all_time=False):
-        st.session_state["portfolio_start"] = date(2000, 1, 1) if all_time else (today - timedelta(days=days))
+    def _pf_set_range(days=None, all_time=False, today_only=False):
+        if all_time:
+            st.session_state["portfolio_start"] = date(2000, 1, 1)
+        elif today_only:
+            st.session_state["portfolio_start"] = today
+        else:
+            st.session_state["portfolio_start"] = today - timedelta(days=days)
         st.session_state["portfolio_end"] = today
 
-    b1, b2, b3, b4, b5, b6 = st.columns(6)
+    b0, b1, b2, b3, b4, b5, b6 = st.columns(7)
+    b0.button("當日", key="btn_today", on_click=_pf_set_range, kwargs={"today_only": True}, use_container_width=True)
     b1.button("近3天", key="btn_3d", on_click=_pf_set_range, kwargs={"days": 3}, use_container_width=True)
     b2.button("近1週", key="btn_1w", on_click=_pf_set_range, kwargs={"days": 7}, use_container_width=True)
     b3.button("近1個月", key="btn_1m", on_click=_pf_set_range, kwargs={"days": 30}, use_container_width=True)
