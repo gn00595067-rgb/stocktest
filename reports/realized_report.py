@@ -110,7 +110,7 @@ def summarize_ledger(df: pd.DataFrame) -> Dict[str, float]:
         "筆數", "獲利筆數", "虧損筆數", "打平筆數", "勝率%",
         "平均每筆", "平均獲利", "平均虧損", "盈虧比", "期望值",
         "最大單筆獲利", "最大單筆虧損",
-        "總手續費", "總證交稅", "總費用",
+        "總手續費", "總買手續費", "總賣手續費", "總證交稅", "總費用", "總賣費及稅",
         "平均持有天數", "當沖筆數", "當沖淨損益", "波段筆數", "波段淨損益",
     ]
     if df is None or df.empty:
@@ -151,8 +151,12 @@ def summarize_ledger(df: pd.DataFrame) -> Dict[str, float]:
         "最大單筆獲利": float(net.max()) if n else 0.0,
         "最大單筆虧損": float(net.min()) if n else 0.0,
         "總手續費": float(df["買手續費"].sum() + df["賣手續費"].sum()),
+        "總買手續費": float(df["買手續費"].sum()),
+        "總賣手續費": float(df["賣手續費"].sum()),
         "總證交稅": float(df["證交稅"].sum()),
         "總費用": float(df["總費用"].sum()),
+        # 賣手續費＋證交稅：買費已含在「買進成本」內，故淨損益的對帳只需再扣這一項
+        "總賣費及稅": float(df["賣手續費"].sum() + df["證交稅"].sum()),
         "平均持有天數": float(hold_days.mean()) if len(hold_days) else 0.0,
         "當沖筆數": int(len(day)),
         "當沖淨損益": float(day["淨損益"].sum()) if len(day) else 0.0,
