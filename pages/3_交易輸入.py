@@ -933,19 +933,36 @@ def _render_stock_trade_panel(
                         st.rerun()
             rows.append((_s, _d, _p, _q, _dt, _n))
 
-        # 「多輸入一筆」：在備註下方，按一下往下再長一列
-        if st.button("➕ 多輸入一筆", key=f"te_addrow_{sid}"):
-            _nid = st.session_state[seq_key]
-            st.session_state[seq_key] = _nid + 1
-            st.session_state[rowids_key] = rowids + [_nid]
-            st.rerun()
+        # 「多輸入一筆」：在備註下方，按一下往下再長一列。
+        # 賣出採「逐筆處理」：只要有任一列選了『賣出』，就隱藏加列鈕，改走
+        # 單筆賣出 → 手動沖銷配對 → 送出 → 清空 → 下一筆 的流程（見下方沖銷配對）。
+        _any_sell_selected = any(_r[0] == "SELL" for _r in rows)
+        if _any_sell_selected:
+            st.caption("🧾 賣出採**逐筆送出**：這筆配好沖銷、送出後表單會清空，再輸入下一筆（庫存即時更新，配對才準）。")
+        else:
+            if st.button("➕ 多輸入一筆", key=f"te_addrow_{sid}"):
+                _nid = st.session_state[seq_key]
+                st.session_state[seq_key] = _nid + 1
+                st.session_state[rowids_key] = rowids + [_nid]
+                st.rerun()
 
-        # ── 單筆賣出：手動沖銷配對介面（一選「賣出」就顯示；預設「接近均價」，可快捷鍵改、逐批微調）──
+        # ── 賣出逐筆：手動沖銷配對介面（選「賣出」並填好價量就顯示；預設「接近均價」，可快捷鍵改、逐批微調）──
+        # 逐筆處理：在所有列中找「第一筆已填妥價量的賣出」，只為它做手動配對與送出，
+        # 送出後清掉這一列、其餘保留，讓多筆賣出能一筆一筆各自配對。
         _match_key = f"te_match_{sid}"
         manual_plan = None
         _submit_slot = None
         _single_sell = False
-        _r0 = rows[0] if len(rows) == 1 else None
+        _active_sell_idx = None
+        _active_rid = None
+        for _i, _rr in enumerate(rows):
+            if (_rr[0] == "SELL" and _rr[2] not in (None, "") and _rr[3] not in (None, "")
+                    and float(_rr[2]) > 0 and int(_rr[3]) > 0):
+                _active_sell_idx = _i
+                _active_rid = rowids[_i]
+                break
+        _sell_mode = _active_sell_idx is not None
+        _r0 = rows[_active_sell_idx] if _sell_mode else None
         if _r0 is not None and _r0[0] == "SELL":
             _open = get_open_buy_lots(trades, sid, trader, custom_rules, policy)
             _sp = float(_r0[2]) if _r0[2] not in (None, "") else 0.0
@@ -1008,28 +1025,52 @@ def _render_stock_trade_panel(
                     st.session_state.get(_skey, "nearest_avg"), _sp)
                 manual_plan = _render_match_panel(sid, _match_key, _shown, _sq, _sp, trades, _fe, _te)
 
+        # 已選「賣出」但尚未填好價量：提示補上，逐筆沖銷配對面板才會出現
+        if (not _sell_mode) and _any_sell_selected:
+            st.markdown("**沖銷配對**")
+            st.info("👉 這是『賣出』：請先填『成交價』與『股數』，下方就會出現逐筆沖銷配對（預設接近均價，可用快捷鍵或手動改）。")
+
         # 送出鈕改放在清空配對下方、沖銷表上方，單筆賣出免滑到底
         _sc = _submit_slot if _submit_slot is not None else st.container()
         with _sc:
             # 有效列＝成交價與股數都有填（>0）
             valid = [(s, d, float(p), int(q), dt, n) for (s, d, p, q, dt, n) in rows
                      if p is not None and q is not None and float(p) > 0 and int(q) > 0]
+            # 逐筆處理：有已填妥的賣出時，只送出「這一筆賣出」（用下方手動配對）；
+            # 其餘列保留，送出後再逐筆處理。全部是買進時仍可一次批次送出。
+            if _sell_mode:
+                _asr = rows[_active_sell_idx]
+                submit_rows = [(_asr[0], _asr[1], float(_asr[2]), int(_asr[3]), _asr[4], _asr[5])]
+            else:
+                submit_rows = valid
             _fee_sum = 0.0
             _tax_sum = 0.0
-            for (_s, _d, _p, _q, _dt, _n) in valid:
+            for (_s, _d, _p, _q, _dt, _n) in submit_rows:
                 _f, _t = fees_for_trade(_s, _p, _q, is_etf=is_etf, is_daytrade=_dt)
                 _fee_sum += _f
                 _tax_sum += _t
-            st.caption(
-                f"估算（{len(valid)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
-                f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
-                "　賣出沖銷：單筆可在下方『沖銷配對』選擇（預設接近均價）；多筆一律接近均價自動配。"
-            )
+            if _sell_mode:
+                st.caption(
+                    f"估算（這筆賣出）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
+                    f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
+                    "　沖銷用下方選定的批次；送出後表單清空，再輸入下一筆賣出。"
+                )
+            else:
+                st.caption(
+                    f"估算（{len(submit_rows)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
+                    f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
+                    "　（買進可一次多筆送出；賣出會自動改為逐筆，方便個別選擇沖銷配對。）"
+                )
 
             confirm_key = f"te_confirm_{sid}"
-            _btn_label = "✅ 送出此筆交易" if len(valid) <= 1 else f"✅ 送出全部（{len(valid)} 筆）"
+            if _sell_mode:
+                _btn_label = "✅ 送出這筆賣出"
+            elif len(submit_rows) <= 1:
+                _btn_label = "✅ 送出此筆交易"
+            else:
+                _btn_label = f"✅ 送出全部（{len(submit_rows)} 筆）"
             # 第一步：送出 → 驗證 → 進入確認
-            if st.button(_btn_label, key=f"te_submit_{sid}", type="primary", disabled=(len(valid) == 0)):
+            if st.button(_btn_label, key=f"te_submit_{sid}", type="primary", disabled=(len(submit_rows) == 0)):
                 if not can_access_trader(trader):
                     st.error("無此買賣人權限。")
                 else:
@@ -1039,9 +1080,9 @@ def _render_stock_trade_panel(
             # 第二步：確認框
             if st.session_state.get(confirm_key):
                 _lines = "；".join(
-                    f"{'買入' if s == 'BUY' else '賣出'} {q:,}股 @ {p:.2f}" for (s, d, p, q, dt, n) in valid
+                    f"{'買入' if s == 'BUY' else '賣出'} {q:,}股 @ {p:.2f}" for (s, d, p, q, dt, n) in submit_rows
                 )
-                st.warning(f"⚠️ 確認送出 {len(valid)} 筆（{sid} {row['name']}）？　{_lines}")
+                st.warning(f"⚠️ 確認送出 {len(submit_rows)} 筆（{sid} {row['name']}）？　{_lines}")
                 _cy, _cn = st.columns(2)
                 _go = _cy.button("✅ 確認送出", key=f"te_confirm_yes_{sid}", type="primary", use_container_width=True)
                 if _cn.button("✖ 取消", key=f"te_confirm_no_{sid}", use_container_width=True):
@@ -1050,7 +1091,7 @@ def _render_stock_trade_panel(
                 if _go:
                     st.session_state.pop(confirm_key, None)
                     # 防連點：同一批 2 秒內重複送出視為誤觸
-                    _sig = tuple((s, str(d), p, q, bool(dt), (n or "")) for (s, d, p, q, dt, n) in valid)
+                    _sig = tuple((s, str(d), p, q, bool(dt), (n or "")) for (s, d, p, q, dt, n) in submit_rows)
                     _last = st.session_state.get("te_last_submit")
                     if _last and _last[0] == _sig and (time.monotonic() - _last[1]) < 2.0:
                         st.warning("偵測到快速重複送出，已忽略這一次（避免重複記錄）。")
@@ -1061,7 +1102,7 @@ def _render_stock_trade_panel(
                             # 賣出以「接近均價」自動配對現有未沖銷買進批次；
                             # 多筆賣出依序扣減剩餘庫存，批次內的買進也納入可配對池
                             avail_lots = [dict(l) for l in get_open_buy_lots(trades, sid, trader, custom_rules, policy)]
-                            for (s, d, p, q, dt, n) in valid:
+                            for (s, d, p, q, dt, n) in submit_rows:
                                 _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt)
                                 _tr = Trade(
                                     user=trader, stock_id=sid, trade_date=d, side=s,
@@ -1094,10 +1135,17 @@ def _render_stock_trade_panel(
                                             _lot["remaining_qty"] = int(_lot["remaining_qty"]) - _c
                                     avail_lots = [l for l in avail_lots if int(l["remaining_qty"]) > 0]
                             sess.commit()
-                            st.session_state[f"te_rreset_{sid}"] = True
+                            if _sell_mode:
+                                # 逐筆：移除剛送出的這筆賣出列，其餘列（買進／其他賣出）保留；
+                                # 若已無列則回到一列空白，等待輸入下一筆。
+                                _rest = [r for r in st.session_state.get(rowids_key, [0]) if r != _active_rid]
+                                st.session_state.setdefault(f"te_rowdel_{sid}", []).append(_active_rid)
+                                st.session_state[rowids_key] = _rest if _rest else [0]
+                            else:
+                                st.session_state[f"te_rreset_{sid}"] = True
                             st.session_state[f"te_reset_match_{sid}"] = True
                             st.session_state["last_user"] = trader
-                            st.success(f"已新增 {len(valid)} 筆交易（{sid} {row['name']}）。")
+                            st.success(f"已新增 {len(submit_rows)} 筆交易（{sid} {row['name']}）。")
                             st.rerun()
                         except Exception as e:
                             sess.rollback()
