@@ -455,7 +455,7 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
         sess.close()
 
 
-def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: str, is_etf: bool) -> None:
+def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: str, is_etf: bool, name: str = "") -> None:
     """奇摩股市式可編輯逐筆交易表：買賣人、買/賣、股數、股價、手續費、當沖可直接改；按鈕整批儲存。"""
     orig_by_id = {int(t.id): t for t in stock_ts}
     # 可選買賣人清單（管理者看全部，一般帳號看有權限者），並含目前表內已出現的人
@@ -468,6 +468,7 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
     df = pd.DataFrame([
         {
             "id": int(t.id),
+            "股名": name or sid,
             "買賣人": (t.user or "").strip() or trader,
             "交易日期": _coerce_date(str(t.trade_date)[:10]),
             "買/賣": "買入" if str(t.side).upper() == "BUY" else "賣出",
@@ -492,6 +493,10 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
         num_rows="dynamic",
         column_config={
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "股名": st.column_config.TextColumn(
+                "股名", disabled=True, width="small",
+                help="此列所屬股票名稱；往下拉時可對照，避免看錯是哪一檔。",
+            ),
             "買賣人": st.column_config.SelectboxColumn(
                 "買賣人", options=trader_opts, required=False, width="small",
                 help="可改指定這筆交易屬於哪位買賣人；改成他人需有該買賣人的權限。新列留空＝目前選定的買賣人。",
@@ -503,11 +508,13 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
             "手續費": st.column_config.NumberColumn(
                 "手續費 ✏️可改",
                 format="accounting",
+                width="small",
                 help="可直接填券商實收金額（例如折讓後手續費）。儲存時不會自動重算，你改的數字會保留。",
             ),
             "證交稅": st.column_config.NumberColumn(
                 "證交稅 ✏️可改",
                 format="accounting",
+                width="small",
                 help="可直接填實際證交稅。賣出才收；買進為 0。儲存時不會自動重算，你改的數字會保留。",
             ),
             "當沖": st.column_config.CheckboxColumn(
@@ -1163,7 +1170,7 @@ def _render_stock_trade_panel(
         if not stock_ts:
             st.caption("此股尚無交易，於上方輸入第一筆。")
         else:
-            _render_stock_tx_list(sid, stock_ts, float(row["price"] or 0), trader, is_etf)
+            _render_stock_tx_list(sid, stock_ts, float(row["price"] or 0), trader, is_etf, name=str(row["name"]))
 
         # ── 從清單移除 / 刪除此股 ──
         st.divider()
