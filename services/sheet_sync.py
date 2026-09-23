@@ -33,6 +33,64 @@ TRADERS_HEADERS = ["id", "name", "created_at"]
 # 需寫入試算表時用的範圍（Scopes）
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 資料保護（可用環境變數覆寫）。設計目標：即使程式更新/同步出錯，也不易遺失或弄錯任何資料。
+# 與寫回流程既有的三道防呆（0 筆守門、id 逐筆縮水守門、寫入後回讀驗證）搭配，另加：
+#   1) 滾動時間戳備份：每次健康寫回後，把 trades 快照存成 trades_bak_<時間> 分頁（保留最近 N 份、
+#      自動修剪）。單一固定備份會被下次覆寫蓋掉，滾動備份才留得住歷史（Google 版本紀錄只留少數幾版）。
+#   2) 嚴格載入：從試算表載入時，凡「有 id 卻解析失敗」的資料列一律視為錯誤、不再靜默跳過；
+#      發生時該次載入以失敗計，呼叫端不會標記為已同步，也就不會用不完整的記憶體覆寫試算表。
+#      （本次聯電 16 張買進於 9/2 轉移遺失，即屬「載入掉列→覆寫成殘缺版」這一類。）
+# ─────────────────────────────────────────────────────────────────────────────
+BACKUP_PREFIX = "trades_bak_"
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1", "true", "yes", "y", "是")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, "")).strip())
+    except (ValueError, TypeError):
+        return default
+
+
+def backup_prune_plan(titles, keep: int, prefix: str = BACKUP_PREFIX):
+    """純函式：給定所有分頁標題，回傳「應刪除的舊備份標題」清單（保留最新 keep 份）。
+
+    備份標題格式 trades_bak_YYYYmmdd_HHMM，字典序即時間序，故可直接排序。
+    """
+    baks = sorted([t for t in titles if str(t).startswith(prefix)])
+    if keep <= 0:
+        return baks
+    if len(baks) <= keep:
+        return []
+    return baks[: len(baks) - keep]
+
+
+def _rolling_backup(spread, source_ws, keep: int) -> str:
+    """把 source_ws 複製成 trades_bak_<時間> 分頁，並修剪舊備份到最多 keep 份。回傳備份分頁名（失敗回傳空字串）。"""
+    from datetime import datetime as _dt
+    name = BACKUP_PREFIX + _dt.now().strftime("%Y%m%d_%H%M%S")
+    try:
+        spread.duplicate_sheet(source_sheet_id=source_ws.id, new_sheet_name=name)
+    except Exception:
+        return ""
+    try:
+        titles = [w.title for w in spread.worksheets()]
+        for t in backup_prune_plan(titles, keep):
+            try:
+                spread.del_worksheet(spread.worksheet(t))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return name
+
 
 def _is_quota_error(e) -> bool:
     """判斷是否為 Google Sheets 配額／限流錯誤（429 或 5xx 暫時性）。"""
@@ -255,28 +313,36 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                 conn.commit()
 
         # 插入 trades（保留 id）
+        # skipped_data：有 id（＝真實資料列）卻解析失敗而被跳過的筆數。這種列絕不能靜默丟掉，
+        # 否則就是這次聯電掉單的重演——載入少了列、下次存檔就把試算表覆寫成殘缺版。
+        skipped_data = []
+        inserted_trades = 0
         if rows_trades:
             with engine.connect() as conn:
                 for r in rows_trades:
                     tid = r.get("id")
                     if tid is None or (isinstance(tid, str) and not tid.strip()):
-                        continue
+                        continue  # 完全空白列，正常略過
                     try:
                         tid = int(float(tid))
                     except (ValueError, TypeError):
+                        skipped_data.append(f"id={tid!r} 非數字")
                         continue
                     user = str(r.get("user") or "").strip() or "匯入"
                     stock_id = str(r.get("stock_id") or "").strip()
                     trade_date = _parse_date(r.get("trade_date"))
                     if not trade_date:
+                        skipped_data.append(f"id={tid} 日期無法解析({r.get('trade_date')!r})")
                         continue
                     side = str(r.get("side") or "BUY").strip().upper()
                     if side not in ("BUY", "SELL"):
+                        skipped_data.append(f"id={tid} side異常({r.get('side')!r})")
                         continue
                     try:
                         price = float(r.get("price") or 0)
                         quantity = int(float(r.get("quantity") or 0))
                     except (ValueError, TypeError):
+                        skipped_data.append(f"id={tid} 價格/股數非數字")
                         continue
                     is_daytrade = _parse_bool(r.get("is_daytrade"))
                     fee = r.get("fee")
@@ -292,7 +358,17 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                         "side": side, "price": price, "quantity": quantity, "is_daytrade": is_daytrade,
                         "fee": fee, "tax": tax, "note": note,
                     })
+                    inserted_trades += 1
                 conn.commit()
+
+        # 嚴格載入：有資料列解析失敗 → 該次載入視為失敗，呼叫端不標記已同步、也不會用殘缺記憶體覆寫試算表。
+        if skipped_data and _env_flag("SHEET_STRICT_IMPORT", True):
+            sample = "；".join(skipped_data[:5])
+            more = f"（另有 {len(skipped_data) - 5} 筆）" if len(skipped_data) > 5 else ""
+            return False, (
+                f"從試算表載入時有 {len(skipped_data)} 筆交易資料無法解析，為保護資料已中止載入（不會覆寫試算表）。"
+                f"請修正試算表 trades 分頁後重試：{sample}{more}"
+            )
 
         # 插入 custom_match_rules
         if rows_rules:
@@ -547,12 +623,19 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
         except Exception:
             pass
 
-        # ① 自動備份：通過防呆的健康資料才會來到這，把 trades 快照存到備份工作表；
-        # 萬一日後又出事，可從這份或 Google 版本紀錄一鍵救回（備份失敗不影響主流程）。
+        # ① 自動備份：通過防呆的健康資料才會來到這。
+        #   a) 固定備份分頁 trades_backup：永遠保有「最近一次健康快照」，一鍵可救。
+        #   b) 滾動時間戳備份 trades_bak_<時間>：保留最近 N 份歷史，避免單一快照被下一次覆寫蓋掉
+        #      （Google 版本紀錄對這種表只留少數幾版，不足以回溯，故自建滾動備份）。
+        #   （備份失敗不影響主流程。）
         try:
             ws_bak = _ensure_ws(SHEET_TRADES_BACKUP, len(TRADES_HEADERS))
             _retry_on_quota(lambda: ws_bak.clear())
             _retry_on_quota(lambda: ws_bak.update(trades_data, value_input_option="USER_ENTERED"))
+        except Exception:
+            pass
+        try:
+            _rolling_backup(spread, ws_trades, _env_int("SHEET_BACKUP_KEEP", 10))
         except Exception:
             pass
 
