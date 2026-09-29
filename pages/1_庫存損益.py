@@ -26,7 +26,7 @@ from services.auth_service import (
     is_admin,
     get_allowed_traders,
 )
-from reports.portfolio_report import build_portfolio_df
+from reports.portfolio_report import build_portfolio_df, get_realized_pnl_by_stock
 from reports.stock_detail_report import build_stock_detail
 from services.prefs import resolve_default_trader
 from services.trader_service import all_trader_names
@@ -161,17 +161,23 @@ def _fmt_big(val):
 # ---------------------------------------------------------------------------
 # KPI 摘要區
 # ---------------------------------------------------------------------------
-def build_portfolio_kpi_cards(df: pd.DataFrame, realized_ret_pct=None, unrealized_ret_pct=None) -> None:
-    """持倉市值、未實現損益、已實現損益、總報酬率。正數紅/負數綠。"""
+def build_portfolio_kpi_cards(df: pd.DataFrame, realized_ret_pct=None, unrealized_ret_pct=None,
+                              total_realized=None, total_return_pct=None) -> None:
+    """持倉市值、未實現損益、已實現損益、總報酬率。正數紅/負數綠。
+
+    total_realized / total_return_pct 若有傳入則採用（已在頁面端以「全部股票、含已賣光」口徑算好，
+    與「已實現損益」頁一致）；未傳入時退回只由持倉表加總（僅含仍有庫存的股票）。"""
     if df.empty:
         st.caption("尚無持倉，無法計算 KPI。")
         return
     total_mv = df["市值"].sum()
     total_unrealized = df["未實現損益"].sum()
-    total_realized = df["已實現損益"].sum()
-    total_pnl = df["總損益"].sum()
-    cost_basis = total_mv - total_unrealized
-    total_return_pct = (total_pnl / cost_basis * 100) if cost_basis and cost_basis != 0 else 0.0
+    if total_realized is None:
+        total_realized = df["已實現損益"].sum()
+    if total_return_pct is None:
+        total_pnl = df["總損益"].sum()
+        cost_basis = total_mv - total_unrealized
+        total_return_pct = (total_pnl / cost_basis * 100) if cost_basis and cost_basis != 0 else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -541,7 +547,7 @@ with st.container():
             )
             portfolio_filter_users = selected_users if selected_users else []
     st.caption("持倉與損益會先套用 **自定沖銷** 規則；若選擇「未定沖銷部分」策略，則會對尚未被規則覆蓋的部分自動補配。")
-    st.caption("**已實現損益**依上列日期區間計算；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
+    st.caption("**已實現損益**依上列日期區間計算，且**涵蓋全部股票（含已全部賣光的標的）**，與「已實現損益」頁同口徑；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
 
 trades = [t for t in all_trades if start_date <= t.trade_date <= end_date]
 
@@ -609,11 +615,19 @@ for _k, vv in bucket.items():
         realized_cost_sum += qty * buy_price + buy_fee_alloc
 
 total_unrealized = float(df["未實現損益"].sum()) if "未實現損益" in df.columns else 0.0
-total_realized = float(df["已實現損益"].sum()) if "已實現損益" in df.columns else 0.0
+# 已實現損益：改用「全部股票、賣出日落在區間」口徑（含已全部賣光的股票），與「已實現損益」頁一致。
+# 舊寫法 df["已實現損益"].sum() 只加總「仍有庫存」的股票，會漏掉已出清標的的已實現損益，導致數字偏低。
+realized_by_stock = get_realized_pnl_by_stock(trades_for_kpi, start_date, end_date, policy, custom_rules=custom_rules)
+total_realized = float(sum(realized_by_stock.values()))
 unrealized_cost_sum = float((df["市值"] - df["未實現損益"]).sum()) if ("市值" in df.columns and "未實現損益" in df.columns) else 0.0
 realized_ret_pct = (total_realized / realized_cost_sum * 100) if realized_cost_sum > 0 else None
 unrealized_ret_pct = (total_unrealized / unrealized_cost_sum * 100) if unrealized_cost_sum > 0 else None
-build_portfolio_kpi_cards(df, realized_ret_pct=realized_ret_pct, unrealized_ret_pct=unrealized_ret_pct)
+# 總報酬率＝(未實現 + 全部已實現) ÷ (持倉成本 + 已實現成本)，分子分母口徑一致（皆含已出清標的）
+_total_pnl = total_unrealized + total_realized
+_total_cost = unrealized_cost_sum + realized_cost_sum
+total_return_pct = (_total_pnl / _total_cost * 100) if _total_cost > 0 else None
+build_portfolio_kpi_cards(df, realized_ret_pct=realized_ret_pct, unrealized_ret_pct=unrealized_ret_pct,
+                          total_realized=total_realized, total_return_pct=total_return_pct)
 
 # ----- 3. 持倉明細表 -----
 st.markdown("---")
