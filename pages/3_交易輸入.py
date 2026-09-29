@@ -944,14 +944,32 @@ def _render_stock_trade_panel(
         # 賣出採「逐筆處理」：只要有任一列選了『賣出』，就隱藏加列鈕，改走
         # 單筆賣出 → 手動沖銷配對 → 送出 → 清空 → 下一筆 的流程（見下方沖銷配對）。
         _any_sell_selected = any(_r[0] == "SELL" for _r in rows)
+        # 是否有已填入內容的列（有值才需要「清空」；純空白列不顯示，避免誤點）
+        _has_filled_row = any(
+            (_r[2] not in (None, "")) or (_r[3] not in (None, "")) or (_r[5] or "").strip()
+            for _r in rows
+        )
+        _addcol, _clrcol = st.columns([1, 1])
+        with _addcol:
+            # 賣出改逐筆送出，不再加列；純買進時才顯示「多輸入一筆」
+            if not _any_sell_selected:
+                if st.button("➕ 多輸入一筆", key=f"te_addrow_{sid}"):
+                    _nid = st.session_state[seq_key]
+                    st.session_state[seq_key] = _nid + 1
+                    st.session_state[rowids_key] = rowids + [_nid]
+                    st.rerun()
+        with _clrcol:
+            # 一鍵清空所有「還沒送出」的輸入列，回到一列空白；複用送出後的重置機制。
+            # 送出後理應自動清空，此鈕是保險：萬一自動重置沒觸發，也不必逐筆刪。
+            if _has_filled_row and st.button(
+                "🧹 清空輸入列", key=f"te_clearrows_{sid}",
+                help="清掉上面所有尚未送出的輸入列，回到一列空白（不影響已送出／已存的交易）。",
+            ):
+                st.session_state[f"te_rreset_{sid}"] = True
+                st.session_state[f"te_reset_match_{sid}"] = True
+                st.rerun()
         if _any_sell_selected:
             st.caption("🧾 賣出採**逐筆送出**：這筆配好沖銷、送出後表單會清空，再輸入下一筆（庫存即時更新，配對才準）。")
-        else:
-            if st.button("➕ 多輸入一筆", key=f"te_addrow_{sid}"):
-                _nid = st.session_state[seq_key]
-                st.session_state[seq_key] = _nid + 1
-                st.session_state[rowids_key] = rowids + [_nid]
-                st.rerun()
 
         # ── 賣出逐筆：手動沖銷配對介面（選「賣出」並填好價量就顯示；預設「接近均價」，可快捷鍵改、逐批微調）──
         # 逐筆處理：在所有列中找「第一筆已填妥價量的賣出」，只為它做手動配對與送出，
