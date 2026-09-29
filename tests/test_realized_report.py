@@ -5,6 +5,8 @@ import sys
 from datetime import date
 from types import SimpleNamespace as NS
 
+import pandas as pd
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from reports.realized_report import (
     build_realized_ledger, summarize_ledger, aggregate_by, monthly_series,
@@ -71,6 +73,22 @@ def test_aggregate_and_monthly():
     assert list(m["月份"]) == ["2026-02", "2026-03", "2026-04"]
     # 累積最後一格 = 總損益
     assert abs(m["累積已實現"].iloc[-1] - led["淨損益"].sum()) < 1e-6
+
+
+def test_aggregate_by_handles_zero_cost_stock():
+    """配股（price=0）被賣出時，該股票買進成本為 0，aggregate_by 的『報酬率%』除以 0
+    不可讓整頁崩潰（先前用 pd.NA 會把欄位轉 object，.round(2) 逐格套 round() 拋 TypeError）。"""
+    masters = {"6666": NS(name="配股測試", industry_name="其他")}
+    trades = [
+        _t(101, "Jonathan", "6666", date(2026, 5, 1), "配股", 0, 1000, 0),
+        _t(102, "Jonathan", "6666", date(2026, 6, 1), "SELL", 10, 1000, 14, 30),
+    ]
+    led = build_realized_ledger(trades, masters, "CUSTOM_PLUS_FIFO")
+    agg = aggregate_by(led, "代號")  # 不可拋例外
+    row = agg[agg["代號"] == "6666"].iloc[0]
+    assert row["買進成本"] == 0
+    # 買進成本為 0 → 報酬率無法計算，應為 NaN（而非崩潰）
+    assert pd.isna(row["報酬率%"])
 
 
 def test_empty_inputs():

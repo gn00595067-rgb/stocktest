@@ -180,7 +180,9 @@ def aggregate_by(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
         總費用=("總費用", "sum"),
     ).reset_index()
     agg["勝率%"] = (agg["獲利筆數"] / agg["筆數"] * 100).round(1)
-    agg["報酬率%"] = (agg["淨損益"] / agg["買進成本"].replace(0, pd.NA) * 100).round(2)
+    # 買進成本為 0 的股票（例如全配股 price=0）以 NaN 迴避除零；用 float("nan") 而非 pd.NA，
+    # 才能保持整欄為 float dtype，否則 .round(2) 會對含 pd.NA 的 object 欄逐格套 round() 而拋 TypeError。
+    agg["報酬率%"] = (agg["淨損益"] / agg["買進成本"].replace(0, float("nan")) * 100).round(2)
     agg = agg.sort_values(by="淨損益", ascending=False, kind="mergesort").reset_index(drop=True)
     return agg
 
