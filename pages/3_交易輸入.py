@@ -41,7 +41,7 @@ from services.auth_service import (
     can_access_trader,
     filter_trades_by_permission,
 )
-from services.trade_fees import fees_for_trade, get_fee_tax_rates
+from services.trade_fees import breakeven_sell_price, fees_for_trade, get_fee_tax_rates
 from services.prefs import resolve_default_trader
 from services.trader_service import (
     list_trader_names,
@@ -264,10 +264,11 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
 
 
 # 持股表格欄寬與對齊（表頭與資料列必須一致）
-_HOLD_COL_WIDTHS = [1.5, 0.7, 1.0, 0.9, 0.82, 1.0, 1.1, 1.15, 1.1, 0.7]
-_HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "成交均價", "持股成本均價", "總成本", "未實現", ""]
-_HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
-_HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "right", "right", "center"]
+# 股名／代號非重點，收窄讓出空間給「底價」
+_HOLD_COL_WIDTHS = [1.0, 0.5, 0.95, 0.9, 0.8, 0.95, 1.05, 0.9, 1.1, 1.05, 0.7]
+_HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "成交均價", "持股成本均價", "底價", "總成本", "未實現", ""]
+_HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
+_HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "right", "right", "right", "center"]
 
 
 def _quote_color(change) -> str:
@@ -303,8 +304,11 @@ def _render_holdings_header():
         c.markdown(f'<div class="te-hold-th" style="text-align:{ta}">{lbl}</div>', unsafe_allow_html=True)
 
 
-def _render_holding_row(row: dict, sid: str, open_now: bool):
+def _render_holding_row(row: dict, sid: str, open_now: bool, is_etf: bool = False):
     cols = st.columns(_HOLD_COL_WIDTHS)
+    # 底價：全部股數賣在此價，扣除賣出手續費與證交稅後剛好不虧（藍字）
+    _be = breakeven_sell_price(float(row.get("total_cost", 0) or 0), int(row["qty"] or 0), is_etf=is_etf)
+    breakeven = f'<span style="color:#1565c0;font-weight:700">{_be:.2f}</span>' if _be else "—"
     avg_price = f"{row.get('avg_price', 0):.2f}" if row["qty"] else "—"
     avg = f"{row['avg_cost']:.2f}" if row["qty"] else "—"
     total_cost = f'{row.get("total_cost", 0):,.0f}' if row["qty"] else "—"
@@ -317,15 +321,16 @@ def _render_holding_row(row: dict, sid: str, open_now: bool):
         f'{row["qty"]:,}',
         avg_price,
         avg,
+        breakeven,
         total_cost,
         _html_pnl_amount(row["unrealized"]),
     ]
-    for c, v, jc in zip(cols[:9], values, _HOLD_JUSTIFY[:9]):
+    for c, v, jc in zip(cols[:10], values, _HOLD_JUSTIFY[:10]):
         c.markdown(
             f'<div class="te-hold-td" style="justify-content:{jc}">{v}</div>',
             unsafe_allow_html=True,
         )
-    with cols[9]:
+    with cols[10]:
         if st.button(
             "收合" if open_now else "輸入",
             key=f"te_toggle_{sid}",
@@ -863,7 +868,7 @@ def _render_stock_trade_panel(
         st.session_state.pop("te_expand_stock", None)
     open_now = bool(st.session_state.get(open_key, False))
 
-    _render_holding_row(row, sid, open_now)
+    _render_holding_row(row, sid, open_now, is_etf=is_etf)
 
     if not open_now:
         return
@@ -892,7 +897,7 @@ def _render_stock_trade_panel(
 
         _bw = [1.0, 1.1, 0.95, 0.95, 0.6, 0.85, 0.85, 1.15, 0.45]
         _hc = st.columns(_bw)
-        for _c, _lab in zip(_hc, ["買/賣", "交易日期", "成交價", "股數", "當沖", "手續費", "證交稅", "備註", ""]):
+        for _c, _lab in zip(_hc, ["買/賣", "交易日期", "股數", "成交價", "當沖", "手續費", "證交稅", "備註", ""]):
             _c.caption(_lab)
 
         rows = []
@@ -907,14 +912,15 @@ def _render_stock_trade_panel(
                 "交易日期", value=st.session_state.get(f"te_r_{sid}_{_rid}_date", trade_date),
                 key=f"te_r_{sid}_{_rid}_date", label_visibility="collapsed",
             )
-            # 成交價／股數預設空白（value=None），平板可直接輸入，不必先清掉 0
-            _p = _c2.number_input(
-                "成交價", min_value=0.0, value=None, step=0.01, format="%.2f",
-                key=f"te_r_{sid}_{_rid}_price", label_visibility="collapsed",
-            )
-            _q = _c3.number_input(
+            # 股數／成交價預設空白（value=None），平板可直接輸入，不必先清掉 0
+            # 依同事習慣先輸股數、再輸成交價：股數放 _c2、成交價放 _c3（widget key 不變）
+            _q = _c2.number_input(
                 "股數", min_value=0, value=None, step=100,
                 key=f"te_r_{sid}_{_rid}_qty", label_visibility="collapsed",
+            )
+            _p = _c3.number_input(
+                "成交價", min_value=0.0, value=None, step=0.01, format="%.2f",
+                key=f"te_r_{sid}_{_rid}_price", label_visibility="collapsed",
             )
             _dt = _c4.checkbox("當沖", key=f"te_r_{sid}_{_rid}_dt", label_visibility="collapsed")
             # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對。
@@ -998,7 +1004,7 @@ def _render_stock_trade_panel(
                 st.caption("此檔目前沒有可沖銷的買進庫存。")
             elif _sp <= 0 or _sq <= 0:
                 st.markdown("**沖銷配對**")
-                st.info("👉 請在上方輸入『成交價』與『股數』，下方就會依『接近均價』自動配好對應的買進批次（也可用快捷鍵或手動改）。")
+                st.info("👉 請在上方輸入『股數』與『成交價』，下方就會依『接近均價』自動配好對應的買進批次（也可用快捷鍵或手動改）。")
             else:
                 _single_sell = True
                 # 送出後標記重置：在沖銷 number_input 建立前清掉舊值
@@ -1053,7 +1059,7 @@ def _render_stock_trade_panel(
         # 已選「賣出」但尚未填好價量：提示補上，逐筆沖銷配對面板才會出現
         if (not _sell_mode) and _any_sell_selected:
             st.markdown("**沖銷配對**")
-            st.info("👉 這是『賣出』：請先填『成交價』與『股數』，下方就會出現逐筆沖銷配對（預設接近均價，可用快捷鍵或手動改）。")
+            st.info("👉 這是『賣出』：請先填『股數』與『成交價』，下方就會出現逐筆沖銷配對（預設接近均價，可用快捷鍵或手動改）。")
 
         # 送出鈕改放在清空配對下方、沖銷表上方，單筆賣出免滑到底
         _sc = _submit_slot if _submit_slot is not None else st.container()
@@ -1461,6 +1467,7 @@ if day_trades:
         df,
         use_container_width=True,
         hide_index=True,
+        height=35 * (len(df) + 1) + 3,  # 全部展開，不在小視窗內捲動
         column_config={
             "價格": st.column_config.NumberColumn("價格", format="accounting"),
             "股數": st.column_config.NumberColumn("股數", format="localized"),

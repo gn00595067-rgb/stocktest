@@ -32,6 +32,7 @@ from services.prefs import resolve_default_trader
 from services.trader_service import all_trader_names
 from services.price_service import get_quote_cached, fetch_daily_prices
 from services.pnl_engine import Lot, compute_matches
+from services.trade_fees import breakeven_sell_price
 
 # ---------------------------------------------------------------------------
 # 圖表視覺常數（統一 theme）
@@ -220,10 +221,10 @@ def style_portfolio_dataframe(df: pd.DataFrame, pnl_columns: list = None):
         return df.style
     pnl_columns = pnl_columns or ["未實現損益", "已實現損益", "總損益"]
     format_map = {}
-    for col in ["市值", "股數", "均價", "現價"] + list(pnl_columns):
+    for col in ["市值", "股數", "均價", "底價", "現價"] + list(pnl_columns):
         if col not in df.columns:
             continue
-        if col in ["均價", "現價"]:
+        if col in ["均價", "底價", "現價"]:
             format_map[col] = "{:,.2f}"
         else:
             format_map[col] = "{:,.0f}"
@@ -239,6 +240,10 @@ def style_portfolio_dataframe(df: pd.DataFrame, pnl_columns: list = None):
     for col in pnl_columns:
         if col in df.columns:
             sty = sty.apply(lambda s: _color_pnl(s), subset=[col])
+
+    # 底價：藍字，提醒「賣到這個價才打平」
+    if "底價" in df.columns:
+        sty = sty.apply(lambda s: ["color: #1565c0; font-weight: 600;"] * len(s), subset=["底價"])
 
     # 市值欄位用淺色 data bar 效果（不依賴 matplotlib）
     if "市值" in df.columns:
@@ -664,6 +669,23 @@ if "市值" in df_display.columns:
             df_display = df_display.assign(_mv=df_display["市值"].astype(float)).sort_values(by="_mv", ascending=False, kind="mergesort").drop(columns=["_mv"])
         except Exception:
             pass
+# 底價：全部股數以此價賣出、扣除賣出手續費與證交稅後剛好不虧（成本＝市值−未實現，已含買進手續費）
+if not df_display.empty and {"股數", "均價", "市值", "未實現損益"}.issubset(df_display.columns):
+    def _row_breakeven(r):
+        _m = masters.get(str(r.get("股票代號") or "").strip())
+        return breakeven_sell_price(
+            float(r["市值"]) - float(r["未實現損益"]), int(r["股數"] or 0),
+            is_etf=bool(getattr(_m, "is_etf", False)),
+        )
+    df_display = df_display.copy()
+    df_display.insert(df_display.columns.get_loc("均價") + 1, "底價", df_display.apply(_row_breakeven, axis=1).astype(float))
+
+
+def _full_height(n_rows: int) -> int:
+    """st.dataframe 全部展開的高度（每列約 35px + 表頭），取消內部捲動。"""
+    return 35 * (n_rows + 1) + 3
+
+
 # 用原生 st.dataframe 呈現持倉表：可排序、保持原樣式，點選列展開明細
 if "portfolio_detail_row" not in st.session_state:
     st.session_state["portfolio_detail_row"] = None
@@ -679,7 +701,7 @@ for _idx, row in df_display.iterrows():
     detail_rows.append((sid, name, user))
 
 # 簡化操作：不再佔左側空間；僅在有選取時於表格上方顯示一條工具列 + 小收合按鈕
-st.caption("提示：點表格任一列即可展開下方明細")
+st.caption("提示：點表格任一列即可展開下方明細。**底價**＝全部股數賣在此價，扣除賣出手續費與證交稅後剛好不虧（已依升降單位進位）。")
 
 event = st.dataframe(
     style_portfolio_dataframe(df_display),
@@ -687,6 +709,7 @@ event = st.dataframe(
     hide_index=True,
     on_select="rerun",
     selection_mode="single-row",
+    height=_full_height(len(df_display)),
     key=f"portfolio_table_{st.session_state['portfolio_table_key_v']}",
 )
 try:
@@ -754,9 +777,10 @@ if choice is not None and 0 <= choice < len(detail_rows):
                 sold_df.style.format(fmt_sold).apply(_detail_style_subset_df, axis=None, subset=style_cols),
                 use_container_width=True,
                 hide_index=True,
+                height=_full_height(len(sold_df)),
             )
         else:
-            st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True)
+            st.dataframe(sold_df.style.format(fmt_sold), use_container_width=True, hide_index=True, height=_full_height(len(sold_df)))
         st.caption(f"總賣出金額：{sold_revenue:,.0f}" if sold_revenue else "0")
     st.markdown("**庫存**")
     if inv_df.empty:
@@ -770,129 +794,11 @@ if choice is not None and 0 <= choice < len(detail_rows):
                 inv_df.style.format(fmt_inv).apply(_detail_style_subset_df, axis=None, subset=style_cols),
                 use_container_width=True,
                 hide_index=True,
+                height=_full_height(len(inv_df)),
             )
         else:
-            st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True)
+            st.dataframe(inv_df.style.format(fmt_inv), use_container_width=True, hide_index=True, height=_full_height(len(inv_df)))
         st.caption(f"庫存股數 {inv_summary.get('庫存股數', 0):,} · 原始成本 {inv_summary.get('原始成本', 0):,.0f} · 均價 {inv_summary.get('原始均價', 0):.2f}")
-
-with st.expander("🔍 為何還有持倉？— 買進／賣出總股數對照", expanded=False):
-    st.caption("下表為每筆持倉的 **買進總股數** 與 **賣出總股數**，持倉 = 買進 − 賣出。若賣出總股數小於買進總股數，就會有剩餘持倉。請至「交易輸入」補齊該股票、該買賣人的賣出紀錄後，持倉才會歸零。")
-    if not df.empty and "買進總股數" in df.columns:
-        diag = df[["買賣人", "股票代號", "名稱", "買進總股數", "賣出總股數", "股數"]].copy()
-        diag = diag.rename(columns={"股數": "持倉股數"})
-        st.dataframe(diag.style.format({"買進總股數": "{:,.0f}", "賣出總股數": "{:,.0f}", "持倉股數": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
-    else:
-        st.caption("尚無持倉或資料未含買進／賣出總股數。")
-with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價）", expanded=False):
-    st.caption("以下為 **程式內部** 依「全部買進成本 − 已沖銷成本 − 已沖銷之買進手續費」算出剩餘持倉成本，再 ÷ 股數 = 均價。可對照檢查是哪一項導致均價異常。")
-    if debug_cost:
-        if any(d.get("qty_mismatch") for d in debug_cost.values()):
-            st.warning("部分股票之自定沖銷規則與實際買賣數量不一致（已沖銷總股數 ≠ 賣出總股數），持倉與均價已依實際股數推算。請至「自定沖銷設定」檢查並補齊或修正配對。")
-        debug_rows = []
-        for sid in sorted(debug_cost.keys()):
-            d = debug_cost[sid]
-            name = (masters.get(sid).name if masters.get(sid) else "") or sid
-            debug_rows.append({
-                "股票": f"{sid} {name}".strip(),
-                "全部買進成本(含手續費)": round(d["total_buy_cost_raw"], 0),
-                "已沖銷成本": round(d["matched_cost"], 0),
-                "已沖銷買進手續費": round(d["matched_buy_fee"], 0),
-                "剩餘持倉成本": round(d["remaining_cost"], 0),
-                "持倉股數": d["position_qty"],
-                "均價(=剩餘÷股數)": round(d["avg_cost"], 2),
-            })
-        _debug_df = pd.DataFrame(debug_rows)
-        _fmt_debug = {
-            "全部買進成本(含手續費)": "{:,.0f}", "已沖銷成本": "{:,.0f}", "已沖銷買進手續費": "{:,.0f}",
-            "剩餘持倉成本": "{:,.0f}", "持倉股數": "{:,.0f}", "均價(=剩餘÷股數)": "{:,.2f}",
-        }
-        st.dataframe(_debug_df.style.format(_fmt_debug, na_rep="—"), use_container_width=True, hide_index=True)
-    else:
-        st.caption("尚無持倉。")
-with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘）", expanded=False):
-    st.caption("可選一檔股票，查看 **每筆買進**、**沖銷配對**、**剩餘未沖銷的買進**。若均價異常，請看「剩餘持倉」表：是否有單筆買進單價異常高（例如 788）。")
-    if debug_cost:
-        opts = sorted(debug_cost.keys())
-        labels = [f"{sid} {(getattr(masters.get(sid), 'name', None) or '')}".strip() for sid in opts]
-        choice_idx = st.selectbox("選擇股票", range(len(opts)), format_func=lambda i: labels[i], key="debug_cost_stock")
-        sid = opts[choice_idx]
-        d = debug_cost[sid]
-        max_buy = d.get("max_buy_price") or 0
-        avg_c = d.get("avg_cost") or 0
-        sum_rem = d.get("sum_remaining_from_lots")
-        sum_qty_lots = d.get("sum_remaining_qty_from_lots")
-        avg_from_lots = d.get("avg_cost_from_lots")
-        pos_qty = d.get("position_qty") or 0
-        rem_cost = d.get("remaining_cost") or 0
-        remaining_fee = d.get("remaining_buy_fee") or 0
-        if sum_rem is not None and sum_qty_lots is not None and avg_from_lots is not None:
-            st.caption(f"**依③表加總**（未沖銷買進 股數×單價）：剩餘成本 = {sum_rem:,.0f}，股數 = {sum_qty_lots:,}，均價（不含手續費）= **{avg_from_lots:.2f}**。程式顯示剩餘成本 = {rem_cost:,.0f}（含剩餘手續費 {remaining_fee:,.0f}），股數 = {pos_qty:,}，均價 = {avg_c:.2f}。")
-        st.markdown("**① 每筆買進（全部）**")
-        if d.get("buys_detail"):
-            _b = pd.DataFrame(d["buys_detail"]).rename(columns={"trade_id": "交易ID", "date": "日期", "qty": "股數", "price": "單價", "fee": "手續費", "cost": "成本(股數×單價+手續費)"})
-            st.dataframe(_b.style.format({"股數": "{:,.0f}", "單價": "{:,.2f}", "手續費": "{:,.0f}", "成本(股數×單價+手續費)": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
-        else:
-            st.caption("無買進紀錄")
-        st.markdown("**② 沖銷配對（已沖銷掉的買進）**")
-        if d.get("matches_detail"):
-            _m = pd.DataFrame(d["matches_detail"]).rename(columns={"buy_id": "買進ID", "sell_id": "賣出ID", "matched_qty": "沖銷股數", "buy_price": "買進單價", "matched_cost": "沖銷成本"})
-            st.dataframe(_m.style.format({"沖銷股數": "{:,.0f}", "買進單價": "{:,.2f}", "沖銷成本": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
-        else:
-            st.caption("無沖銷")
-        st.markdown("**③ 剩餘持倉（未沖銷的買進，這些構成目前均價）**")
-        if d.get("remaining_lots_detail"):
-            _r = pd.DataFrame(d["remaining_lots_detail"]).rename(columns={"buy_id": "買進ID", "date": "日期", "remaining_qty": "剩餘股數", "price": "單價", "remaining_cost": "剩餘成本"})
-            st.dataframe(_r.style.format({"剩餘股數": "{:,.0f}", "單價": "{:,.2f}", "剩餘成本": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
-            st.caption("若上表出現單價異常（如 788），代表該筆買進資料有誤或沖銷配對未涵蓋該筆。")
-        else:
-            st.caption("無剩餘持倉（已全數沖銷）")
-        # 一鍵複製／下載除錯文字
-        st.markdown("**📋 除錯用一鍵複製**")
-        lines = [f"股票：{sid} {(getattr(masters.get(sid), 'name', None) or '')}".strip()]
-        if max_buy and avg_c > max_buy * 1.01:
-            lines.append(f"⚠️ 異常：本檔買進最高單價為 {max_buy}，但剩餘持倉均價為 {avg_c:.2f}。均價不應高於任何一筆買進單價，可能是同一筆交易被重複計入成本（例如重複匯入或同一交易出現在多個買賣人）。已改為依交易 ID 去重計算；若仍異常請檢查資料。")
-        lines.append("")
-        lines.append("① 每筆買進（全部）")
-        if d.get("buys_detail"):
-            lines.append("交易ID\t日期\t股數\t單價\t手續費\t成本")
-            for r in d["buys_detail"]:
-                lines.append(f"{r['trade_id']}\t{r['date']}\t{r['qty']}\t{r['price']}\t{r['fee']}\t{round(r['cost'], 0)}")
-        else:
-            lines.append("無買進紀錄")
-        lines.append("")
-        lines.append("② 沖銷配對（已沖銷掉的買進）")
-        if d.get("matches_detail"):
-            lines.append("買進ID\t賣出ID\t沖銷股數\t買進單價\t沖銷成本")
-            for r in d["matches_detail"]:
-                lines.append(f"{r['buy_id']}\t{r['sell_id']}\t{r['matched_qty']}\t{r['buy_price']}\t{round(r['matched_cost'], 0)}")
-        else:
-            lines.append("無沖銷")
-        lines.append("")
-        lines.append("③ 剩餘持倉（未沖銷的買進，這些構成目前均價）")
-        if d.get("remaining_lots_detail"):
-            lines.append("買進ID\t日期\t剩餘股數\t單價\t剩餘成本")
-            for r in d["remaining_lots_detail"]:
-                lines.append(f"{r['buy_id']}\t{r['date']}\t{r['remaining_qty']}\t{r['price']}\t{round(r['remaining_cost'], 0)}")
-        else:
-            lines.append("無剩餘持倉（已全數沖銷）")
-        debug_text = "\n".join(lines)
-        st.code(debug_text, language=None)
-        st.download_button("下載除錯文字 (.txt)", data=debug_text, file_name=f"cost_debug_{sid}.txt", mime="text/plain", key=f"download_debug_cost_{sid}")
-    else:
-        st.caption("尚無持倉。")
-with st.expander("🔍 若某檔「均價」異常如何排查", expanded=False):
-    st.markdown("""
-    **均價怎麼來的**  
-    均價 ＝ 剩餘持倉成本 ÷ 股數。剩餘持倉成本 ＝ 全部買進成本（含手續費）− 已沖銷掉的成本與對應手續費。
-
-    **均價明顯偏高的可能原因**
-    1. **某筆買進的「成交價」或「股數」輸入錯誤**（例如 788 誤鍵成 488 或 288，或小數點、位數錯誤）。
-    2. **Excel 沖銷庫存匯入時**，該股票分頁的「股價」欄解析錯誤（例如抓到合計列或錯誤欄位）。
-    3. **自定沖銷配對不當**，導致高價買單較少被沖銷，剩餘持倉多為高價單，拉高均價。
-
-    **建議排查步驟**  
-    請至 **個股明細** 選擇該股票（如 3037 欣興），在 **庫存** 表中查看每一筆買進的「股價」與「股數」；若有單筆股價明顯偏離該股歷史區間（例如超過 700），代表該筆資料有誤。可至 **交易輸入** 或 **交易匯入** 檢查並修正該筆交易，或刪除後重新輸入。
-    """)
 
 # ----- 4. 個股走勢與沖銷（依上方沖銷方式計算報酬與數據） -----
 st.markdown("---")
@@ -1031,3 +937,124 @@ if not df_user.empty:
     st.caption("滑鼠移至上圖可顯示各買賣人持倉市值佔比（%）。")
 else:
     st.caption("無依買賣人區分之持倉。")
+
+# ----- 7. 除錯／排查（放最下方：非日常查看，避免擠到持倉明細） -----
+st.markdown("---")
+with st.expander("🔍 為何還有持倉？— 買進／賣出總股數對照", expanded=False):
+    st.caption("下表為每筆持倉的 **買進總股數** 與 **賣出總股數**，持倉 = 買進 − 賣出。若賣出總股數小於買進總股數，就會有剩餘持倉。請至「交易輸入」補齊該股票、該買賣人的賣出紀錄後，持倉才會歸零。")
+    if not df.empty and "買進總股數" in df.columns:
+        diag = df[["買賣人", "股票代號", "名稱", "買進總股數", "賣出總股數", "股數"]].copy()
+        diag = diag.rename(columns={"股數": "持倉股數"})
+        st.dataframe(diag.style.format({"買進總股數": "{:,.0f}", "賣出總股數": "{:,.0f}", "持倉股數": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
+    else:
+        st.caption("尚無持倉或資料未含買進／賣出總股數。")
+with st.expander("🔍 持倉成本計算明細（程式內部如何算出均價）", expanded=False):
+    st.caption("以下為 **程式內部** 依「全部買進成本 − 已沖銷成本 − 已沖銷之買進手續費」算出剩餘持倉成本，再 ÷ 股數 = 均價。可對照檢查是哪一項導致均價異常。")
+    if debug_cost:
+        if any(d.get("qty_mismatch") for d in debug_cost.values()):
+            st.warning("部分股票之自定沖銷規則與實際買賣數量不一致（已沖銷總股數 ≠ 賣出總股數），持倉與均價已依實際股數推算。請至「自定沖銷設定」檢查並補齊或修正配對。")
+        debug_rows = []
+        for sid in sorted(debug_cost.keys()):
+            d = debug_cost[sid]
+            name = (masters.get(sid).name if masters.get(sid) else "") or sid
+            debug_rows.append({
+                "股票": f"{sid} {name}".strip(),
+                "全部買進成本(含手續費)": round(d["total_buy_cost_raw"], 0),
+                "已沖銷成本": round(d["matched_cost"], 0),
+                "已沖銷買進手續費": round(d["matched_buy_fee"], 0),
+                "剩餘持倉成本": round(d["remaining_cost"], 0),
+                "持倉股數": d["position_qty"],
+                "均價(=剩餘÷股數)": round(d["avg_cost"], 2),
+            })
+        _debug_df = pd.DataFrame(debug_rows)
+        _fmt_debug = {
+            "全部買進成本(含手續費)": "{:,.0f}", "已沖銷成本": "{:,.0f}", "已沖銷買進手續費": "{:,.0f}",
+            "剩餘持倉成本": "{:,.0f}", "持倉股數": "{:,.0f}", "均價(=剩餘÷股數)": "{:,.2f}",
+        }
+        st.dataframe(_debug_df.style.format(_fmt_debug, na_rep="—"), use_container_width=True, hide_index=True)
+    else:
+        st.caption("尚無持倉。")
+with st.expander("🔍 單一股票成本組成（每筆買進／沖銷／剩餘）", expanded=False):
+    st.caption("可選一檔股票，查看 **每筆買進**、**沖銷配對**、**剩餘未沖銷的買進**。若均價異常，請看「剩餘持倉」表：是否有單筆買進單價異常高（例如 788）。")
+    if debug_cost:
+        opts = sorted(debug_cost.keys())
+        labels = [f"{sid} {(getattr(masters.get(sid), 'name', None) or '')}".strip() for sid in opts]
+        choice_idx = st.selectbox("選擇股票", range(len(opts)), format_func=lambda i: labels[i], key="debug_cost_stock")
+        sid = opts[choice_idx]
+        d = debug_cost[sid]
+        max_buy = d.get("max_buy_price") or 0
+        avg_c = d.get("avg_cost") or 0
+        sum_rem = d.get("sum_remaining_from_lots")
+        sum_qty_lots = d.get("sum_remaining_qty_from_lots")
+        avg_from_lots = d.get("avg_cost_from_lots")
+        pos_qty = d.get("position_qty") or 0
+        rem_cost = d.get("remaining_cost") or 0
+        remaining_fee = d.get("remaining_buy_fee") or 0
+        if sum_rem is not None and sum_qty_lots is not None and avg_from_lots is not None:
+            st.caption(f"**依③表加總**（未沖銷買進 股數×單價）：剩餘成本 = {sum_rem:,.0f}，股數 = {sum_qty_lots:,}，均價（不含手續費）= **{avg_from_lots:.2f}**。程式顯示剩餘成本 = {rem_cost:,.0f}（含剩餘手續費 {remaining_fee:,.0f}），股數 = {pos_qty:,}，均價 = {avg_c:.2f}。")
+        st.markdown("**① 每筆買進（全部）**")
+        if d.get("buys_detail"):
+            _b = pd.DataFrame(d["buys_detail"]).rename(columns={"trade_id": "交易ID", "date": "日期", "qty": "股數", "price": "單價", "fee": "手續費", "cost": "成本(股數×單價+手續費)"})
+            st.dataframe(_b.style.format({"股數": "{:,.0f}", "單價": "{:,.2f}", "手續費": "{:,.0f}", "成本(股數×單價+手續費)": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
+        else:
+            st.caption("無買進紀錄")
+        st.markdown("**② 沖銷配對（已沖銷掉的買進）**")
+        if d.get("matches_detail"):
+            _m = pd.DataFrame(d["matches_detail"]).rename(columns={"buy_id": "買進ID", "sell_id": "賣出ID", "matched_qty": "沖銷股數", "buy_price": "買進單價", "matched_cost": "沖銷成本"})
+            st.dataframe(_m.style.format({"沖銷股數": "{:,.0f}", "買進單價": "{:,.2f}", "沖銷成本": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
+        else:
+            st.caption("無沖銷")
+        st.markdown("**③ 剩餘持倉（未沖銷的買進，這些構成目前均價）**")
+        if d.get("remaining_lots_detail"):
+            _r = pd.DataFrame(d["remaining_lots_detail"]).rename(columns={"buy_id": "買進ID", "date": "日期", "remaining_qty": "剩餘股數", "price": "單價", "remaining_cost": "剩餘成本"})
+            st.dataframe(_r.style.format({"剩餘股數": "{:,.0f}", "單價": "{:,.2f}", "剩餘成本": "{:,.0f}"}, na_rep="—"), use_container_width=True, hide_index=True)
+            st.caption("若上表出現單價異常（如 788），代表該筆買進資料有誤或沖銷配對未涵蓋該筆。")
+        else:
+            st.caption("無剩餘持倉（已全數沖銷）")
+        # 一鍵複製／下載除錯文字
+        st.markdown("**📋 除錯用一鍵複製**")
+        lines = [f"股票：{sid} {(getattr(masters.get(sid), 'name', None) or '')}".strip()]
+        if max_buy and avg_c > max_buy * 1.01:
+            lines.append(f"⚠️ 異常：本檔買進最高單價為 {max_buy}，但剩餘持倉均價為 {avg_c:.2f}。均價不應高於任何一筆買進單價，可能是同一筆交易被重複計入成本（例如重複匯入或同一交易出現在多個買賣人）。已改為依交易 ID 去重計算；若仍異常請檢查資料。")
+        lines.append("")
+        lines.append("① 每筆買進（全部）")
+        if d.get("buys_detail"):
+            lines.append("交易ID\t日期\t股數\t單價\t手續費\t成本")
+            for r in d["buys_detail"]:
+                lines.append(f"{r['trade_id']}\t{r['date']}\t{r['qty']}\t{r['price']}\t{r['fee']}\t{round(r['cost'], 0)}")
+        else:
+            lines.append("無買進紀錄")
+        lines.append("")
+        lines.append("② 沖銷配對（已沖銷掉的買進）")
+        if d.get("matches_detail"):
+            lines.append("買進ID\t賣出ID\t沖銷股數\t買進單價\t沖銷成本")
+            for r in d["matches_detail"]:
+                lines.append(f"{r['buy_id']}\t{r['sell_id']}\t{r['matched_qty']}\t{r['buy_price']}\t{round(r['matched_cost'], 0)}")
+        else:
+            lines.append("無沖銷")
+        lines.append("")
+        lines.append("③ 剩餘持倉（未沖銷的買進，這些構成目前均價）")
+        if d.get("remaining_lots_detail"):
+            lines.append("買進ID\t日期\t剩餘股數\t單價\t剩餘成本")
+            for r in d["remaining_lots_detail"]:
+                lines.append(f"{r['buy_id']}\t{r['date']}\t{r['remaining_qty']}\t{r['price']}\t{round(r['remaining_cost'], 0)}")
+        else:
+            lines.append("無剩餘持倉（已全數沖銷）")
+        debug_text = "\n".join(lines)
+        st.code(debug_text, language=None)
+        st.download_button("下載除錯文字 (.txt)", data=debug_text, file_name=f"cost_debug_{sid}.txt", mime="text/plain", key=f"download_debug_cost_{sid}")
+    else:
+        st.caption("尚無持倉。")
+with st.expander("🔍 若某檔「均價」異常如何排查", expanded=False):
+    st.markdown("""
+    **均價怎麼來的**  
+    均價 ＝ 剩餘持倉成本 ÷ 股數。剩餘持倉成本 ＝ 全部買進成本（含手續費）− 已沖銷掉的成本與對應手續費。
+
+    **均價明顯偏高的可能原因**
+    1. **某筆買進的「成交價」或「股數」輸入錯誤**（例如 788 誤鍵成 488 或 288，或小數點、位數錯誤）。
+    2. **Excel 沖銷庫存匯入時**，該股票分頁的「股價」欄解析錯誤（例如抓到合計列或錯誤欄位）。
+    3. **自定沖銷配對不當**，導致高價買單較少被沖銷，剩餘持倉多為高價單，拉高均價。
+
+    **建議排查步驟**  
+    請至 **個股明細** 選擇該股票（如 3037 欣興），在 **庫存** 表中查看每一筆買進的「股價」與「股數」；若有單筆股價明顯偏離該股歷史區間（例如超過 700），代表該筆資料有誤。可至 **交易輸入** 或 **交易匯入** 檢查並修正該筆交易，或刪除後重新輸入。
+    """)

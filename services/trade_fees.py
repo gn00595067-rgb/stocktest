@@ -73,3 +73,60 @@ def fees_for_trade(
         tax = estimate_sell_tax(price, quantity, is_etf=is_etf, is_daytrade=is_daytrade)
         return fee, tax
     return fee, 0.0
+
+
+def tick_size(price: float, is_etf: bool = False) -> float:
+    """台股升降單位（每檔跳動價位）。ETF：未滿 50 元 0.01、50 元以上 0.05。"""
+    if is_etf:
+        return 0.01 if price < 50 else 0.05
+    if price < 10:
+        return 0.01
+    if price < 50:
+        return 0.05
+    if price < 100:
+        return 0.1
+    if price < 500:
+        return 0.5
+    if price < 1000:
+        return 1.0
+    return 5.0
+
+
+def breakeven_sell_price(
+    total_cost: float,
+    quantity: int,
+    is_etf: bool = False,
+    fee_rate: Optional[float] = None,
+    tax_rate: Optional[float] = None,
+) -> Optional[float]:
+    """底價：全部股數以此價賣出，扣除賣出手續費與證交稅後，拿回的錢 ≥ 持股總成本（含買進手續費）。
+
+    回傳符合升降單位的最低價；無持股或成本 ≤ 0 時回 None。
+    """
+    if quantity <= 0 or total_cost is None or total_cost <= 0:
+        return None
+    if fee_rate is None or tax_rate is None:
+        _fr, _tr = get_fee_tax_rates()
+        fee_rate = _fr if fee_rate is None else fee_rate
+        tax_rate = _tr if tax_rate is None else tax_rate
+
+    def _net(p: float) -> float:
+        fee = estimate_broker_fee(p, quantity, fee_rate=fee_rate)
+        tax = estimate_sell_tax(p, quantity, is_etf=is_etf, tax_rate=tax_rate)
+        return p * quantity - fee - tax
+
+    def _ceil_tick(p: float) -> float:
+        t = tick_size(p, is_etf)
+        return round(math.ceil(round(p / t, 6)) * t, 2)
+
+    eff_tax = DEFAULT_ETF_TAX_RATE if is_etf else tax_rate
+    p = _ceil_tick(total_cost / (quantity * (1 - fee_rate - eff_tax)))
+    # 捨去造成的誤差：不夠就往上跳一檔，前一檔仍夠就往下退
+    while _net(p) < total_cost:
+        p = round(p + tick_size(p, is_etf), 2)
+    while p > 0:
+        prev = round(p - tick_size(p - 1e-9, is_etf), 2)
+        if prev <= 0 or _net(prev) < total_cost:
+            break
+        p = prev
+    return p
