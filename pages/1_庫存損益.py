@@ -629,6 +629,26 @@ total_return_pct = (_total_pnl / _total_cost * 100) if _total_cost > 0 else None
 build_portfolio_kpi_cards(df, realized_ret_pct=realized_ret_pct, unrealized_ret_pct=unrealized_ret_pct,
                           total_realized=total_realized, total_return_pct=total_return_pct)
 
+# KPI 算法說明：代入當下實際數字，讓非技術使用者能自行對帳（總報酬率常被誤解為兩個報酬率相加）
+if not df.empty:
+    with st.expander("ℹ️ 這些數字怎麼算？（點開看公式）"):
+        st.markdown(f"""
+**未實現損益報酬率** ＝ 未實現損益 ÷ 持倉成本
+- 持倉成本 ＝ 持倉市值 − 未實現損益 ＝ **{_fmt_num(unrealized_cost_sum)}**
+- {_fmt_num(total_unrealized)} ÷ {_fmt_num(unrealized_cost_sum)} ＝ **{_fmt_pct_signed(unrealized_ret_pct)}**
+
+**已實現損益報酬率** ＝ 已實現損益 ÷ 已實現成本
+- 已實現成本 ＝ 區間內每筆賣出所沖銷掉的買進成本（含買進手續費）加總 ＝ **{_fmt_num(realized_cost_sum)}**
+- {_fmt_num(total_realized)} ÷ {_fmt_num(realized_cost_sum)} ＝ **{_fmt_pct_signed(realized_ret_pct)}**
+
+**總報酬率** ＝ (未實現損益 ＋ 已實現損益) ÷ (持倉成本 ＋ 已實現成本)
+- ({_fmt_num(total_unrealized)} ＋ {_fmt_num(total_realized)}) ÷ ({_fmt_num(unrealized_cost_sum)} ＋ {_fmt_num(realized_cost_sum)})
+- ＝ {_fmt_num(_total_pnl)} ÷ {_fmt_num(_total_cost)} ＝ **{_fmt_pct(total_return_pct)}**
+
+💡 總報酬率**不是**兩個報酬率直接相加，而是依成本加權：哪一邊投入的成本大，影響就大。
+同一筆資金反覆買賣時，每次賣出的成本都會計入分母，所以短線進出越頻繁，總報酬率看起來越小。
+""")
+
 # ----- 3. 持倉明細表 -----
 st.markdown("---")
 st.markdown("#### 📋 持倉明細")
