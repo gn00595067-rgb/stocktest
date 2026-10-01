@@ -130,3 +130,53 @@ def breakeven_sell_price(
             break
         p = prev
     return p
+
+
+def breakeven_breakdown(
+    total_cost: float,
+    quantity: int,
+    is_etf: bool = False,
+    fee_rate: Optional[float] = None,
+    tax_rate: Optional[float] = None,
+) -> Optional[dict]:
+    """底價的計算明細（給「底價怎麼算」面板用），與 breakeven_sell_price 同一套規則。
+
+    回傳 dict：理論打平價、升降單位、底價、賣在底價的成交金額／手續費／證交稅／實拿／損益、
+    低一檔賣出的損益；無持股或成本 ≤ 0 時回 None。
+    """
+    if fee_rate is None or tax_rate is None:
+        _fr, _tr = get_fee_tax_rates()
+        fee_rate = _fr if fee_rate is None else fee_rate
+        tax_rate = _tr if tax_rate is None else tax_rate
+    price = breakeven_sell_price(total_cost, quantity, is_etf, fee_rate, tax_rate)
+    if price is None:
+        return None
+    eff_tax = DEFAULT_ETF_TAX_RATE if is_etf else tax_rate
+
+    def _sell(p: float) -> dict:
+        gross = p * quantity
+        fee = estimate_broker_fee(p, quantity, fee_rate=fee_rate)
+        tax = estimate_sell_tax(p, quantity, is_etf=is_etf, tax_rate=tax_rate)
+        net = gross - fee - tax
+        return {"gross": gross, "fee": fee, "tax": tax, "net": net, "pnl": net - total_cost}
+
+    at = _sell(price)
+    tick = tick_size(price, is_etf)
+    prev_price = round(price - tick_size(price - 1e-9, is_etf), 2)
+    prev = _sell(prev_price) if prev_price > 0 else None
+    return {
+        "avg_cost": total_cost / quantity,
+        "fee_rate": fee_rate,
+        "tax_rate": eff_tax,
+        "theoretical": total_cost / (quantity * (1 - fee_rate - eff_tax)),
+        "tick": tick,
+        "price": price,
+        "gross": at["gross"],
+        "fee": at["fee"],
+        "tax": at["tax"],
+        "net": at["net"],
+        "pnl": at["pnl"],
+        "prev_price": prev_price if prev else None,
+        "prev_pnl": prev["pnl"] if prev else None,
+    }
+

@@ -38,3 +38,19 @@ def test_breakeven_etf_uses_etf_tax():
 def test_breakeven_no_position():
     assert _be(0, 0) is None
     assert _be(1000, 0) is None
+
+
+def test_breakdown_guoju_example():
+    # 國巨：6,101 股、成本 5,302,479 → 理論 872.04、底價 873；賣 873 賺、賣 872 仍虧
+    from services.trade_fees import breakeven_breakdown
+    d = breakeven_breakdown(5302479, 6101, False, DEFAULT_FEE_RATE, DEFAULT_TAX_RATE)
+    assert round(d["theoretical"], 2) == 872.04
+    assert d["tick"] == 1.0
+    assert d["price"] == 873.0 == _be(5302479, 6101)
+    assert d["pnl"] >= 0 and d["prev_price"] == 872.0 and d["prev_pnl"] < 0
+    assert d["net"] == d["gross"] - d["fee"] - d["tax"]
+
+
+def test_breakdown_no_position():
+    from services.trade_fees import breakeven_breakdown
+    assert breakeven_breakdown(0, 0, False, DEFAULT_FEE_RATE, DEFAULT_TAX_RATE) is None
