@@ -29,7 +29,7 @@ def _is_buy(t) -> bool:
     return (getattr(t, "side", None) or "").strip().upper() in ("BUY", "配股")
 
 
-def compute_position_and_cost_by_stock(trades, custom_rules: Optional[List[Tuple[int, int, int]]] = None, policy: str = "CUSTOM"):
+def compute_position_and_cost_by_stock(trades, custom_rules: Optional[List[Tuple[int, int, int]]] = None, policy: str = "CUSTOM_PLUS_FIFO"):
     """
     依自定沖銷計算每檔持倉股數與剩餘成本（均價 = cost / qty）。
     與 build_portfolio_df 持倉邏輯完全一致，供投資績效頁共用，避免兩套計算導致均價不一致。

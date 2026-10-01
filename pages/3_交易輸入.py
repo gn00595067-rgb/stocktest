@@ -267,6 +267,7 @@ def _html_price_diff(sell_price: float, buy_price: float) -> str:
 # 股名／代號非重點，收窄讓出空間給「底價」
 _HOLD_COL_WIDTHS = [1.0, 0.5, 0.95, 0.9, 0.8, 0.95, 1.05, 0.9, 1.1, 1.05, 0.7]
 _HOLD_LABELS = ["股名", "代號", "現價", "漲跌", "股數", "成交均價", "持股成本均價", "底價", "總成本", "未實現", ""]
+_BREAKEVEN_TIP = "全部股數賣在此價，扣掉賣出手續費＋證交稅後剛好不虧（不是均價進位；賣出費稅約 0.34%，所以底價約＝持股成本均價×1.0034 再依升降單位進位）"
 _HOLD_JUSTIFY = ["flex-start", "flex-start", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "flex-end", "center"]
 _HOLD_TEXT_ALIGN = ["left", "left", "right", "right", "right", "right", "right", "right", "right", "right", "center"]
 
@@ -301,7 +302,10 @@ def _html_change_arrow(change, pct) -> str:
 def _render_holdings_header():
     cols = st.columns(_HOLD_COL_WIDTHS)
     for c, lbl, ta in zip(cols, _HOLD_LABELS, _HOLD_TEXT_ALIGN):
-        c.markdown(f'<div class="te-hold-th" style="text-align:{ta}">{lbl}</div>', unsafe_allow_html=True)
+        # 底價常被誤認為「均價進位」，滑鼠停留時說明已含賣出費稅
+        tip = f' title="{_BREAKEVEN_TIP}"' if lbl == "底價" else ""
+        shown = f"{lbl} ⓘ" if lbl == "底價" else lbl
+        c.markdown(f'<div class="te-hold-th" style="text-align:{ta}"{tip}>{shown}</div>', unsafe_allow_html=True)
 
 
 def _render_holding_row(row: dict, sid: str, open_now: bool, is_etf: bool = False):

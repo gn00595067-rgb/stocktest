@@ -17,11 +17,13 @@ def _is_buy(t) -> bool:
 def compute_position_and_cost_by_stock(
     trades,
     custom_rules: Optional[List[Tuple[int, int, int]]] = None,
-    policy: str = "CUSTOM",
+    policy: str = "CUSTOM_PLUS_FIFO",
 ):
     """
-    依自定沖銷計算每檔持倉股數與剩餘成本（均價 = cost / qty）。
+    依「自定沖銷＋其餘先進先出」計算每檔持倉股數與剩餘成本（均價 = cost / qty）。
     與 build_portfolio_df 持倉邏輯完全一致。
+    預設口徑須與庫存損益頁相同；舊預設 "CUSTOM"（只看自定沖銷）會讓未設規則的賣出
+    不扣成本，均價變成剩餘批次的加權平均，造成投資績效與庫存損益的未實現不一致。
     回傳 {stock_id: {"qty": int, "cost": float}, ...}，僅含 qty > 0 的股票。
     """
     if not custom_rules:

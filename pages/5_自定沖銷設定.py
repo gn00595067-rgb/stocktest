@@ -71,6 +71,36 @@ custom_users = sorted(set(t.user for t in trades if getattr(t, "user", None)) | 
 sells = [t for t in trades if (t.side or "").strip().upper() == "SELL"]
 buys = [t for t in trades if (t.side or "").strip().upper() in ("BUY", "配股")]
 
+# 孤兒規則：指向的賣出／買進已不存在（交易被刪除重輸後 id 改變）或兩邊不是同一檔股票。
+# 這類規則計算時會被略過，該筆賣出改由先進先出補配，可能與當初指定的配對不同。
+_orphan_rows = []
+for _r in rules:
+    _s, _b = trade_by_id.get(_r.sell_trade_id), trade_by_id.get(_r.buy_trade_id)
+    if _s and _b and _s.stock_id == _b.stock_id:
+        continue
+    if not _s:
+        _reason = "賣出交易已不存在"
+    elif not _b:
+        _reason = "買進交易已不存在"
+    else:
+        _reason = "買賣不是同一檔股票"
+    _orphan_rows.append({
+        "賣出ID": _r.sell_trade_id,
+        "買進ID": _r.buy_trade_id,
+        "股數": _r.matched_qty,
+        "股票": (_s.stock_id if _s else (_b.stock_id if _b else "")),
+        "買賣人": (_s.user if _s else (_b.user if _b else "")),
+        "賣出日": (str(_s.trade_date) if _s else ""),
+        "問題": _reason,
+    })
+if _orphan_rows:
+    st.warning(
+        f"⚠️ 有 **{len(_orphan_rows)} 條**自定沖銷規則失效（多半是交易被刪除後重新輸入，ID 變了）。"
+        "失效的規則計算時會被略過，該筆賣出改由**先進先出**自動配對。若要維持原本指定的配對，請在下方「已配對一覽」刪除這些規則（買進日或賣出日顯示「—」的就是）後重新設定。"
+    )
+    with st.expander("查看失效的規則"):
+        st.dataframe(pd.DataFrame(_orphan_rows), hide_index=True, use_container_width=True)
+
 # 顯示用：股票代號 -> 名稱（優先 StockMaster，缺漏時用台股清單快取補齊）
 _stock_name_cache = {}
 for sid, m in (masters or {}).items():

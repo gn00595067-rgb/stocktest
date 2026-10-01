@@ -243,7 +243,7 @@ def _pl_realized_unrealized_for_trades(trades_list, _start, _end, _custom_rules,
         for m in compute_matches(buys, sell_lots, _policy, custom_rules=_custom_rules):
             _realized[sid] += net_pnl_for_match(m, _trade_by_id)
     _pos = defaultdict(lambda: {"qty": 0, "cost": 0.0})
-    for sid, data in compute_position_and_cost_by_stock(trades_list, custom_rules=_custom_rules).items():
+    for sid, data in compute_position_and_cost_by_stock(trades_list, custom_rules=_custom_rules, policy=_policy).items():
         _pos[sid]["qty"] = data["qty"]
         _pos[sid]["cost"] = data["cost"]
     _unrealized = defaultdict(float)
@@ -304,7 +304,7 @@ for sid, sells in sells_by_stock.items():
 
 # 持倉與未實現：與 庫存損益「同一套」持倉均價計算，避免兩頁均價不一致
 position = defaultdict(lambda: {"qty": 0, "cost": 0.0})
-for sid, data in compute_position_and_cost_by_stock(all_trades, custom_rules=custom_rules).items():
+for sid, data in compute_position_and_cost_by_stock(all_trades, custom_rules=custom_rules, policy=policy).items():
     position[sid]["qty"] = data["qty"]
     position[sid]["cost"] = data["cost"]
 
