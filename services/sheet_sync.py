@@ -5,6 +5,8 @@ Google 試算表與 SQLite 雙向同步：交易、自定沖銷規則。
 """
 from datetime import date, datetime
 from typing import Optional, Tuple, List, Any
+import hashlib
+import json
 import os
 
 # 依賴 gspread、google-auth（optional）
@@ -43,6 +45,9 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapi
 #      （本次聯電 16 張買進於 9/2 轉移遺失，即屬「載入掉列→覆寫成殘缺版」這一類。）
 # ─────────────────────────────────────────────────────────────────────────────
 BACKUP_PREFIX = "trades_bak_"
+
+# 上次寫回（或剛從試算表載入）時的內容指紋；相同就略過寫回。每個行程（記憶體 DB）各自一份。
+_last_synced_fingerprint: Optional[str] = None
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -458,103 +463,148 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
             except Exception:
                 pass
 
+        # 剛載入完：DB 內容＝試算表內容，之後沒有實際變更就不必寫回
+        remember_db_as_synced(engine)
         return True, None
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
 
-def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
+def _read_db_payload(engine):
+    """從 DB 讀出要寫回試算表的五張表（含表頭），回傳 (r_trades 原始列, [(工作表名, 資料), ...])。"""
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        r_trades = conn.execute(text("""
+            SELECT id, user, stock_id, trade_date, side, price, quantity, is_daytrade, fee, tax, note
+            FROM trades ORDER BY id
+        """)).fetchall()
+        r_rules = conn.execute(text("""
+            SELECT sell_trade_id, buy_trade_id, matched_qty, created_at
+            FROM custom_match_rules
+        """)).fetchall()
+        r_users = conn.execute(text("""
+            SELECT id, username, password_hash, role, is_active, created_at
+            FROM user_accounts
+            ORDER BY id
+        """)).fetchall()
+        r_user_bindings = conn.execute(text("""
+            SELECT user_id, trader_name, created_at
+            FROM user_trader_bindings
+            ORDER BY user_id, trader_name
+        """)).fetchall()
+        r_traders = conn.execute(text("""
+            SELECT id, name, created_at
+            FROM traders
+            ORDER BY id
+        """)).fetchall()
+
+    def _date_str(v):
+        """將 date/datetime 或字串轉成 YYYY-MM-DD 字串；DB 有時回傳 str。"""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return ""
+        if hasattr(v, "isoformat"):
+            return v.isoformat()[:10]
+        return str(v).strip()[:10]
+
+    def _datetime_str(v):
+        """將 datetime 或字串轉成 YYYY-MM-DD HH:MM:SS；DB 有時回傳 str。"""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return ""
+        if hasattr(v, "strftime"):
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        return str(v).strip()[:19]
+
+    def row_trade(r):
+        return [
+            r[0], r[1], r[2], _date_str(r[3]),
+            r[4], r[5], r[6], bool(r[7]) if r[7] is not None else False,
+            r[8] if r[8] is not None else "", r[9] if r[9] is not None else "",
+            r[10] or "",
+        ]
+
+    def row_rule(r):
+        return [
+            r[0], r[1], r[2],
+            _datetime_str(r[3]),
+        ]
+
+    def row_user(r):
+        return [
+            r[0], r[1], r[2], r[3],
+            bool(r[4]) if r[4] is not None else False,
+            _datetime_str(r[5]),
+        ]
+
+    def row_user_binding(r):
+        return [
+            r[0], r[1], _datetime_str(r[2]),
+        ]
+
+    def row_trader(r):
+        return [
+            r[0], r[1], _datetime_str(r[2]),
+        ]
+
+    # 準備各表資料（含表頭）
+    trades_data = [TRADES_HEADERS] + [row_trade(r) for r in r_trades]
+    rules_data = [RULES_HEADERS] + [row_rule(r) for r in r_rules]
+    users_data = [USERS_HEADERS] + [row_user(r) for r in r_users]
+    user_bindings_data = [USER_BINDINGS_HEADERS] + [row_user_binding(r) for r in r_user_bindings]
+    traders_data = [TRADERS_HEADERS] + [row_trader(r) for r in r_traders]
+    sheets = [
+        (SHEET_TRADES, trades_data),
+        (SHEET_RULES, rules_data),
+        (SHEET_USERS, users_data),
+        (SHEET_USER_BINDINGS, user_bindings_data),
+        (SHEET_TRADERS, traders_data),
+    ]
+    return r_trades, sheets
+
+
+def _payload_fingerprint(sheets) -> str:
+    """寫回內容的指紋：內容相同 → 指紋相同，用來判斷「資料其實沒變」可略過寫回。"""
+    raw = json.dumps(sheets, ensure_ascii=False, default=str, sort_keys=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def remember_db_as_synced(engine) -> None:
+    """記下「目前 DB 內容＝試算表內容」（剛從試算表載入完時呼叫），之後內容沒變就不寫回。"""
+    global _last_synced_fingerprint
+    try:
+        _, sheets = _read_db_payload(engine)
+        _last_synced_fingerprint = _payload_fingerprint(sheets)
+    except Exception:
+        _last_synced_fingerprint = None
+
+def sync_db_to_sheet(engine, force: bool = False) -> Tuple[bool, Optional[str]]:
     """
     將 DB 的「交易」「自定沖銷規則」「帳號」「權限綁定」寫回 Google 試算表（整表覆寫）。
+    內容與上次寫回相同時略過（force=True 強制寫回）。
     回傳 (True, None) 成功；(False, error_msg) 失敗。
     """
+    global _last_synced_fingerprint
     if not _HAS_GSPREAD:
         return False, "未安裝 gspread 或 google-auth"
+
+    try:
+        r_trades, sheets = _read_db_payload(engine)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    trades_data = sheets[0][1]
+
+    # 內容和上次寫回（或剛載入）時完全一樣 → 不寫回、不產生備份，也不連線試算表。
+    # 只是打開頁面也會 commit（例如更新股票主檔），以前每次都整表覆寫並輪替備份，
+    # 會把真正有用的歷史備份擠掉。
+    fingerprint = _payload_fingerprint(sheets)
+    if not force and fingerprint == _last_synced_fingerprint:
+        return True, None
+
     spread, err = _open_spreadsheet()
     if err:
         return False, err
 
-    from sqlalchemy import text
-
     try:
-        with engine.connect() as conn:
-            r_trades = conn.execute(text("""
-                SELECT id, user, stock_id, trade_date, side, price, quantity, is_daytrade, fee, tax, note
-                FROM trades ORDER BY id
-            """)).fetchall()
-            r_rules = conn.execute(text("""
-                SELECT sell_trade_id, buy_trade_id, matched_qty, created_at
-                FROM custom_match_rules
-            """)).fetchall()
-            r_users = conn.execute(text("""
-                SELECT id, username, password_hash, role, is_active, created_at
-                FROM user_accounts
-                ORDER BY id
-            """)).fetchall()
-            r_user_bindings = conn.execute(text("""
-                SELECT user_id, trader_name, created_at
-                FROM user_trader_bindings
-                ORDER BY user_id, trader_name
-            """)).fetchall()
-            r_traders = conn.execute(text("""
-                SELECT id, name, created_at
-                FROM traders
-                ORDER BY id
-            """)).fetchall()
-
-        def _date_str(v):
-            """將 date/datetime 或字串轉成 YYYY-MM-DD 字串；DB 有時回傳 str。"""
-            if v is None or (isinstance(v, str) and not v.strip()):
-                return ""
-            if hasattr(v, "isoformat"):
-                return v.isoformat()[:10]
-            return str(v).strip()[:10]
-
-        def _datetime_str(v):
-            """將 datetime 或字串轉成 YYYY-MM-DD HH:MM:SS；DB 有時回傳 str。"""
-            if v is None or (isinstance(v, str) and not v.strip()):
-                return ""
-            if hasattr(v, "strftime"):
-                return v.strftime("%Y-%m-%d %H:%M:%S")
-            return str(v).strip()[:19]
-
-        def row_trade(r):
-            return [
-                r[0], r[1], r[2], _date_str(r[3]),
-                r[4], r[5], r[6], bool(r[7]) if r[7] is not None else False,
-                r[8] if r[8] is not None else "", r[9] if r[9] is not None else "",
-                r[10] or "",
-            ]
-
-        def row_rule(r):
-            return [
-                r[0], r[1], r[2],
-                _datetime_str(r[3]),
-            ]
-
-        def row_user(r):
-            return [
-                r[0], r[1], r[2], r[3],
-                bool(r[4]) if r[4] is not None else False,
-                _datetime_str(r[5]),
-            ]
-
-        def row_user_binding(r):
-            return [
-                r[0], r[1], _datetime_str(r[2]),
-            ]
-
-        def row_trader(r):
-            return [
-                r[0], r[1], _datetime_str(r[2]),
-            ]
-
-        # 準備各表資料（含表頭）
-        trades_data = [TRADES_HEADERS] + [row_trade(r) for r in r_trades]
-        rules_data = [RULES_HEADERS] + [row_rule(r) for r in r_rules]
-        users_data = [USERS_HEADERS] + [row_user(r) for r in r_users]
-        user_bindings_data = [USER_BINDINGS_HEADERS] + [row_user_binding(r) for r in r_user_bindings]
-        traders_data = [TRADERS_HEADERS] + [row_trader(r) for r in r_traders]
 
         # 確保 5 張工作表存在（缺才建，通常只有第一次）
         def _ensure_ws(title, cols):
@@ -593,13 +643,6 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
             )
 
         # 安全寫回：先「寫入」再「修剪」（寫失敗不清空），批次 2 個 write 請求避開 429。
-        sheets = [
-            (SHEET_TRADES, trades_data),
-            (SHEET_RULES, rules_data),
-            (SHEET_USERS, users_data),
-            (SHEET_USER_BINDINGS, user_bindings_data),
-            (SHEET_TRADERS, traders_data),
-        ]
         body = {
             "valueInputOption": "USER_ENTERED",
             "data": [{"range": f"{title}!A1", "values": vals} for title, vals in sheets],
@@ -622,6 +665,8 @@ def sync_db_to_sheet(engine) -> Tuple[bool, Optional[str]]:
                 )
         except Exception:
             pass
+
+        _last_synced_fingerprint = fingerprint
 
         # ① 自動備份：通過防呆的健康資料才會來到這。
         #   a) 固定備份分頁 trades_backup：永遠保有「最近一次健康快照」，一鍵可救。

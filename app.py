@@ -61,7 +61,7 @@ try:
             if is_google_sheet_enabled():
                 st.sidebar.caption("📋 **本機資料庫**：目前為檔案模式，不會自動寫入試算表。")
                 if st.sidebar.button("手動同步到 Google 試算表"):
-                    ok, err = sync_db_to_sheet(get_engine())
+                    ok, err = sync_db_to_sheet(get_engine(), force=True)
                     if ok:
                         st.sidebar.success("已將目前資料庫內容寫入 Google 試算表。")
                     else:

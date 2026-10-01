@@ -76,6 +76,12 @@ def engine_with_data():
 
 
 @pytest.fixture(autouse=True)
+def _reset_fingerprint(monkeypatch):
+    # 「內容沒變就不寫回」的指紋是模組層狀態，每個測試從乾淨狀態開始
+    monkeypatch.setattr(ss, "_last_synced_fingerprint", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
     import time
     monkeypatch.setattr(time, "sleep", lambda *a, **k: None)
@@ -166,3 +172,71 @@ def test_auto_backup_written(engine_with_data, monkeypatch):
     assert ss.SHEET_TRADES_BACKUP in fake.wss
     bak = fake.wss[ss.SHEET_TRADES_BACKUP].get_all_values()
     assert len(bak) - 1 == 1  # 表頭 + 1 筆交易
+
+
+def test_unchanged_content_skips_write_and_backup(engine_with_data, monkeypatch):
+    # 只是打開頁面也會 commit；內容沒變時不應再整表覆寫、也不應產生備份擠掉歷史
+    fake = _FakeSpread()
+    opened = {"n": 0}
+
+    def _open():
+        opened["n"] += 1
+        return fake, None
+
+    monkeypatch.setattr(ss, "_HAS_GSPREAD", True)
+    monkeypatch.setattr(ss, "_open_spreadsheet", _open)
+    backups = []
+    monkeypatch.setattr(ss, "_rolling_backup", lambda *a, **k: backups.append(1) or "bak")
+
+    assert ss.sync_db_to_sheet(engine_with_data)[0]
+    assert fake.batch_update_calls == 1 and len(backups) == 1
+
+    assert ss.sync_db_to_sheet(engine_with_data)[0]
+    assert fake.batch_update_calls == 1      # 第二次沒寫
+    assert len(backups) == 1                  # 也沒新增備份
+    assert opened["n"] == 1                   # 連試算表都沒開
+
+
+def test_changed_content_writes_again(engine_with_data, monkeypatch):
+    fake = _FakeSpread()
+    monkeypatch.setattr(ss, "_HAS_GSPREAD", True)
+    monkeypatch.setattr(ss, "_open_spreadsheet", lambda: (fake, None))
+
+    assert ss.sync_db_to_sheet(engine_with_data)[0]
+    with engine_with_data.connect() as conn:
+        conn.execute(text("UPDATE trades SET price = 999 WHERE id = 1"))
+        conn.commit()
+    assert ss.sync_db_to_sheet(engine_with_data)[0]
+    assert fake.batch_update_calls == 2
+
+
+def test_force_writes_even_if_unchanged(engine_with_data, monkeypatch):
+    fake = _FakeSpread()
+    monkeypatch.setattr(ss, "_HAS_GSPREAD", True)
+    monkeypatch.setattr(ss, "_open_spreadsheet", lambda: (fake, None))
+
+    assert ss.sync_db_to_sheet(engine_with_data)[0]
+    assert ss.sync_db_to_sheet(engine_with_data, force=True)[0]
+    assert fake.batch_update_calls == 2
+
+
+def test_after_load_no_write_until_changed(engine_with_data, monkeypatch):
+    # 剛從試算表載入（remember_db_as_synced）後，沒改任何東西就不寫回
+    fake = _FakeSpread()
+    monkeypatch.setattr(ss, "_HAS_GSPREAD", True)
+    monkeypatch.setattr(ss, "_open_spreadsheet", lambda: (fake, None))
+
+    ss.remember_db_as_synced(engine_with_data)
+    assert ss.sync_db_to_sheet(engine_with_data)[0]
+    assert fake.batch_update_calls == 0
+
+
+def test_failed_write_does_not_mark_synced(engine_with_data, monkeypatch):
+    # 寫入失敗不能記成已同步，否則下次會誤以為沒變而略過、變更永遠寫不回去
+    fake = _FakeSpread()
+    fake.values_batch_update = lambda body=None: (_ for _ in ()).throw(Exception("APIError: [429]: Quota exceeded"))
+    monkeypatch.setattr(ss, "_HAS_GSPREAD", True)
+    monkeypatch.setattr(ss, "_open_spreadsheet", lambda: (fake, None))
+
+    assert not ss.sync_db_to_sheet(engine_with_data)[0]
+    assert ss._last_synced_fingerprint is None
