@@ -66,3 +66,9 @@
 **驗證**：`pytest` 68 passed；本機 AppTest 投資績效頁無例外。
 
 **下一步**：push 後到 Streamlit Cloud「Manage app → Reboot」讓它重裝鎖好的版本；若 Python 仍是 3.13，到 App settings 手動選 3.12（新版 Cloud 可能不讀 runtime.txt）。
+
+## 2026-10-01 — Cloud Reboot 後恢復正常
+
+**做了什麼**：Jonathan 在 Streamlit Cloud 按 Reboot，app 照鎖好的版本重裝後恢復正常。
+
+**下一步**：請 Peggy姐 到自定沖銷設定頁清理 26 條失效規則，並確認手續費是否改為 2.8 折。
