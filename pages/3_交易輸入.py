@@ -42,6 +42,7 @@ from services.auth_service import (
     filter_trades_by_permission,
 )
 from services.trade_fees import breakeven_sell_price, fees_for_trade, get_fee_tax_rates
+from services.breakeven_panel import render_breakeven_panel
 from services.prefs import resolve_default_trader
 from services.trader_service import (
     list_trader_names,
@@ -1431,6 +1432,17 @@ if holdings:
     _render_holdings_header()
     for h in sorted(holdings, key=lambda x: (-float(x.get("market_value", 0) or 0), x["stock_id"])):
         _render_stock_trade_panel(h, masters, trades, custom_rules, policy, trader, trade_date)
+    # 底價計算面板：逐檔列出底價怎麼算（與庫存損益頁共用）
+    render_breakeven_panel(
+        (
+            h["stock_id"],
+            h.get("name", ""),
+            int(h.get("qty", 0) or 0),
+            float(h.get("total_cost", 0) or 0),
+            bool(getattr(masters.get(h["stock_id"]), "is_etf", False)),
+        )
+        for h in sorted(holdings, key=lambda x: (-float(x.get("market_value", 0) or 0), x["stock_id"]))
+    )
 else:
     st.info("目前無持倉。請用上方「新增股票」加入標的，或至主檔/設定載入種子資料。")
 

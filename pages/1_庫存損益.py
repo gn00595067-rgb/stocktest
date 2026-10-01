@@ -32,7 +32,8 @@ from services.prefs import resolve_default_trader
 from services.trader_service import all_trader_names
 from services.price_service import get_quote_cached, fetch_daily_prices
 from services.pnl_engine import Lot, compute_matches
-from services.trade_fees import breakeven_breakdown, breakeven_sell_price
+from services.trade_fees import breakeven_sell_price
+from services.breakeven_panel import render_breakeven_panel
 
 # ---------------------------------------------------------------------------
 # 圖表視覺常數（統一 theme）
@@ -728,58 +729,17 @@ except Exception:
     pass
 
 # 底價計算面板：逐檔列出底價怎麼算，讓同事能自己驗算（規格見 docs/specs/底價.md）
-if not df_display.empty and "底價" in df_display.columns:
-    with st.expander("🧮 底價怎麼算？（點開看每檔的計算過程）"):
-        _bd_rows = []
-        _rates = None
-        for _, _r in df_display.iterrows():
-            _sid = str(_r.get("股票代號") or "").strip()
-            _m = masters.get(_sid)
-            _qty = int(_r["股數"] or 0)
-            _cost = float(_r["市值"]) - float(_r["未實現損益"])
-            _d = breakeven_breakdown(_cost, _qty, is_etf=bool(getattr(_m, "is_etf", False)))
-            if not _d:
-                continue
-            _rates = _rates or _d
-            _bd_rows.append({
-                "代號": _sid,
-                "名稱": _r.get("名稱", ""),
-                "股數": _qty,
-                "持股成本": _cost,
-                "均價": _d["avg_cost"],
-                "理論打平價": _d["theoretical"],
-                "升降單位": _d["tick"],
-                "底價": _d["price"],
-                "賣在底價：成交金額": _d["gross"],
-                "－手續費": _d["fee"],
-                "－證交稅": _d["tax"],
-                "＝實拿": _d["net"],
-                "賣在底價損益": _d["pnl"],
-                "低一檔價": _d["prev_price"],
-                "低一檔損益": _d["prev_pnl"],
-            })
-        if _rates:
-            _fr, _tr = _rates["fee_rate"], _rates["tax_rate"]
-            st.markdown(f"""
-**底價**＝全部股數賣在這個價，扣掉賣出手續費和證交稅後，拿回的錢 ≥ 持股成本（剛好不虧的最低價）。
-
-1. **持股成本**＝市值 − 未實現損益（已含買進手續費）；**均價**＝持股成本 ÷ 股數
-2. **理論打平價**＝持股成本 ÷ 股數 ÷ (1 − 手續費率 {_fr * 100:.5f}% − 證交稅率 {_tr * 100:.1f}%)
-3. 依台股**升降單位**向上進位成可以掛單的價格（未滿 10 元 0.01、10–50 元 0.05、50–100 元 0.1、100–500 元 0.5、500–1000 元 1、1000 元以上 5）
-4. 用實際規則驗算：手續費、證交稅都**無條件捨去到整數**（手續費最低 1 元），不夠就再往上一檔
-5. 最後一欄「低一檔損益」是負的，代表再低一檔賣就會虧，所以底價不能再低
-
-💡 手續費＋證交稅合計約 {(_fr + _tr) * 100:.2f}%，所以底價一定比均價高一點，不是均價直接進位。ETF 證交稅為 0.1%。
-""")
-            _bd = pd.DataFrame(_bd_rows)
-            _int_cols = ["股數", "持股成本", "賣在底價：成交金額", "－手續費", "－證交稅", "＝實拿", "賣在底價損益", "低一檔損益"]
-            _px_cols = ["均價", "理論打平價", "升降單位", "底價", "低一檔價"]
-            _fmt = {c: "{:,.0f}" for c in _int_cols}
-            _fmt.update({c: "{:,.2f}" for c in _px_cols})
-            _sty = _bd.style.format(_fmt, na_rep="—")
-            _sty = _sty.apply(lambda s: ["color: #1565c0; font-weight: 600;"] * len(s), subset=["底價"])
-            _sty = _sty.apply(lambda s: ["color: #c62828;" if (v is not None and v == v and v >= 0) else "color: #2e7d32;" for v in s], subset=["賣在底價損益", "低一檔損益"])
-            st.dataframe(_sty, use_container_width=True, hide_index=True, height=_full_height(len(_bd)))
+if not df_display.empty and {"股數", "市值", "未實現損益"}.issubset(df_display.columns):
+    render_breakeven_panel(
+        (
+            str(_r.get("股票代號") or "").strip(),
+            _r.get("名稱", ""),
+            int(_r["股數"] or 0),
+            float(_r["市值"]) - float(_r["未實現損益"]),
+            bool(getattr(masters.get(str(_r.get("股票代號") or "").strip()), "is_etf", False)),
+        )
+        for _, _r in df_display.iterrows()
+    )
 
 choice = st.session_state["portfolio_detail_row"]
 
