@@ -54,3 +54,15 @@
 **驗證**：`pytest` 68 passed（新增 `tests/test_position_cost.py`：孤兒規則情境下 position_cost 與 build_portfolio_df 均價一致）；以正式試算表資料（唯讀載入）比對兩頁持倉成本差 0。
 
 **下一步**：請 Peggy姐 到自定沖銷設定頁清掉 26 條失效規則並重配；另 Peggy姐 實際手續費為 2.8 折，主檔設定費率目前預設 2.5 折，請確認是否調整。
+
+## 2026-10-01 — Streamlit Cloud 出現「Error running app」：鎖版本、修 Arrow 警告
+
+**做了什麼**
+1. 新增 `runtime.txt`（python-3.12）；`requirements.txt` 每個套件加版本上限，對齊本機測過的版本（pandas<3、streamlit<1.52、pyarrow<22、anthropic<1 等）。
+2. 投資績效「本次計算的動態數據」表的「數值」欄統一轉字串，消除 pyarrow `Expected bytes, got a 'int' object` 警告。（`pages/0_投資績效.py`）
+
+**為什麼**：Cloud log 最後是 `run-streamlit.sh: line 9: 250`，看起來是 PID 250 被系統砍掉（多半是記憶體不足 Killed）。部署前上一版（ec64d84）已正常載入並跑了幾個頁面。本機用正式資料跑 AppTest，四個改過的頁面都沒有例外、RSS 約 250MB，排除是程式邏輯吃光記憶體。但 Cloud 跑的是 Python 3.13 + pandas 3.0.6 + streamlit 1.64，跟本機（3.12 / pandas 2.3 / streamlit 1.51）落差很大，也違反全域「每個套件鎖版本上限」規則，所以先鎖住環境。
+
+**驗證**：`pytest` 68 passed；本機 AppTest 投資績效頁無例外。
+
+**下一步**：push 後到 Streamlit Cloud「Manage app → Reboot」讓它重裝鎖好的版本；若 Python 仍是 3.13，到 App settings 手動選 3.12（新版 Cloud 可能不讀 runtime.txt）。

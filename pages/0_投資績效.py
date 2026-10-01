@@ -639,6 +639,8 @@ with st.expander("📐 計算邏輯說明", expanded=False):
         {"項目": "未實現報酬率", "數值": fmt_pct_signed(unrealized_ret_pct)},
         {"項目": "未實現現價來源", "數值": f"API現價 {n_quote_api} 檔、持倉均價(無報價) {n_quote_fallback} 檔"},
     ])
+    # 數值欄混有整數與字串，pyarrow 轉換會報錯；統一轉字串
+    logic_df["數值"] = logic_df["數值"].astype(str)
     st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
     st.markdown("---")
     st.markdown("### 未實現損益的現價來源")
