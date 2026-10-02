@@ -153,6 +153,11 @@ def _inject_trade_entry_css():
         .te-match-box div[data-testid="stNumberInput"] > div {
             padding-top: 0.1rem;
         }
+        /* 交易輸入列：隱藏股數／成交價的 −/＋ 按鈕，把寬度留給數字（同事回報 1000 股只看得到 100） */
+        div[class*="st-key-te_inrows_"] [data-testid="stNumberInputStepDown"],
+        div[class*="st-key-te_inrows_"] [data-testid="stNumberInputStepUp"] {
+            display: none;
+        }
         /* 持股表格：表頭與資料列同欄寬、數字靠右對齊 */
         .te-hold-th {
             font-size: 0.74rem;
@@ -887,12 +892,15 @@ def _render_stock_trade_panel(
         # ── 交易輸入（可多列）：每列一筆；賣出一律走設定的沖銷口徑（先進先出/接近均價等）自動計算 ──
         rowids_key = f"te_rowids_{sid}"
         seq_key = f"te_rowseq_{sid}"
-        # 送出成功後整批重置：在建立 widget 前清掉舊列的值，回到 1 列
+        # 送出成功後整批重置：在建立 widget 前清掉舊列的值，回到 1 列。
+        # 新的一列一定要用「沒用過的列號」：只刪 session_state 的值，瀏覽器端同名 widget
+        # 仍會顯示並回傳舊輸入（實測送出後還留著 1000 股 @ 180），換新 key 才會畫出空白欄位。
         if st.session_state.pop(f"te_rreset_{sid}", False):
             for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(f"te_r_{sid}_")]:
                 del st.session_state[_k]
-            st.session_state[rowids_key] = [0]
-            st.session_state[seq_key] = 1
+            _nid = int(st.session_state.get(seq_key, 1) or 1)
+            st.session_state[rowids_key] = [_nid]
+            st.session_state[seq_key] = _nid + 1
         # 清除剛被刪除的列殘留值（在建立 widget 前）
         for _rmid in st.session_state.pop(f"te_rowdel_{sid}", []):
             for _k in [k for k in list(st.session_state.keys()) if str(k).startswith(f"te_r_{sid}_{_rmid}_")]:
@@ -900,56 +908,60 @@ def _render_stock_trade_panel(
         rowids = st.session_state.setdefault(rowids_key, [0])
         st.session_state.setdefault(seq_key, 1)
 
-        _bw = [1.0, 1.1, 0.95, 0.95, 0.6, 0.85, 0.85, 1.15, 0.45]
-        _hc = st.columns(_bw)
-        for _c, _lab in zip(_hc, ["買/賣", "交易日期", "股數", "成交價", "當沖", "手續費", "證交稅", "備註", ""]):
-            _c.caption(_lab)
+        # 股數／成交價要放得下「10000」「1035.50」等完整數字（還有 −/＋/✕ 按鈕），
+        # 從交易日期、當沖、備註讓出寬度（同事回報 1000 股看起來像 100 股）
+        _bw = [1.0, 1.2, 1.25, 1.25, 0.4, 0.7, 0.7, 0.85, 0.4]
+        # 包一層有 key 的容器，讓上方 CSS 只作用在輸入列（不影響沖銷面板等其他數字框）
+        with st.container(key=f"te_inrows_{sid}"):
+            _hc = st.columns(_bw)
+            for _c, _lab in zip(_hc, ["買/賣", "交易日期", "股數", "成交價", "當沖", "手續費", "證交稅", "備註", ""]):
+                _c.caption(_lab)
 
-        rows = []
-        for _rid in rowids:
-            _c0, _c1, _c2, _c3, _c4, _cfee, _ctax, _c5, _c6 = st.columns(_bw)
-            _s = _c0.selectbox(
-                "買/賣", ["BUY", "SELL"], key=f"te_r_{sid}_{_rid}_side",
-                format_func=lambda x: "買入" if x == "BUY" else "賣出",
-                label_visibility="collapsed",
-            )
-            _d = _c1.date_input(
-                "交易日期", value=st.session_state.get(f"te_r_{sid}_{_rid}_date", trade_date),
-                key=f"te_r_{sid}_{_rid}_date", label_visibility="collapsed",
-            )
-            # 股數／成交價預設空白（value=None），平板可直接輸入，不必先清掉 0
-            # 依同事習慣先輸股數、再輸成交價：股數放 _c2、成交價放 _c3（widget key 不變）
-            _q = _c2.number_input(
-                "股數", min_value=0, value=None, step=100,
-                key=f"te_r_{sid}_{_rid}_qty", label_visibility="collapsed",
-            )
-            _p = _c3.number_input(
-                "成交價", min_value=0.0, value=None, step=0.01, format="%.2f",
-                key=f"te_r_{sid}_{_rid}_price", label_visibility="collapsed",
-            )
-            _dt = _c4.checkbox("當沖", key=f"te_r_{sid}_{_rid}_dt", label_visibility="collapsed")
-            # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對。
-            # 用與其他欄同款的唯讀輸入框顯示，高度自動對齊（桌機/平板皆然）。
-            if _p is not None and _q is not None and float(_p) > 0 and int(_q) > 0:
-                _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt)
-                _fee_txt = f"{_rf:,.0f}"
-                _tax_txt = f"{_rt:,.0f}" if _s == "SELL" else "—"  # 買進不收證交稅
-            else:
-                _fee_txt = _tax_txt = "—"
-            _fk = f"te_r_{sid}_{_rid}_feeview"
-            _tk = f"te_r_{sid}_{_rid}_taxview"
-            st.session_state[_fk] = _fee_txt
-            st.session_state[_tk] = _tax_txt
-            _cfee.text_input("手續費", key=_fk, disabled=True, label_visibility="collapsed")
-            _ctax.text_input("證交稅", key=_tk, disabled=True, label_visibility="collapsed")
-            _n = _c5.text_input("備註", key=f"te_r_{sid}_{_rid}_note", label_visibility="collapsed")
-            with _c6:
-                if len(rowids) > 1:
-                    if st.button("🗑", key=f"te_r_{sid}_{_rid}_del", help="刪除這一列"):
-                        st.session_state[rowids_key] = [r for r in rowids if r != _rid]
-                        st.session_state.setdefault(f"te_rowdel_{sid}", []).append(_rid)
-                        st.rerun()
-            rows.append((_s, _d, _p, _q, _dt, _n))
+            rows = []
+            for _rid in rowids:
+                _c0, _c1, _c2, _c3, _c4, _cfee, _ctax, _c5, _c6 = st.columns(_bw)
+                _s = _c0.selectbox(
+                    "買/賣", ["BUY", "SELL"], key=f"te_r_{sid}_{_rid}_side",
+                    format_func=lambda x: "買入" if x == "BUY" else "賣出",
+                    label_visibility="collapsed",
+                )
+                _d = _c1.date_input(
+                    "交易日期", value=st.session_state.get(f"te_r_{sid}_{_rid}_date", trade_date),
+                    key=f"te_r_{sid}_{_rid}_date", label_visibility="collapsed",
+                )
+                # 股數／成交價預設空白（value=None），平板可直接輸入，不必先清掉 0
+                # 依同事習慣先輸股數、再輸成交價：股數放 _c2、成交價放 _c3（widget key 不變）
+                _q = _c2.number_input(
+                    "股數", min_value=0, value=None, step=100,
+                    key=f"te_r_{sid}_{_rid}_qty", label_visibility="collapsed",
+                )
+                _p = _c3.number_input(
+                    "成交價", min_value=0.0, value=None, step=0.01, format="%.2f",
+                    key=f"te_r_{sid}_{_rid}_price", label_visibility="collapsed",
+                )
+                _dt = _c4.checkbox("當沖", key=f"te_r_{sid}_{_rid}_dt", label_visibility="collapsed")
+                # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對。
+                # 用與其他欄同款的唯讀輸入框顯示，高度自動對齊（桌機/平板皆然）。
+                if _p is not None and _q is not None and float(_p) > 0 and int(_q) > 0:
+                    _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt)
+                    _fee_txt = f"{_rf:,.0f}"
+                    _tax_txt = f"{_rt:,.0f}" if _s == "SELL" else "—"  # 買進不收證交稅
+                else:
+                    _fee_txt = _tax_txt = "—"
+                _fk = f"te_r_{sid}_{_rid}_feeview"
+                _tk = f"te_r_{sid}_{_rid}_taxview"
+                st.session_state[_fk] = _fee_txt
+                st.session_state[_tk] = _tax_txt
+                _cfee.text_input("手續費", key=_fk, disabled=True, label_visibility="collapsed")
+                _ctax.text_input("證交稅", key=_tk, disabled=True, label_visibility="collapsed")
+                _n = _c5.text_input("備註", key=f"te_r_{sid}_{_rid}_note", label_visibility="collapsed")
+                with _c6:
+                    if len(rowids) > 1:
+                        if st.button("🗑", key=f"te_r_{sid}_{_rid}_del", help="刪除這一列"):
+                            st.session_state[rowids_key] = [r for r in rowids if r != _rid]
+                            st.session_state.setdefault(f"te_rowdel_{sid}", []).append(_rid)
+                            st.rerun()
+                rows.append((_s, _d, _p, _q, _dt, _n))
 
         # 「多輸入一筆」：在備註下方，按一下往下再長一列。
         # 賣出採「逐筆處理」：只要有任一列選了『賣出』，就隱藏加列鈕，改走
@@ -1176,7 +1188,12 @@ def _render_stock_trade_panel(
                                 # 若已無列則回到一列空白，等待輸入下一筆。
                                 _rest = [r for r in st.session_state.get(rowids_key, [0]) if r != _active_rid]
                                 st.session_state.setdefault(f"te_rowdel_{sid}", []).append(_active_rid)
-                                st.session_state[rowids_key] = _rest if _rest else [0]
+                                if not _rest:
+                                    # 同上：補的空白列用新列號，避免瀏覽器帶回舊值
+                                    _nid = int(st.session_state.get(seq_key, 1) or 1)
+                                    st.session_state[seq_key] = _nid + 1
+                                    _rest = [_nid]
+                                st.session_state[rowids_key] = _rest
                             else:
                                 st.session_state[f"te_rreset_{sid}"] = True
                             st.session_state[f"te_reset_match_{sid}"] = True

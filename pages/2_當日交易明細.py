@@ -176,17 +176,11 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
         "單筆損益": "{:,.0f}",
         "累計損益": "{:,.0f}",
     }
-    sty = df.style.format(fmt, na_rep="—")
-    for c in ["單筆損益", "累計損益"]:
-        if c in df.columns:
-            sty = sty.map(_style_signed, subset=[c])
-    st.dataframe(sty, use_container_width=True, hide_index=True)
-
     total_in = float(df["交割應收"].sum())
     total_out = float(df["交割應付"].sum())
     net = total_in - total_out
 
-    st.markdown("---")
+    # 交割加總放在明細上方：一進來先看到總數（同事回報要往下捲才看得到）
     st.subheader("交割加總")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("交割應收（賣出淨入帳）", f"{total_in:,.0f}")
@@ -201,6 +195,14 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
         unsafe_allow_html=True,
     )
     st.caption("提醒：此處以交易金額 ± 手續費/證交稅估算交割收付；若券商另有其他費用/利息，請以帳單為準。")
+
+    st.markdown("---")
+    sty = df.style.format(fmt, na_rep="—")
+    for c in ["單筆損益", "累計損益"]:
+        if c in df.columns:
+            sty = sty.map(_style_signed, subset=[c])
+    # 全部展開（每列約 35px + 表頭），不在小框內上下捲動
+    st.dataframe(sty, use_container_width=True, hide_index=True, height=35 * (len(df) + 1) + 3)
 
     csv_buf = io.BytesIO()
     df.to_csv(csv_buf, index=False, encoding="utf-8-sig")
