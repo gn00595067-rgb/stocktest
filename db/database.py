@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 連線與 Session（支援 DATABASE_URL 雲端可寫入、USE_GOOGLE_SHEET 試算表聯動）"""
+"""資料庫連線與 Session：設 DATABASE_URL → Postgres（正式資料庫）；否則 USE_GOOGLE_SHEET 試算表模式或本機 SQLite"""
 import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, scoped_session
@@ -23,19 +23,59 @@ try:
                 os.environ.setdefault("GOOGLE_SHEET_CREDENTIALS", json.dumps(c))
         if st.secrets.get("GOOGLE_SHEET_CREDENTIALS_B64"):
             os.environ.setdefault("GOOGLE_SHEET_CREDENTIALS_B64", str(st.secrets["GOOGLE_SHEET_CREDENTIALS_B64"]).strip())
+        if st.secrets.get("DATABASE_URL"):
+            os.environ.setdefault("DATABASE_URL", str(st.secrets["DATABASE_URL"]).strip())
 except Exception:
     pass
 
-# 是否啟用 Google 試算表聯動（持倉與沖銷資料存於試算表，程式重啟時從試算表載入）
-USE_GOOGLE_SHEET = os.environ.get("USE_GOOGLE_SHEET", "").strip().lower() in ("1", "true", "yes")
-
 # 雲端部署時可設 DATABASE_URL（如 postgresql://...），未設則用本機 SQLite 或記憶體（試算表模式）
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip() or None
+
+# 是否以 Google 試算表為正式資料來源（啟動時從試算表載入、每次 commit 寫回試算表）。
+# 設了 DATABASE_URL 就以資料庫為準：試算表只當備份（另由匯出腳本寫入），
+# 不再載入也不再自動寫回——兩邊都當正式資料會互相覆蓋。
+USE_GOOGLE_SHEET = (
+    os.environ.get("USE_GOOGLE_SHEET", "").strip().lower() in ("1", "true", "yes")
+    and not DATABASE_URL
+)
+
+
+def normalize_database_url(url: str) -> str:
+    """常見雲端 DB 會給 postgres://，SQLAlchemy 1.4+ 需改為 postgresql://"""
+    url = url.strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    return url
+
+
+def create_schema(target_engine) -> None:
+    """建立資料表。Postgres 刻意比照 SQLite 時期的寬鬆行為，避免換資料庫後原本能存的資料存不進去：
+      - 不建外鍵限制：SQLite 從未檢查外鍵，既有的失效沖銷規則（指向已刪交易）才能原樣保留。
+      - 文字欄位不限長度：SQLite 不檢查 String(n) 長度，主檔裡已有超過 20 字的代號
+        （如類股指數 BiotechnologyMedicalCare），Postgres 照長度檢查會整批寫入失敗。
+    """
+    if target_engine.dialect.name == "sqlite":
+        Base.metadata.create_all(target_engine)
+        return
+    from sqlalchemy import MetaData, ForeignKeyConstraint, String
+    md = MetaData()
+    for t in Base.metadata.sorted_tables:
+        t2 = t.to_metadata(md)
+        for c in list(t2.constraints):
+            if isinstance(c, ForeignKeyConstraint):
+                t2.constraints.discard(c)
+        for col in t2.columns:
+            col.foreign_keys.clear()
+            if isinstance(col.type, String) and getattr(col.type, "length", None):
+                col.type = String()
+    md.create_all(target_engine)
+
+
 if DATABASE_URL:
-    # 常見雲端 DB 會給 postgres://，SQLAlchemy 1.4+ 需改為 postgresql://
-    if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = "postgresql://" + DATABASE_URL[9:]
-    engine = create_engine(DATABASE_URL, echo=False)
+    # pool_pre_ping：Neon 閒置會休眠、連線會被關掉，取用前先確認，避免醒來第一次操作報錯
+    engine = create_engine(
+        normalize_database_url(DATABASE_URL), echo=False, pool_pre_ping=True, pool_recycle=300,
+    )
 else:
     if USE_GOOGLE_SHEET:
         # StaticPool：單一連線共用，避免多執行緒時每人一個 :memory: 導致「no such table」
@@ -50,7 +90,7 @@ else:
         DB_PATH = os.environ.get("DB_PATH", "stock_analysis.db")
         engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
 
-Base.metadata.create_all(engine)
+create_schema(engine)
 # 若 custom_match_rules 尚無 created_at 欄位則補上（既有資料庫遷移）
 try:
     from sqlalchemy import text

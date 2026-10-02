@@ -227,7 +227,7 @@ st.caption(
 with st.expander("展開檢查／重算手續費", expanded=False):
     _fsess = get_session()
     try:
-        _all_t = _fsess.query(Trade).all()
+        _all_t = _fsess.query(Trade).order_by(Trade.id).all()
         _masters_f = {m.stock_id: m for m in _fsess.query(StockMaster).all()}
         _frows = []
         _fid_to_new = {}

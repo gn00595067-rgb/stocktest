@@ -1,0 +1,27 @@
+# 每天把資料庫（正式資料）匯出一份到 Google 試算表當備份。
+# 需要 repo secrets：DATABASE_URL、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64。
+# 還沒設 DATABASE_URL（仍是試算表模式）時腳本會直接略過。
+name: 每日備份資料庫到試算表
+
+on:
+  schedule:
+    - cron: "0 14 * * *"   # UTC 14:00 = 台灣 22:00
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安裝套件（只裝匯出需要的）
+        run: pip install "sqlalchemy>=2.0.0,<2.1" "psycopg2-binary>=2.9,<3" "gspread>=5.12.0,<7" "google-auth>=2.23.0,<3" "python-dotenv>=1.0.0,<2"
+      - name: 匯出
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_CREDENTIALS_B64: ${{ secrets.GOOGLE_SHEET_CREDENTIALS_B64 }}
+        run: python scripts/export_db_to_sheet.py

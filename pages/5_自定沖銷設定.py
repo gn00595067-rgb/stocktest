@@ -44,7 +44,7 @@ try:
     sess = get_session()
     trades = sess.query(Trade).order_by(Trade.trade_date, Trade.id).all()
     masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-    rules = sess.query(CustomMatchRule).all()
+    rules = sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()
     sess.close()
 except OperationalError:
     if sess is not None:
@@ -1117,7 +1117,7 @@ else:
     st.caption("以下為已設定的配對；可直接在「沖銷股數」欄修改數字後按「確認」，或按「刪除」移除該筆規則。")
     sess2 = get_session()
     try:
-        rules_list = sess2.query(CustomMatchRule).all()
+        rules_list = sess2.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()
         # 先以全部規則計算已配股數（修改時上限才正確）
         sell_used2 = defaultdict(int)
         buy_used2 = defaultdict(int)

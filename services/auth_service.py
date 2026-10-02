@@ -143,11 +143,12 @@ def ensure_bootstrap_admin() -> None:
             )
         )
         sess.commit()
-        # 首次建立 admin 後，若啟用 Google Sheet，立即落盤避免重啟遺失。
+        # 首次建立 admin 後，若以 Google Sheet 為正式資料（試算表模式），立即落盤避免重啟遺失。
+        # 資料庫模式不寫：試算表只是備份，不能拿幾乎空的資料庫去蓋。
         try:
-            from db.database import get_engine
+            from db.database import get_engine, USE_GOOGLE_SHEET
             from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
-            if is_google_sheet_enabled():
+            if USE_GOOGLE_SHEET and is_google_sheet_enabled():
                 sync_db_to_sheet(get_engine())
         except Exception:
             pass

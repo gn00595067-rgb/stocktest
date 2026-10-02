@@ -497,10 +497,10 @@ def _fetch_stock_context(code: str) -> str:
 def _load_holdings() -> tuple[list[dict], dict[str, str]]:
     session = get_session()
     try:
-        trades  = session.query(Trade).all()
+        trades  = session.query(Trade).order_by(Trade.id).all()
         masters = {m.stock_id: m.name for m in session.query(StockMaster).all()}
         rules   = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty)
-                   for r in session.query(CustomMatchRule).all()]
+                   for r in session.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
     finally:
         session.close()
 

@@ -408,7 +408,7 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                     tax = float(tax) if tax is not None and str(tax).strip() else None
                     note = str(r.get("note") or "").strip() or None
                     conn.execute(text("""
-                        INSERT INTO trades (id, user, stock_id, trade_date, side, price, quantity, is_daytrade, fee, tax, note)
+                        INSERT INTO trades (id, "user", stock_id, trade_date, side, price, quantity, is_daytrade, fee, tax, note)
                         VALUES (:id, :user, :stock_id, :trade_date, :side, :price, :quantity, :is_daytrade, :fee, :tax, :note)
                     """), {
                         "id": tid, "user": user, "stock_id": stock_id, "trade_date": trade_date,
@@ -526,14 +526,16 @@ def _read_db_payload(engine):
     """從 DB 讀出要寫回試算表的五張表（含表頭），回傳 (r_trades 原始列, [(工作表名, 資料), ...])。"""
     from sqlalchemy import text
 
+    # "user" 一定要加引號：在 Postgres 是保留字，不加會讀成「目前資料庫登入帳號」而非交易人
     with engine.connect() as conn:
         r_trades = conn.execute(text("""
-            SELECT id, user, stock_id, trade_date, side, price, quantity, is_daytrade, fee, tax, note
+            SELECT id, "user", stock_id, trade_date, side, price, quantity, is_daytrade, fee, tax, note
             FROM trades ORDER BY id
         """)).fetchall()
         r_rules = conn.execute(text("""
             SELECT sell_trade_id, buy_trade_id, matched_qty, created_at
             FROM custom_match_rules
+            ORDER BY sell_trade_id, buy_trade_id
         """)).fetchall()
         r_users = conn.execute(text("""
             SELECT id, username, password_hash, role, is_active, created_at

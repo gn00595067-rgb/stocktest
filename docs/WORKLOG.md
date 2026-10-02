@@ -146,3 +146,20 @@
 **驗證**：`pytest` 85 passed（新增 10 個同步測試：連線次數、修剪、讀 id 失敗不寫、回讀不一致回報失敗、數值格式、備份降頻與修剪、連線重用、併發排隊）。沒有對正式試算表實測（本機載 .env 會寫到正式表）。
 
 **下一步**：部署後請同事在平板上再送一次多筆，並到 Streamlit Cloud 的 log 看 `[sheet_sync] 寫回試算表 成功，耗時 X 秒`，確認實際秒數；若還是很慢，下一步再看整頁重跑（送出前後共 3 次 rerun）的耗時。
+
+## 2026-10-02 — 改用資料庫（Neon Postgres）：程式端完成、本機演練通過，待切換
+
+**做了什麼**
+- spec：`docs/specs/改用資料庫.md`（完整轉移步驟、回退方式、風險）。
+- `db/database.py`：設 `DATABASE_URL` → Postgres（`pool_pre_ping`），自動停用試算表模式；Postgres 建表不建外鍵、文字不限長度。
+- `services/db_migration.py`＋`scripts/migrate_sheet_to_db.py`：試算表唯讀 → 資料庫，同一 transaction、目標有資料預設拒絕、逐筆比對、調整自動編號；`--verify-only` 只比對。
+- `scripts/export_db_to_sheet.py`＋`.github/workflows/backup-db-to-sheet.yml`：每天 22:00 把資料庫匯出到試算表（沿用寫回防呆）。
+- `services/sheet_sync.py`：`"user"` 欄加引號；沖銷規則匯出固定排序。
+- 頁面讀交易／規則一律固定排序；帳號頁、首次建 admin 只在試算表模式才寫回試算表；側欄顯示資料庫模式＋管理者匯出按鈕。
+- `requirements.txt` 加 `psycopg2-binary`。
+
+**為什麼**：試算表當資料庫既慢（每次存檔整份寫回）又是過去掉單的根源（雙份資料不一致）；換單一資料庫兩個問題一起解決。
+
+**驗證**：`pytest` 93 passed（新增 `tests/test_db_migration.py`；設 `TEST_PG_URL` 時在真 Postgres 上跑，15 passed）。本機 Postgres 16 演練：正式試算表（唯讀）544 筆交易、286 條規則搬過去逐筆一致；所有頁面無錯誤；新增／刪除交易正常；持倉成本與已實現損益和試算表資料逐位元一致。演練抓到並修正 3 個 Postgres 差異（`user` 保留字會讀成 `postgres`、主檔代號超過長度、回傳順序不固定）。
+
+**下一步**：Jonathan 建立 Neon 專案（美國區域），把連線字串以 `NEON_DATABASE_URL` 放進本機 `.env`，告訴 Claude；再約收盤後時段正式切換（spec 第 5 節）。

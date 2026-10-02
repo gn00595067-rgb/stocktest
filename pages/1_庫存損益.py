@@ -506,9 +506,9 @@ with st.container():
     # 先載入資料供篩選與報表使用
     try:
         sess = get_session()
-        all_trades = sess.query(Trade).all()
+        all_trades = sess.query(Trade).order_by(Trade.id).all()
         masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-        custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+        custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
         sess.close()
         all_trades = filter_trades_by_permission(all_trades)
         if is_admin():

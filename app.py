@@ -52,9 +52,20 @@ ensure_google_sheet_loaded()
 
 # 若已啟用 Google 試算表聯動，顯示狀態；若本機用檔案 DB 但已設定試算表，提供手動同步
 try:
-    from db.database import USE_GOOGLE_SHEET, get_engine
+    from db.database import USE_GOOGLE_SHEET, DATABASE_URL, get_engine
     if USE_GOOGLE_SHEET:
         st.sidebar.caption("📋 **資料聯動**：交易與沖銷規則已與 Google 試算表同步，重啟後會從試算表載入。")
+    elif DATABASE_URL:
+        st.sidebar.caption("📦 **資料庫模式**：資料存在雲端資料庫；Google 試算表每天自動匯出一份當備份。")
+        if is_admin():
+            from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
+            if is_google_sheet_enabled() and st.sidebar.button("匯出備份到 Google 試算表"):
+                with st.spinner("匯出中…"):
+                    ok, err = sync_db_to_sheet(get_engine(), force=True)
+                if ok:
+                    st.sidebar.success("已把資料庫內容匯出到 Google 試算表（含備份分頁）。")
+                else:
+                    st.sidebar.error(f"匯出失敗：{err or '未知錯誤'}")
     else:
         try:
             from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet

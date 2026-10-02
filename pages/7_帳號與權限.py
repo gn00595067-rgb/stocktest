@@ -20,8 +20,10 @@ from services.auth_service import (
 def _sync_to_sheet_after_auth_change() -> tuple[bool, str | None]:
     """帳號/權限變更後立即強制同步，避免重啟後遺失。"""
     try:
+        from db.database import USE_GOOGLE_SHEET
         from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
-        if not is_google_sheet_enabled():
+        # 只有試算表模式需要立即寫回；資料庫模式資料已存在資料庫，試算表由每日備份更新
+        if not (USE_GOOGLE_SHEET and is_google_sheet_enabled()):
             return True, None
         return sync_db_to_sheet(get_engine())
     except Exception as e:

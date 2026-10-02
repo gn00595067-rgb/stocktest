@@ -746,9 +746,9 @@ def _render_match_panel(
 
 def _load_data():
     sess = get_session()
-    trades = filter_trades_by_permission(sess.query(Trade).all())
+    trades = filter_trades_by_permission(sess.query(Trade).order_by(Trade.id).all())
     masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-    rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).all()]
+    rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
     stocks = sess.query(StockMaster).all()
     sess.close()
     return trades, masters, rules, stocks
