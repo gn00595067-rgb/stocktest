@@ -39,14 +39,28 @@ st.caption("本頁提供兩種匯入方式：**一、券商 CSV/Excel 交易紀�
 
 # ---------- 清空所有資料（交易＋自定沖銷規則，主檔股票列表保留） ----------
 with st.expander("⚠️ 清空所有資料", expanded=False):
-    st.caption("將刪除**所有交易**與**所有自定沖銷規則**，主檔股票列表會保留。此操作無法復原。")
-    if st.button("清空所有交易與沖銷規則", type="secondary", key="clear_all_btn"):
+    st.caption("將刪除**所有交易**與**所有自定沖銷規則**，主檔股票列表會保留。刪除前會自動備份一份到 Google 試算表。")
+    # 一鍵就清空全部太危險（同事共用管理者帳號）：要手打確認字樣才能按
+    if st.session_state.pop("clear_all_reset", False):
+        st.session_state.pop("clear_all_phrase", None)  # 清空完成後把確認字樣清掉，避免再按一次
+    _phrase = st.text_input("請輸入「確認清空」四個字才能執行", key="clear_all_phrase", placeholder="確認清空")
+    if st.button(
+        "清空所有交易與沖銷規則", type="secondary", key="clear_all_btn",
+        disabled=(_phrase or "").strip() != "確認清空",
+    ):
+        from services.data_guard import backup_before_destructive
+        with st.spinner("刪除前先備份到 Google 試算表…"):
+            _ok, _err = backup_before_destructive()
+        if not _ok:
+            st.error(_err)
+            st.stop()
         sess = get_session()
         try:
             n_rules = sess.query(CustomMatchRule).delete()
             n_trades = sess.query(Trade).delete()
             sess.commit()
-            st.session_state["clear_all_done"] = f"已刪除 {n_trades} 筆交易、{n_rules} 筆自定沖銷規則。"
+            st.session_state["clear_all_done"] = f"已刪除 {n_trades} 筆交易、{n_rules} 筆自定沖銷規則（刪除前已備份到 Google 試算表）。"
+            st.session_state["clear_all_reset"] = True
             st.rerun()
         except Exception as e:
             sess.rollback()
@@ -68,6 +82,8 @@ with st.expander("⚠️ 清空所有資料", expanded=False):
         st.write("")  # 對齊
         do_clear_range = st.button("清空此區間", type="secondary", key="clear_range_btn")
 
+    # 兩段式：先算出會刪幾筆給人看，再按「確認刪除」才動手（刪除前先備份）
+    _pend_key = "clear_range_pending"
     if do_clear_range:
         if clear_from is None or clear_to is None:
             st.warning("請選擇起始與結束日期。")
@@ -76,23 +92,50 @@ with st.expander("⚠️ 清空所有資料", expanded=False):
             end_d = max(clear_from, clear_to)
             sess = get_session()
             try:
+                n = sess.query(Trade).filter(Trade.trade_date >= start_d, Trade.trade_date <= end_d).count()
+            finally:
+                sess.close()
+            if not n:
+                st.info(f"{start_d} ～ {end_d} 沒有任何交易可刪除。")
+                st.session_state.pop(_pend_key, None)
+            else:
+                st.session_state[_pend_key] = (start_d, end_d, n)
+
+    _pend = st.session_state.get(_pend_key)
+    if _pend:
+        start_d, end_d, n = _pend
+        st.warning(f"即將刪除 **{start_d} ～ {end_d}** 的 **{n} 筆交易**（含引用它們的自定沖銷規則）。刪除前會先備份到 Google 試算表。")
+        _cy, _cn = st.columns(2)
+        if _cn.button("取消", key="clear_range_cancel", use_container_width=True):
+            st.session_state.pop(_pend_key, None)
+            st.rerun()
+        if _cy.button(f"確認刪除 {n} 筆", key="clear_range_confirm", type="primary", use_container_width=True):
+            st.session_state.pop(_pend_key, None)
+            from services.data_guard import backup_before_destructive
+            with st.spinner("刪除前先備份到 Google 試算表…"):
+                _ok, _err = backup_before_destructive()
+            if not _ok:
+                st.error(_err)
+                st.stop()
+            sess = get_session()
+            try:
                 trade_ids = [
                     int(tid) for (tid,) in sess.query(Trade.id)
                     .filter(Trade.trade_date >= start_d, Trade.trade_date <= end_d)
                     .all()
                 ]
-                if not trade_ids:
-                    st.info(f"{start_d} ～ {end_d} 沒有任何交易可刪除。")
-                else:
-                    # 先刪除引用到這些交易的自定沖銷規則
-                    n_rules = sess.query(CustomMatchRule).filter(
-                        (CustomMatchRule.sell_trade_id.in_(trade_ids)) | (CustomMatchRule.buy_trade_id.in_(trade_ids))
-                    ).delete(synchronize_session=False)
-                    # 再刪除交易
-                    n_trades = sess.query(Trade).filter(Trade.id.in_(trade_ids)).delete(synchronize_session=False)
-                    sess.commit()
-                    st.success(f"已刪除 {start_d} ～ {end_d} 的 {n_trades} 筆交易，並同步刪除 {n_rules} 筆自定沖銷規則。")
-                    st.rerun()
+                # 先刪除引用到這些交易的自定沖銷規則
+                n_rules = sess.query(CustomMatchRule).filter(
+                    (CustomMatchRule.sell_trade_id.in_(trade_ids)) | (CustomMatchRule.buy_trade_id.in_(trade_ids))
+                ).delete(synchronize_session=False)
+                # 再刪除交易
+                n_trades = sess.query(Trade).filter(Trade.id.in_(trade_ids)).delete(synchronize_session=False)
+                sess.commit()
+                st.session_state["clear_all_done"] = (
+                    f"已刪除 {start_d} ～ {end_d} 的 {n_trades} 筆交易，並同步刪除 {n_rules} 筆自定沖銷規則"
+                    "（刪除前已備份到 Google 試算表）。"
+                )
+                st.rerun()
             except Exception as e:
                 sess.rollback()
                 st.error(f"清空指定區間失敗：{e}")

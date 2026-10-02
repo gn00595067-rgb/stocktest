@@ -82,10 +82,17 @@ try:
 except Exception:
     pass
 
+# 開發用按鈕（產生模擬數據、側欄清空全部）只在本機開發資料庫出現：
+# 正式資料（資料庫或試算表模式）上一按就會塞 2000 筆假交易或清空全部，且同事共用管理者帳號。
+# 正式資料要清空請到「交易匯入」頁（需手打確認字樣，刪除前自動備份）。
+from services.data_guard import is_production_data
+_dev_tools = is_admin() and not is_production_data()
+
 # 左側欄：產生模擬數據按鈕（2024/1/1～今天，2000 筆）
-st.sidebar.markdown("---")
-st.sidebar.caption("🔧 開發用")
-if is_admin() and st.sidebar.button("產生模擬數據"):
+if _dev_tools:
+    st.sidebar.markdown("---")
+    st.sidebar.caption("🔧 開發用")
+if _dev_tools and st.sidebar.button("產生模擬數據"):
     try:
         from db.mock_data import generate_mock_trades
         n = generate_mock_trades(
@@ -99,10 +106,11 @@ if is_admin() and st.sidebar.button("產生模擬數據"):
     except Exception as e:
         st.sidebar.error(f"產生失敗：{e}")
 
-# 左側欄：清空所有庫存資料（刪除全部交易與沖銷規則）
-st.sidebar.markdown("---")
-st.sidebar.caption("⚠️ 資料管理")
-if is_admin() and st.session_state.get("show_clear_confirm"):
+# 左側欄：清空所有庫存資料（刪除全部交易與沖銷規則）— 只限本機開發資料庫
+if _dev_tools:
+    st.sidebar.markdown("---")
+    st.sidebar.caption("⚠️ 資料管理")
+if _dev_tools and st.session_state.get("show_clear_confirm"):
     st.sidebar.warning("即將刪除**所有交易**與**自定沖銷規則**，此操作無法復原。")
     if st.sidebar.button("確認清空", type="primary", key="confirm_clear_btn"):
         try:
@@ -127,7 +135,7 @@ if is_admin() and st.session_state.get("show_clear_confirm"):
     if st.sidebar.button("取消", key="cancel_clear_btn"):
         del st.session_state["show_clear_confirm"]
         st.rerun()
-elif is_admin():
+elif _dev_tools:
     if st.sidebar.button("清空所有庫存資料"):
         st.session_state["show_clear_confirm"] = True
         st.rerun()

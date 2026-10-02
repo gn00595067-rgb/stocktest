@@ -1266,6 +1266,12 @@ def _render_stock_trade_panel(
                     disabled=not confirm,
                     use_container_width=True,
                 ):
+                    from services.data_guard import backup_before_destructive
+                    with st.spinner("刪除前先備份到 Google 試算表…"):
+                        _ok, _err = backup_before_destructive()
+                    if not _ok:
+                        st.error(_err)
+                        st.stop()
                     sess = get_session()
                     try:
                         ids = [int(t.id) for t in stock_ts]
