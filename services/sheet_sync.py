@@ -8,6 +8,8 @@ from typing import Optional, Tuple, List, Any
 import hashlib
 import json
 import os
+import threading
+import time
 
 # 依賴 gspread、google-auth（optional）
 try:
@@ -49,6 +51,18 @@ BACKUP_PREFIX = "trades_bak_"
 # 上次寫回（或剛從試算表載入）時的內容指紋；相同就略過寫回。每個行程（記憶體 DB）各自一份。
 _last_synced_fingerprint: Optional[str] = None
 
+# 已開啟的試算表（同一行程重用，省掉每次驗證＋抓試算表資訊的連線）
+_spread_cache = None
+
+# 寫回鎖：同一時間只允許一個寫回在跑。兩位同事同時送出時，若兩個寫回交錯，
+# 較舊的快照可能在較新的之後寫入並修剪掉新列（交易從試算表消失）；排隊執行、
+# 且在鎖內才讀 DB，就保證最後寫進去的一定是最新內容。
+_sync_lock = threading.RLock()
+
+# 滾動時間戳備份的最短間隔（分鐘）：連續送出時不必每筆都複製一整張分頁；
+# 最新狀態另有固定備份分頁 trades_backup 每次都更新。
+BACKUP_MIN_INTERVAL_MIN_DEFAULT = 10
+
 
 def _env_flag(name: str, default: bool) -> bool:
     v = os.environ.get(name)
@@ -77,19 +91,37 @@ def backup_prune_plan(titles, keep: int, prefix: str = BACKUP_PREFIX):
     return baks[: len(baks) - keep]
 
 
-def _rolling_backup(spread, source_ws, keep: int) -> str:
-    """把 source_ws 複製成 trades_bak_<時間> 分頁，並修剪舊備份到最多 keep 份。回傳備份分頁名（失敗回傳空字串）。"""
-    from datetime import datetime as _dt
-    name = BACKUP_PREFIX + _dt.now().strftime("%Y%m%d_%H%M%S")
+def backup_is_due(titles, now: datetime, min_interval_min: int, prefix: str = BACKUP_PREFIX) -> bool:
+    """純函式：最新一份滾動備份距今已達 min_interval_min 分鐘（或還沒有任何備份）才需要再備份。
+
+    備份名的時間無法解析時一律視為需要備份（寧可多備一份）。
+    """
+    baks = sorted(t for t in titles if str(t).startswith(prefix))
+    if not baks or min_interval_min <= 0:
+        return True
+    try:
+        last = datetime.strptime(baks[-1][len(prefix):], "%Y%m%d_%H%M%S")
+    except ValueError:
+        return True
+    return (now - last).total_seconds() >= min_interval_min * 60
+
+
+def _rolling_backup(spread, source_ws, keep: int, worksheets=None) -> str:
+    """把 source_ws 複製成 trades_bak_<時間> 分頁，並修剪舊備份到最多 keep 份。回傳備份分頁名（失敗回傳空字串）。
+
+    worksheets：呼叫端剛抓過的分頁清單，可省掉再抓一次；沒給就自己抓。
+    """
+    name = BACKUP_PREFIX + datetime.now().strftime("%Y%m%d_%H%M%S")
     try:
         spread.duplicate_sheet(source_sheet_id=source_ws.id, new_sheet_name=name)
     except Exception:
         return ""
     try:
-        titles = [w.title for w in spread.worksheets()]
-        for t in backup_prune_plan(titles, keep):
+        wss = list(worksheets) if worksheets is not None else spread.worksheets()
+        by_title = {w.title: w for w in wss}
+        for t in backup_prune_plan(list(by_title) + [name], keep):
             try:
-                spread.del_worksheet(spread.worksheet(t))
+                spread.del_worksheet(by_title[t])
             except Exception:
                 pass
     except Exception:
@@ -173,7 +205,27 @@ def is_google_sheet_enabled() -> bool:
 
 
 def _open_spreadsheet():
-    """開啟試算表，回傳 (gspread Spreadsheet, None) 或 (None, error_message)。"""
+    """開啟試算表（同一行程重用已開啟的連線），回傳 (gspread Spreadsheet, None) 或 (None, error_message)。
+
+    每次重開要驗證憑證＋抓整份試算表資訊，等於多 1～2 次連線；同步出錯時會呼叫
+    _forget_spreadsheet() 清掉，下次重開，不會一直用壞掉的連線。
+    """
+    global _spread_cache
+    if _spread_cache is not None:
+        return _spread_cache, None
+    spread, err = _open_spreadsheet_fresh()
+    if spread is not None:
+        _spread_cache = spread
+    return spread, err
+
+
+def _forget_spreadsheet() -> None:
+    global _spread_cache
+    _spread_cache = None
+
+
+def _open_spreadsheet_fresh():
+    """實際連線開啟試算表，回傳 (gspread Spreadsheet, None) 或 (None, error_message)。"""
     if not _HAS_GSPREAD:
         return None, "未安裝 gspread 或 google-auth"
     creds_dict, sheet_id = _get_credentials_and_sheet_id()
@@ -577,20 +629,60 @@ def remember_db_as_synced(engine) -> None:
     except Exception:
         _last_synced_fingerprint = None
 
+
+def _norm_id(v) -> str:
+    """id 正規化成字串：12、12.0、"12" 都變 "12"；空值回傳空字串，非數字原樣去空白。"""
+    s = str(v).strip() if v is not None else ""
+    if not s:
+        return ""
+    try:
+        return str(int(float(s.replace(",", ""))))
+    except ValueError:
+        return s
+
+
+def _read_sheet_ids(spread, title) -> List[str]:
+    """只讀某分頁的 A 欄（id），回傳表頭以下「非空白」的 id 清單。
+
+    防呆與回讀驗證只需要 id，不必把整張表（11 欄 × 全部交易）抓回來。
+    用 UNFORMATTED_VALUE 讀原始數值，不受儲存格顯示格式（如千分位）影響。
+    """
+    res = _retry_on_quota(lambda: spread.values_get(
+        f"{title}!A:A", params={"valueRenderOption": "UNFORMATTED_VALUE"}
+    ))
+    vals = (res or {}).get("values", []) if isinstance(res, dict) else []
+    ids = [_norm_id(r[0]) if r else "" for r in vals[1:]]
+    return [i for i in ids if i]
+
+
 def sync_db_to_sheet(engine, force: bool = False) -> Tuple[bool, Optional[str]]:
     """
     將 DB 的「交易」「自定沖銷規則」「帳號」「權限綁定」寫回 Google 試算表（整表覆寫）。
     內容與上次寫回相同時略過（force=True 強制寫回）。
     回傳 (True, None) 成功；(False, error_msg) 失敗。
+
+    同一時間只跑一個寫回（_sync_lock），避免兩人同時送出時舊快照蓋掉新資料。
     """
-    global _last_synced_fingerprint
     if not _HAS_GSPREAD:
         return False, "未安裝 gspread 或 google-auth"
+    t0 = time.monotonic()
+    with _sync_lock:
+        ok, err, wrote = _sync_db_to_sheet_locked(engine, force)
+    if wrote:
+        # 用 print：Streamlit Cloud 的 log 預設看不到 INFO 等級，方便實際量測寫回耗時
+        print(f"[sheet_sync] 寫回試算表 {'成功' if ok else '失敗'}，耗時 {time.monotonic() - t0:.1f} 秒", flush=True)
+    return ok, err
 
+
+def _sync_db_to_sheet_locked(engine, force: bool) -> Tuple[bool, Optional[str], bool]:
+    """sync_db_to_sheet 的本體（呼叫端已持有 _sync_lock）。回傳 (ok, err, 是否有連線試算表)。"""
+    global _last_synced_fingerprint
+
+    # 在鎖內才讀 DB：排在後面的寫回一定拿到最新內容
     try:
         r_trades, sheets = _read_db_payload(engine)
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        return False, f"{type(e).__name__}: {e}", False
     trades_data = sheets[0][1]
 
     # 內容和上次寫回（或剛載入）時完全一樣 → 不寫回、不產生備份，也不連線試算表。
@@ -598,20 +690,23 @@ def sync_db_to_sheet(engine, force: bool = False) -> Tuple[bool, Optional[str]]:
     # 會把真正有用的歷史備份擠掉。
     fingerprint = _payload_fingerprint(sheets)
     if not force and fingerprint == _last_synced_fingerprint:
-        return True, None
+        return True, None, False
 
     spread, err = _open_spreadsheet()
     if err:
-        return False, err
+        return False, err, True
 
     try:
+        # 一次抓回全部分頁（1 次連線），缺的才建；不再逐張 worksheet() 各連線一次
+        wss = list(_retry_on_quota(lambda: spread.worksheets()))
+        by_title = {w.title: w for w in wss}
 
-        # 確保 5 張工作表存在（缺才建，通常只有第一次）
         def _ensure_ws(title, cols):
-            try:
-                return spread.worksheet(title)
-            except gspread.WorksheetNotFound:
-                return spread.add_worksheet(title=title, rows=1000, cols=cols)
+            if title not in by_title:
+                ws = spread.add_worksheet(title=title, rows=1000, cols=cols)
+                by_title[title] = ws
+                wss.append(ws)
+            return by_title[title]
         ws_trades = _ensure_ws(SHEET_TRADES, len(TRADES_HEADERS))
         _ensure_ws(SHEET_RULES, len(RULES_HEADERS))
         _ensure_ws(SHEET_USERS, len(USERS_HEADERS))
@@ -621,14 +716,13 @@ def sync_db_to_sheet(engine, force: bool = False) -> Tuple[bool, Optional[str]]:
         # ③ 防呆（逐筆 id 比對）：抓試算表現有交易 id 與記憶體比對。記憶體若明顯變少，
         # 代表載入不完整/記憶體過期，強行寫回會用殘缺資料覆蓋掉試算表——這是交易一批批
         # 消失的根因。此時直接中止，並列出「少了哪幾筆 id」方便核對。
-        try:
-            existing_values = ws_trades.get_all_values()
-        except Exception:
-            existing_values = []
-        existing_rows = max(0, len(existing_values) - 1)
-        sheet_ids = {str(row[0]).strip() for row in existing_values[1:] if row and str(row[0]).strip()}
-        mem_ids = {str(r[0]).strip() for r in r_trades}
+        # 讀不到現有 id 時一律不寫（以前讀失敗會略過防呆直接寫，等於把保護拿掉）：
+        # 例外直接交給最外層，回報失敗、不記成已同步，下次存檔再試。
+        sheet_id_list = _read_sheet_ids(spread, SHEET_TRADES)
+        sheet_ids = set(sheet_id_list)
+        mem_ids = {_norm_id(r[0]) for r in r_trades}
         missing_ids = [i for i in sheet_ids if i not in mem_ids]
+        existing_rows = len(sheet_id_list)
         mem_rows = len(r_trades)
         if existing_rows > 0 and (
             mem_rows == 0
@@ -640,7 +734,7 @@ def sync_db_to_sheet(engine, force: bool = False) -> Tuple[bool, Optional[str]]:
                 f"（記憶體少了 {len(missing_ids)} 筆交易，例如 id {_eg}…）。"
                 f"這通常代表 app 記憶體不是最新，強行寫回會蓋掉試算表。"
                 f"請先『Reboot』重新載入最新資料再操作；若你確實剛大量刪除，Reboot 後再刪一次即可。"
-            )
+            ), True
 
         # 安全寫回：先「寫入」再「修剪」（寫失敗不清空），批次 2 個 write 請求避開 429。
         body = {
@@ -655,41 +749,62 @@ def sync_db_to_sheet(engine, force: bool = False) -> Tuple[bool, Optional[str]]:
         except Exception:
             pass
 
-        # ② 寫入後回讀驗證：讀回 trades 筆數與應寫入比對，明顯不足代表沒寫完整 → 回報失敗。
+        # ② 寫入後回讀驗證：讀回 trades 的 id，必須和記憶體「完全相同」（不只筆數夠）。
+        #    讀不回來也算失敗：不記成已同步，下次存檔會整份重寫一次。
         try:
-            back_rows = max(0, len(ws_trades.get_all_values()) - 1)
-            if back_rows < len(r_trades):
-                return False, (
-                    f"寫入後回讀只有 {back_rows} 筆、預期 {len(r_trades)} 筆，可能未完整寫入。"
-                    f"請 Reboot 後核對交易明細；若不符請告知，資料在版本紀錄與備份中皆可還原。"
-                )
-        except Exception:
-            pass
+            back_list = _read_sheet_ids(spread, SHEET_TRADES)
+        except Exception as e:
+            if not _is_quota_error(e):
+                _forget_spreadsheet()
+            return False, (
+                f"已寫入試算表，但寫入後無法讀回核對（{type(e).__name__}: {e}）。"
+                f"資料已存在 app 內、不會遺失；下次存檔會再整份寫回一次。"
+            ), True
+        if len(back_list) != mem_rows or set(back_list) != mem_ids:
+            lost = sorted(mem_ids - set(back_list), key=lambda x: (len(x), x))[:8]
+            return False, (
+                f"寫入後回讀 {len(back_list)} 筆、預期 {mem_rows} 筆，內容不一致"
+                f"{'（缺 id ' + '、'.join(lost) + '）' if lost else ''}，可能未完整寫入。"
+                f"請 Reboot 後核對交易明細；若不符請告知，資料在版本紀錄與備份中皆可還原。"
+            ), True
 
         _last_synced_fingerprint = fingerprint
 
-        # ① 自動備份：通過防呆的健康資料才會來到這。
+        # ① 自動備份：通過防呆與回讀驗證的健康資料才會來到這。
         #   a) 固定備份分頁 trades_backup：永遠保有「最近一次健康快照」，一鍵可救。
+        #      先寫入再修剪（以前是先清空再寫，中途失敗會留下空的備份）。
         #   b) 滾動時間戳備份 trades_bak_<時間>：保留最近 N 份歷史，避免單一快照被下一次覆寫蓋掉
         #      （Google 版本紀錄對這種表只留少數幾版，不足以回溯，故自建滾動備份）。
+        #      距上一份不到 SHEET_BACKUP_MIN_INTERVAL 分鐘就不再複製，連續送出時不必每筆都備份一次。
         #   （備份失敗不影響主流程。）
         try:
-            ws_bak = _ensure_ws(SHEET_TRADES_BACKUP, len(TRADES_HEADERS))
-            _retry_on_quota(lambda: ws_bak.clear())
-            _retry_on_quota(lambda: ws_bak.update(trades_data, value_input_option="USER_ENTERED"))
+            _ensure_ws(SHEET_TRADES_BACKUP, len(TRADES_HEADERS))
+            _retry_on_quota(lambda: spread.values_batch_update({
+                "valueInputOption": "USER_ENTERED",
+                "data": [{"range": f"{SHEET_TRADES_BACKUP}!A1", "values": trades_data}],
+            }))
+            _retry_on_quota(lambda: spread.values_batch_clear(
+                body={"ranges": [f"{SHEET_TRADES_BACKUP}!A{len(trades_data) + 1}:Z"]}
+            ))
         except Exception:
             pass
         try:
-            _rolling_backup(spread, ws_trades, _env_int("SHEET_BACKUP_KEEP", 10))
+            if backup_is_due(
+                list(by_title), datetime.now(),
+                _env_int("SHEET_BACKUP_MIN_INTERVAL", BACKUP_MIN_INTERVAL_MIN_DEFAULT),
+            ):
+                _rolling_backup(spread, ws_trades, _env_int("SHEET_BACKUP_KEEP", 10), worksheets=wss)
         except Exception:
             pass
 
-        return True, None
+        return True, None, True
     except Exception as e:
         if _is_quota_error(e):
             return False, (
                 "Google Sheet 寫入配額暫時用盡（429：每分鐘上限）。"
                 "你的變更已存進資料庫、不會遺失；請稍等約 1 分鐘再操作，"
                 "或下次任何存檔時會一併把它寫回試算表。"
-            )
-        return False, f"{type(e).__name__}: {e}"
+            ), True
+        # 非配額錯誤可能是連線失效：丟掉已開啟的試算表，下次重新連線
+        _forget_spreadsheet()
+        return False, f"{type(e).__name__}: {e}", True
