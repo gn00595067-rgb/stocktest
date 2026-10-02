@@ -204,3 +204,13 @@
 **驗證**：`pytest` 99 passed（新增 `tests/test_data_guard.py`）；AppTest：清空全部未打字時按鈕停用、備份失敗時資料不動、備份成功才清空；區間刪除第一步只顯示筆數、備份失敗不刪、成功才刪；正式資料側欄沒有開發用按鈕。
 
 **下一步**：Jonathan 在 GitHub 網頁設定 3 個 Actions secrets 並手動跑一次每日備份；幫同事建立個別一般帳號；更換對話中出現過的金鑰。
+
+## 2026-10-02 — 每日備份啟用
+
+**做了什麼**：安裝 GitHub CLI，用本機 git 已存的 GitHub 憑證設定 repo 的 3 個 Actions secrets（`DATABASE_URL`、`GOOGLE_SHEET_ID`、`GOOGLE_SHEET_CREDENTIALS_B64`，值取自本機 `.env`，未印出）；手動觸發「每日備份資料庫到試算表」一次。
+
+**為什麼**：切換到 Neon 後，新交易只存在資料庫；Neon 免費版回溯期短，需要每天自動備份。
+
+**驗證**：workflow run 37026416385 成功（`寫回試算表 成功，耗時 4.7 秒`）。之後每天台灣 22:00 自動執行，失敗 GitHub 會寄信。
+
+**下一步**：換 Neon 密碼時，GitHub secret `DATABASE_URL` 與 Streamlit Secrets 要一起改；幫同事建立個別一般帳號。
