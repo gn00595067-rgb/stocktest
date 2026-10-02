@@ -29,4 +29,5 @@
 - 讀交易／沖銷規則要 `order_by`（交易依 id、規則依 sell_trade_id, buy_trade_id）：Postgres 不保證順序，超額配對時規則順序會影響損益。
 - 本機 `.env` 不要放 `DATABASE_URL`（會直接改正式資料庫）；Neon 連線字串用 `NEON_DATABASE_URL`，只給腳本用。
 - `aggregate_by` 等除法欄位遇「成本為 0」（配股 price=0）要用 `float("nan")` 迴避，勿用 `pd.NA`（會轉 object dtype 讓 `.round()` 崩潰）。
+- 交易輸入頁的輸入區是 `@st.fragment`（`_render_entry_area`）：區內的重跑用 `_rerun_fragment()`，只有「送出成功」要 `st.rerun()` 整頁（持股／KPI 才會更新）；新增按鈕時照這個原則選。
 - 交易輸入頁（`pages/3_交易輸入.py`）大量用 `session_state` 管理多列輸入與沖銷配對；改動送出／重置流程（`te_rreset_*`、`te_reset_match_*`、逐筆賣出 `_sell_mode`）要小心 widget 建立前後的時序。
