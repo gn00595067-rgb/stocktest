@@ -163,3 +163,17 @@
 **驗證**：`pytest` 93 passed（新增 `tests/test_db_migration.py`；設 `TEST_PG_URL` 時在真 Postgres 上跑，15 passed）。本機 Postgres 16 演練：正式試算表（唯讀）544 筆交易、286 條規則搬過去逐筆一致；所有頁面無錯誤；新增／刪除交易正常；持倉成本與已實現損益和試算表資料逐位元一致。演練抓到並修正 3 個 Postgres 差異（`user` 保留字會讀成 `postgres`、主檔代號超過長度、回傳順序不固定）。
 
 **下一步**：Jonathan 建立 Neon 專案（美國區域），把連線字串以 `NEON_DATABASE_URL` 放進本機 `.env`，告訴 Claude；再約收盤後時段正式切換（spec 第 5 節）。
+
+## 2026-10-02 — Neon 演練通過；修掉主檔同步的逐筆查詢
+
+**做了什麼**
+- Neon 專案已建立（us-east-2），連線字串放在本機 `.env` 的 `NEON_DATABASE_URL`。
+- 試算表（唯讀）→ Neon 搬家演練：五張表逐筆一致；所有頁面在 Neon 上無錯誤；損益逐位元一致。
+- `services/stock_list_loader.write_to_stock_master`：原本每檔股票各查一次（約 3,060 次查詢／每位使用者每次開 app），改成一次撈全部再比對，每頁降到 8～11 次查詢。新增 `tests/test_stock_list_loader_bulk.py`。
+- 資料庫模式下每次存檔在 log 印 `[db] 存檔完成，耗時 X 秒`，切換後量測用。
+
+**為什麼**：記憶體 SQLite 查詢幾乎不花時間，所以逐筆查詢一直沒被發現；換成雲端資料庫後每次查詢都是網路來回（台灣測約 0.2 秒），3,000 次就是好幾分鐘。
+
+**驗證**：`pytest` 94 passed；Neon 上 11 頁 AppTest 無錯誤；新增買／賣＋自定沖銷再刪除正常。
+
+**下一步**：約收盤後時段正式切換（spec 第 5 節第 3 步）；切換後設定 GitHub Actions secrets 啟用每日備份。

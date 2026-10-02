@@ -77,8 +77,12 @@ def write_to_stock_master(items: List[dict]) -> Tuple[bool, Optional[str]]:
 
     sess = get_session()
     try:
+        # 一次撈出全部既有主檔再比對：逐筆查詢在記憶體 SQLite 不花錢，
+        # 換成雲端資料庫每筆都是一次網路來回，3000 多檔股票會卡上好幾分鐘。
+        # 值沒變的欄位 SQLAlchemy 不會發 UPDATE，所以沒變動時這裡只有 1 次查詢。
+        existing_by_id = {m.stock_id: m for m in sess.query(StockMaster).all()}
         for item in items:
-            existing = sess.query(StockMaster).filter(StockMaster.stock_id == item["stock_id"]).first()
+            existing = existing_by_id.get(item["stock_id"])
             if existing:
                 existing.name = item["name"]
                 existing.industry_name = item["industry_name"]

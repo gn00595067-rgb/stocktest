@@ -135,6 +135,17 @@ if USE_GOOGLE_SHEET:
                 except Exception:
                     pass
     Session = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=_SheetSyncSession))
+elif DATABASE_URL:
+    from sqlalchemy.orm import Session as _BaseSession
+
+    class _TimedSession(_BaseSession):
+        """資料庫模式：記錄每次存檔耗時（Streamlit Cloud log 看得到），切換後量測實際速度用。"""
+        def commit(self):
+            import time as _time
+            t0 = _time.monotonic()
+            super().commit()
+            print(f"[db] 存檔完成，耗時 {_time.monotonic() - t0:.2f} 秒", flush=True)
+    Session = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False, class_=_TimedSession))
 else:
     Session = scoped_session(sessionmaker(bind=engine, autocommit=False, autoflush=False))
 
