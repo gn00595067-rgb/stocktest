@@ -1,0 +1,470 @@
+# -*- coding: utf-8 -*-
+"""股票輸入（仿 Yahoo 奇摩「持股明細」）：分頁＝存起來的篩選條件，每個買賣人各自一組。
+
+規格：docs/specs/股票輸入_仿Yahoo.md
+"""
+import os
+import sys
+import time
+from datetime import date
+
+import streamlit as st
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from services.stock_list_loader import ensure_google_sheet_loaded
+
+ensure_google_sheet_loaded()
+
+try:
+    if hasattr(st, "secrets") and st.secrets.get("FINMIND_TOKEN"):
+        os.environ.setdefault("FINMIND_TOKEN", str(st.secrets["FINMIND_TOKEN"]).strip())
+except Exception:
+    pass
+
+from db.database import get_session
+from db.models import Trade, StockMaster, CustomMatchRule
+from services.auth_service import (
+    ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin,
+    get_allowed_traders, can_access_trader, filter_trades_by_permission,
+)
+from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache
+from services.trade_fees import fees_for_trade
+from services.prefs import resolve_default_trader
+from services.trader_service import list_trader_names, ensure_traders_seeded
+from services.position_cost import compute_position_and_cost_by_stock
+from services.mobile_ui import inject_mobile_css
+import services.group_portfolio as gp
+
+st.set_page_config(page_title="股票輸入（仿Yahoo）", layout="wide")
+_PAGE_T0 = time.monotonic()
+inject_mobile_css()
+ensure_bootstrap_admin()
+login_guard()
+render_auth_sidebar()
+
+POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
+# 欄寬：展開鈕｜股名/股號｜股價/漲跌｜持有股數｜持股成本均價｜市值｜已實現｜未實現｜交易筆數
+_COLS = [0.35, 1.3, 1.25, 1.0, 1.15, 1.35, 1.35, 1.35, 0.7]
+
+st.markdown("""
+<style>
+/* 分頁列：像 Yahoo 的文字分頁＋底線 */
+.st-key-yh_tabs div[role="radiogroup"] { gap: 1.6rem; flex-wrap: wrap; }
+.st-key-yh_tabs div[role="radiogroup"] label > div:first-child { display: none; }
+.st-key-yh_tabs div[role="radiogroup"] label { padding: 0.25rem 0 0.4rem 0; border-bottom: 3px solid transparent; }
+.st-key-yh_tabs div[role="radiogroup"] label p { font-size: 1.15rem; font-weight: 600; color: #555; }
+.st-key-yh_tabs div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #222; }
+.st-key-yh_tabs div[role="radiogroup"] label:has(input:checked) p { color: #111; }
+.yh-card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 1.1rem 1.5rem; display: flex; align-items: center; gap: 2.5rem; flex-wrap: wrap; }
+.yh-card .lbl { color: #777; font-size: .95rem; }
+.yh-card .big { font-size: 2.3rem; font-weight: 800; color: #111; }
+.yh-card .mid { font-size: 1.6rem; font-weight: 700; }
+.yh-card .sep { width: 1px; align-self: stretch; background: #ddd; }
+.yh-th { color: #888; font-size: .9rem; text-align: right; }
+.yh-th.l { text-align: left; }
+.yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
+.yh-td.l { text-align: left; }
+.yh-td .sub { color: #999; font-size: .85rem; }
+.yh-td .unit { color: #999; font-size: .8rem; margin-left: .2rem; }
+.yh-up { color: #e0262b; } .yh-down { color: #12a150; } .yh-flat { color: #666; }
+[class*="st-key-yh_row_"] { background: #f4f5f7; border-radius: 6px; padding: .15rem .4rem; margin-bottom: .35rem; }
+[class*="st-key-yh_row_"] button { border: none; background: transparent; }
+[class*="st-key-yh_tg_"] button p { font-size: 1.5rem; font-weight: 700; line-height: 1; }
+[class*="st-key-yh_exp_"] [data-testid="stNumberInputStepDown"],
+[class*="st-key-yh_exp_"] [data-testid="stNumberInputStepUp"] { display: none; }
+.yh-desc { color: #888; font-size: .9rem; }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ─── 小工具 ───────────────────────────────────────────────────────────────
+
+def _cls(v) -> str:
+    if v is None or abs(v) < 1e-9:
+        return "yh-flat"
+    return "yh-up" if v > 0 else "yh-down"
+
+
+def _arrow(v) -> str:
+    if v is None or abs(v) < 1e-9:
+        return ""
+    return "▲" if v > 0 else "▼"
+
+
+def _pnl_html(amount, pct, show: bool = True) -> str:
+    if not show:
+        return '<div class="yh-td">-</div>'
+    pct_s = f"({abs(pct):.2f}%)" if pct is not None else ""
+    return (f'<div class="yh-td {_cls(amount)}">{_arrow(amount)} {abs(amount):,.2f}'
+            f'<br><span>{pct_s}</span></div>')
+
+
+def _load():
+    sess = get_session()
+    try:
+        trades = filter_trades_by_permission(sess.query(Trade).order_by(Trade.id).all())
+        rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in
+                 sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
+        masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
+        for t in trades:
+            sess.expunge(t)
+        for m in masters.values():
+            sess.expunge(m)
+    finally:
+        sess.close()
+    return trades, rules, masters
+
+
+# ─── 分頁的新增／編輯／刪除／新增股票（對話框） ─────────────────────────────
+
+def _stock_options():
+    try:
+        lst = fetch_stock_list_cached(ttl_seconds=3600) or []
+    except Exception:
+        lst = []
+    return {s["stock_id"]: f'{s["stock_id"]} {s.get("name") or ""}' for s in lst if s.get("stock_id")}
+
+
+@st.dialog("新增分頁")
+def _dlg_new_group(trader: str):
+    _group_form(trader, None)
+
+
+@st.dialog("編輯此分頁")
+def _dlg_edit_group(trader: str, group_id: int):
+    _group_form(trader, group_id)
+
+
+def _group_form(trader: str, group_id):
+    sess = get_session()
+    try:
+        g = next((x for x in gp.list_groups(sess, trader) if x.id == group_id), None) if group_id else None
+    finally:
+        sess.close()
+    name = st.text_input("分頁名稱", value=g.name if g else "", placeholder="例：1001起、10月短線", max_chars=gp.NAME_MAX_LEN)
+    c1, c2 = st.columns(2)
+    use_start = c1.checkbox("限定起始日", value=bool(g and g.start_date))
+    start = c1.date_input("起始日", value=(g.start_date if g and g.start_date else date.today()),
+                          disabled=not use_start, format="YYYY/MM/DD")
+    use_end = c2.checkbox("限定結束日", value=bool(g and g.end_date))
+    end = c2.date_input("結束日", value=(g.end_date if g and g.end_date else date.today()),
+                        disabled=not use_end, format="YYYY/MM/DD")
+    opts = _stock_options()
+    cur = list(g.stock_ids) if g else []
+    for s in cur:
+        opts.setdefault(s, s)
+    picked = st.multiselect("股票清單（可搜尋代號或名稱）", options=list(opts.keys()), default=cur,
+                            format_func=lambda k: opts.get(k, k))
+    only = st.checkbox("只看清單內的股票（不勾＝這位買賣人的全部股票）", value=bool(g and g.only_listed))
+    st.caption("分頁只是篩選條件：同一筆交易可以同時出現在好幾個分頁；刪除分頁不會刪任何交易。")
+    if st.button("儲存", type="primary", use_container_width=True):
+        s2 = get_session()
+        try:
+            if g:
+                err = gp.update_group(s2, g.id, name, start if use_start else None, end if use_end else None, picked, only)
+                new_id = g.id
+            else:
+                new_id, err = gp.create_group(s2, trader, name, start if use_start else None,
+                                              end if use_end else None, picked, only)
+        finally:
+            s2.close()
+        if err:
+            st.error(err)
+        else:
+            st.session_state[f"yh_goto_{trader}"] = new_id  # 下一輪建立分頁列前再切過去（不能直接改已建立的 widget）
+            st.rerun()
+
+
+@st.dialog("刪除此分頁")
+def _dlg_delete_group(trader: str, g: gp.GroupSpec):
+    st.warning(f"確定刪除分頁「{g.name}」？\n\n只會刪除這個分頁的條件，**不會刪除任何交易**。")
+    c1, c2 = st.columns(2)
+    if c1.button("確定刪除", type="primary", use_container_width=True):
+        sess = get_session()
+        try:
+            gp.delete_group(sess, g.id)
+        finally:
+            sess.close()
+        st.session_state[f"yh_goto_{trader}"] = gp.ALL_GROUP_ID
+        st.rerun()
+    if c2.button("取消", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("新增股票")
+def _dlg_add_stock(trader: str, g: gp.GroupSpec):
+    opts = _stock_options()
+    sid = st.selectbox("股票（可輸入代號或名稱搜尋）", options=[""] + list(opts.keys()),
+                       format_func=lambda k: opts.get(k, "請選擇…") if k else "請選擇…")
+    st.caption("加入後會在列表顯示一列（0 股），展開即可輸入第一筆交易。")
+    if st.button("加入", type="primary", use_container_width=True, disabled=not sid):
+        if g.is_builtin:
+            st.session_state.setdefault(f"yh_extra_{trader}", [])
+            if sid not in st.session_state[f"yh_extra_{trader}"]:
+                st.session_state[f"yh_extra_{trader}"].append(sid)
+        else:
+            sess = get_session()
+            try:
+                gp.add_stock_to_group(sess, g.id, sid)
+            finally:
+                sess.close()
+        st.session_state[f"yh_open_{trader}"] = sid
+        st.rerun()
+
+
+def _rerun_fragment():
+    """只重跑展開區（fragment）；不在 fragment 重跑中就退回整頁。"""
+    from streamlit.errors import StreamlitAPIException
+    try:
+        st.rerun(scope="fragment")
+    except StreamlitAPIException:
+        st.rerun()
+
+
+# ─── 展開區：交易明細＋新增交易（fragment：輸入時不整頁重畫） ──────────────
+
+@st.fragment
+def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict):
+    sid = row["stock_id"]
+    price_now = row["price"] or 0.0
+    # 新增交易（送出後換一組 key，輸入框自動清空）
+    st.markdown("**新增交易**")
+    n = st.session_state.get(f"yh_form_n_{sid}", 0)
+    k = f"yh_new_{sid}_{n}"
+    f = st.columns([1.4, 1.1, 1.0, 1.0, 1.3, 0.5])
+    d = f[0].date_input("交易日期", value=date.today(), key=f"{k}_d", format="YYYY/MM/DD", label_visibility="collapsed")
+    side = f[1].selectbox("買/賣", ["BUY", "SELL"], key=f"{k}_s", label_visibility="collapsed",
+                          format_func=lambda x: "買入" if x == "BUY" else "賣出")
+    qty = f[2].number_input("股數", min_value=0, value=None, step=1000, key=f"{k}_q",
+                            placeholder="股數", label_visibility="collapsed")
+    price = f[3].number_input("股價", min_value=0.0, value=None, step=0.05, format="%.2f", key=f"{k}_p",
+                              placeholder="股價", label_visibility="collapsed")
+    errors, warns = gp.validate_new_trade(
+        side, qty, price, (quote or {}).get("prev_close"), holding_qty, is_today=(d == date.today()),
+    )
+    if not gp.trade_in_group(_NS(user=group.trader, trade_date=d, stock_id=sid), group):
+        warns.append(f"這筆的日期或股票不在分頁「{group.name}」的條件內，送出後不會出現在此分頁（其他分頁仍看得到）。")
+    if qty and price and not [e for e in errors if "請輸入" in e]:
+        is_etf = bool(getattr(_MASTERS.get(sid), "is_etf", False))
+        fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=False)
+        tax = tax if side == "SELL" else 0.0
+        f[4].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
+                      f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}</span></div>', unsafe_allow_html=True)
+    else:
+        fee = tax = 0.0
+    shown_errors = [e for e in errors if not ("請輸入" in e and not (qty or price))]
+    for e in shown_errors:
+        st.error(e)
+    ok_warn = True
+    if warns and not errors:
+        for w in warns:
+            st.warning(w)
+        ok_warn = st.checkbox("我確認以上沒問題", key=f"{k}_ack")
+    can_send = (not errors) and ok_warn and bool(qty) and bool(price)
+    label = (f"✅ 確認新增：{'買入' if side == 'BUY' else '賣出'} {int(qty or 0):,} 股 @ {float(price or 0):,.2f}"
+             if qty and price else "✅ 新增交易")
+    if st.button(label, key=f"{k}_go", type="primary", disabled=not can_send):
+        sig = (group.trader, sid, str(d), side, int(qty), float(price))
+        last = st.session_state.get("yh_last_submit")
+        if last and last[0] == sig and time.monotonic() - last[1] < 2.0:
+            st.warning("偵測到快速重複送出，已忽略這一次（避免重複記錄）。")
+        elif not can_access_trader(group.trader):
+            st.error("無此買賣人權限。")
+        else:
+            st.session_state["yh_last_submit"] = (sig, time.monotonic())
+            sess = get_session()
+            try:
+                sess.add(Trade(user=group.trader, stock_id=sid, trade_date=d, side=side, price=float(price),
+                               quantity=int(qty), is_daytrade=False, fee=fee, tax=tax))
+                sess.commit()
+            finally:
+                sess.close()
+            st.session_state[f"yh_form_n_{sid}"] = n + 1
+            st.rerun()   # 整頁：持股、均價、總覽一起更新
+
+    st.markdown("**交易明細**")
+    hdr = st.columns([1.4, 1.1, 1.0, 1.0, 1.3, 0.5])
+    for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", "交易股數", "交易股價", "市值", ""], [1, 1, 0, 0, 0, 0]):
+        c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
+    pend_key = f"yh_del_pending_{sid}"
+    _all = sorted(stock_trades, key=lambda x: (x.trade_date, x.id), reverse=True)
+    _show_all = st.session_state.get(f"yh_showall_{sid}", False)
+    for t in (_all if _show_all else _all[:10]):
+        c = st.columns([1.4, 1.1, 1.0, 1.0, 1.3, 0.5])
+        is_buy = str(t.side).upper() == "BUY"
+        c[0].markdown(f'<div class="yh-td l">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
+        c[1].markdown(f'<div class="yh-td l">{"買入" if is_buy else "賣出"}</div>', unsafe_allow_html=True)
+        c[2].markdown(f'<div class="yh-td">{int(t.quantity):,}<span class="unit">股</span></div>', unsafe_allow_html=True)
+        c[3].markdown(f'<div class="yh-td">{float(t.price):,.2f}<span class="unit">TWD</span></div>', unsafe_allow_html=True)
+        c[4].markdown(f'<div class="yh-td">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
+        if c[5].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
+            st.session_state[pend_key] = t.id
+            _rerun_fragment()
+        if st.session_state.get(pend_key) == t.id:
+            st.warning(f"確定刪除 {t.trade_date:%Y/%m/%d} {'買入' if is_buy else '賣出'} "
+                       f"{int(t.quantity):,} 股 @ {float(t.price):,.2f}？相關沖銷配對也會一起刪除。")
+            d1, d2, _ = st.columns([1, 1, 3])
+            if d1.button("確定刪除", key=f"yh_delok_{t.id}", type="primary"):
+                if not can_access_trader(t.user):
+                    st.error("無此買賣人權限。")
+                else:
+                    sess = get_session()
+                    try:
+                        sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == t.id).delete()
+                        sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == t.id).delete()
+                        sess.query(Trade).filter(Trade.id == t.id).delete()
+                        sess.commit()
+                    finally:
+                        sess.close()
+                    st.session_state.pop(pend_key, None)
+                    st.rerun()   # 整頁：持股、均價、總覽一起更新
+            if d2.button("取消", key=f"yh_delno_{t.id}"):
+                st.session_state.pop(pend_key, None)
+                _rerun_fragment()
+    if len(_all) > 10:
+        if st.button("收起，只看最近 10 筆" if _show_all else f"顯示全部 {len(_all)} 筆交易", key=f"yh_more_{sid}"):
+            st.session_state[f"yh_showall_{sid}"] = not _show_all
+            _rerun_fragment()
+
+
+class _NS:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+# ─── 主畫面 ───────────────────────────────────────────────────────────────
+
+ensure_traders_seeded()
+trades, rules, _MASTERS = _load()
+
+if is_admin():
+    trader_opts = list_trader_names()
+else:
+    trader_opts = get_allowed_traders() or []
+if not trader_opts:
+    st.warning("帳號尚未綁定買賣人，請聯絡管理者。")
+    st.stop()
+_def = st.session_state.get("last_user")
+if _def not in trader_opts:
+    _def = resolve_default_trader(trader_opts) or trader_opts[0]
+
+top_l, top_r = st.columns([4, 1.2])
+with top_r:
+    trader = st.selectbox("買賣人", trader_opts, index=trader_opts.index(_def), key="yh_trader")
+st.session_state["last_user"] = trader
+
+sess = get_session()
+try:
+    groups = gp.list_groups(sess, trader)
+finally:
+    sess.close()
+gkey = f"yh_group_{trader}"
+ids = [g.id for g in groups]
+_goto = st.session_state.pop(f"yh_goto_{trader}", None)
+if _goto is not None and _goto in ids:
+    st.session_state[gkey] = _goto
+if st.session_state.get(gkey) not in ids:
+    st.session_state[gkey] = gp.ALL_GROUP_ID
+with top_l:
+    tc, nc = st.columns([6, 1])
+    with tc:
+        with st.container(key="yh_tabs"):
+            gid = st.radio("分頁", ids, key=gkey, horizontal=True, label_visibility="collapsed",
+                           format_func=lambda i, _n={g.id: g.name for g in groups}: _n.get(i, str(i)))
+    if nc.button("＋ 新增分頁", key="yh_new_group"):
+        _dlg_new_group(trader)
+group = next(g for g in groups if g.id == gid)
+
+# 分頁操作列
+a = st.columns([0.9, 1.0, 1.0, 0.45, 0.45, 4.2])
+if a[0].button("新增股票", key="yh_add_stock"):
+    _dlg_add_stock(trader, group)
+if not group.is_builtin:
+    if a[1].button("編輯此分頁", key="yh_edit_group"):
+        _dlg_edit_group(trader, group.id)
+    if a[2].button("刪除此分頁", key="yh_del_group"):
+        _dlg_delete_group(trader, group)
+    if a[3].button("◀", key="yh_move_l", help="分頁往左移"):
+        s_ = get_session(); gp.move_group(s_, trader, group.id, -1); s_.close(); st.rerun()
+    if a[4].button("▶", key="yh_move_r", help="分頁往右移"):
+        s_ = get_session(); gp.move_group(s_, trader, group.id, +1); s_.close(); st.rerun()
+a[5].markdown(f'<div class="yh-desc" style="text-align:right">分頁條件：{group.describe()}</div>', unsafe_allow_html=True)
+
+# 計算
+g_trades = gp.filter_trades(trades, group)
+extra = list(group.stock_ids) + (st.session_state.get(f"yh_extra_{trader}", []) if group.is_builtin else [])
+all_sids = sorted({str(t.stock_id).strip() for t in g_trades} | set(extra))
+quotes = get_quotes_cached(all_sids, exchanges={s: getattr(_MASTERS.get(s), "exchange", None) for s in all_sids}) if all_sids else {}
+summary = gp.summarize_group(g_trades, rules, POLICY, quotes, _MASTERS, extra_stock_ids=extra)
+trader_trades = [t for t in trades if (t.user or "").strip() == trader]
+trader_pos = compute_position_and_cost_by_stock(trader_trades, custom_rules=rules, policy=POLICY)
+
+# 總覽卡
+rp, up = summary["realized_pct"], summary["unrealized_pct"]
+st.markdown(f"""
+<div class="yh-card">
+  <div><span class="lbl">持有股票市值</span>&nbsp;&nbsp;<span class="big">${summary['market_value']:,.0f}</span> <span class="lbl">TWD</span></div>
+  <div class="sep"></div>
+  <div><div class="lbl">已實現損益</div><div class="mid {_cls(summary['realized'])}">{_arrow(summary['realized'])}{abs(summary['realized']):,.2f}{f" ({abs(rp):.2f}%)" if rp is not None else ""}</div></div>
+  <div><div class="lbl">未實現損益</div><div class="mid {_cls(summary['unrealized'])}">{_arrow(summary['unrealized'])}{abs(summary['unrealized']):,.2f}{f" ({abs(up):.2f}%)" if up is not None else ""}</div></div>
+</div>
+""", unsafe_allow_html=True)
+rc1, rc2 = st.columns([5, 1])
+from datetime import datetime, timezone, timedelta
+_tw = datetime.now(timezone(timedelta(hours=8)))
+rc1.caption(f"畫面更新：{_tw:%H:%M:%S}（台灣時間）・紅▲賺、綠▼賠・盤中股價約 20 秒更新一次")
+if rc2.button("🔄 更新股價", key="yh_refresh"):
+    clear_quote_cache()
+    st.rerun()
+
+if summary["unmatched_sells"]:
+    n_sh = sum(x[2] for x in summary["unmatched_sells"])
+    sids = "、".join(sorted({x[0] for x in summary["unmatched_sells"]}))
+    st.info(f"ℹ️ 此分頁有 {len(summary['unmatched_sells'])} 筆賣出（{sids}，共 {n_sh:,} 股）在分頁內找不到對應買進"
+            "（多半是買在分頁起始日之前），這些股數不計入此分頁的已實現損益。")
+
+# 持股表
+st.write("")
+h = st.columns(_COLS)
+for c, lab, left in zip(h, ["", "股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "市值", "已實現損益", "未實現損益", "交易筆數"],
+                        [1, 1, 0, 0, 0, 0, 0, 0, 0]):
+    c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
+
+open_key = f"yh_open_{trader}"
+trades_by_sid = {}
+for t in g_trades:
+    trades_by_sid.setdefault(str(t.stock_id).strip(), []).append(t)
+
+if not summary["rows"]:
+    st.info("這個分頁目前沒有交易。按「新增股票」加入股票，再展開輸入第一筆交易。")
+
+for r in summary["rows"]:
+    sid = r["stock_id"]
+    is_open = st.session_state.get(open_key) == sid
+    with st.container(key=f"yh_row_{sid}"):
+        c = st.columns(_COLS, vertical_alignment="center")
+        if c[0].button("▾" if is_open else "▸", key=f"yh_tg_{sid}", help="收合" if is_open else "展開交易明細／新增交易"):
+            st.session_state[open_key] = None if is_open else sid
+            st.rerun()
+        suffix = ".TWO" if str(r.get("exchange") or "").upper() in ("TPEX", "OTC") else ".TW"
+        c[1].markdown(f'<div class="yh-td l"><b>{r["name"]}</b><br><span class="sub">{sid}{suffix}</span></div>', unsafe_allow_html=True)
+        if r["price"] is not None:
+            c[2].markdown(f'<div class="yh-td"><b class="{_cls(r["change"])}">{r["price"]:,.2f}</b><br>'
+                          f'<span class="{_cls(r["change"])}">{_arrow(r["change"])} {abs(r["change"]):,.2f} ({abs(r["change_pct"]):.2f}%)</span></div>',
+                          unsafe_allow_html=True)
+        else:
+            c[2].markdown('<div class="yh-td">-</div>', unsafe_allow_html=True)
+        c[3].markdown(f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span></div>', unsafe_allow_html=True)
+        avg_s = f"{r['avg_cost']:,.2f}" if r["qty"] else "-"
+        mv_s = f"{r['market_value']:,.2f}" if r["qty"] else "-"
+        c[4].markdown(f'<div class="yh-td">{avg_s}<span class="unit">TWD</span></div>', unsafe_allow_html=True)
+        c[5].markdown(f'<div class="yh-td">{mv_s}</div>', unsafe_allow_html=True)
+        c[6].markdown(_pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"]), unsafe_allow_html=True)
+        c[7].markdown(_pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"])), unsafe_allow_html=True)
+        c[8].markdown(f'<div class="yh-td">{r["n_trades"]}筆</div>', unsafe_allow_html=True)
+    if is_open:
+        with st.container(border=True, key=f"yh_exp_{sid}"):
+            _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {})
+
+print(f"[page] 股票輸入（仿Yahoo） 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)

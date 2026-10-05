@@ -90,3 +90,21 @@ class UserTraderBinding(Base):
     user_id = Column(Integer, ForeignKey("user_accounts.id"), primary_key=True)
     trader_name = Column(String(50), primary_key=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class PortfolioGroup(Base):
+    """股票輸入（仿 Yahoo）的分頁：只存篩選條件（買賣人、日期範圍、股票清單），不存交易。
+
+    刪除分頁只刪條件，絕不動交易。見 docs/specs/股票輸入_仿Yahoo.md。
+    """
+    __tablename__ = "portfolio_groups"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trader = Column(String(50), nullable=False)
+    name = Column(String(50), nullable=False)
+    start_date = Column(Date, nullable=True)
+    end_date = Column(Date, nullable=True)
+    stock_ids = Column(Text, nullable=True)        # 逗號分隔
+    only_listed = Column(Boolean, default=False, nullable=False)
+    sort_order = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
