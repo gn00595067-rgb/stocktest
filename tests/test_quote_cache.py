@@ -56,3 +56,27 @@ def test_good_quotes_cached(monkeypatch):
     monkeypatch.setattr(ps._mis_provider, "get_quotes", mis)
     ps.get_quotes_cached(["2330"]); ps.get_quotes_cached(["2330"])
     assert calls["n"] == 1
+
+
+def test_market_hours_ttl():
+    from datetime import datetime, timezone, timedelta
+    tz = timezone(timedelta(hours=8))
+    ts = lambda *a: datetime(*a, tzinfo=tz).timestamp()
+    assert ps._quote_ttl(ts(2026, 10, 5, 10, 0)) == ps.CACHE_SECONDS            # 週一盤中
+    assert ps._quote_ttl(ts(2026, 10, 5, 18, 0)) == ps.AFTER_HOURS_CACHE_SECONDS  # 週一收盤後
+    assert ps._quote_ttl(ts(2026, 10, 4, 10, 0)) == ps.AFTER_HOURS_CACHE_SECONDS  # 週日
+
+
+def test_after_hours_quotes_not_refetched(monkeypatch):
+    calls = {"n": 0}
+    ps._price_cache.clear()
+    monkeypatch.setattr(ps, "_tw_market_open", lambda now=None: False)
+
+    def mis(ids, exchanges=None):
+        calls["n"] += 1
+        return {"2330": {"price": 1000}}
+    monkeypatch.setattr(ps._mis_provider, "get_quotes", mis)
+    ps.get_quotes_cached(["2330"])
+    ps._price_cache["2330"] = (ps._price_cache["2330"][0], ps._price_cache["2330"][1] - 120)  # 假裝 2 分鐘前抓的
+    ps.get_quotes_cached(["2330"])
+    assert calls["n"] == 1                       # 收盤後 2 分鐘內不重抓

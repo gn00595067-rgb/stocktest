@@ -337,13 +337,31 @@ NEG_CACHE_SECONDS = 60
 FALLBACK_BUDGET_SECONDS = 6
 
 
+# 收盤後股價不會再變，報價快取拉長（盤中維持 CACHE_SECONDS 才跟得上跳動）。
+# 正式站在美國，證交所一次批次要 2～4 秒；收盤後每 20 秒重抓只是讓每次點擊都多等。
+AFTER_HOURS_CACHE_SECONDS = 600
+
+
+def _tw_market_open(now: Optional[float] = None) -> bool:
+    """台股盤中（平日 08:45–13:35 台灣時間，含盤前試撮與收盤緩衝）。伺服器時區是 UTC，自行換算。"""
+    from datetime import datetime as _dt, timezone, timedelta, time as _t
+    tw = _dt.fromtimestamp(now if now is not None else time.time(), tz=timezone(timedelta(hours=8)))
+    if tw.weekday() >= 5:
+        return False
+    return _t(8, 45) <= tw.time() <= _t(13, 35)
+
+
+def _quote_ttl(now: float) -> int:
+    return CACHE_SECONDS if _tw_market_open(now) else AFTER_HOURS_CACHE_SECONDS
+
+
 def _cache_lookup(sid: str, now: float):
     """回傳 (命中?, 報價或 None)。查不到的負快取命中時回傳 (True, None)。"""
     cached = _price_cache.get(sid)
     if not cached:
         return False, None
     data, ts = cached
-    if data is not None and now - ts < CACHE_SECONDS:
+    if data is not None and now - ts < _quote_ttl(now):
         return True, data
     if data is None and now - ts < NEG_CACHE_SECONDS:
         return True, None
