@@ -395,6 +395,8 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
         for _, r in edited_df.iterrows():
             rid = r.get("id")
             has_id = rid is not None and not (isinstance(rid, float) and pd.isna(rid))
+            if bool(r.get("刪除")):
+                continue  # 勾了「🗑 刪除」：不列入 seen_ids，下面「被刪掉的列」會刪它；新列則直接不新增
             side = "BUY" if str(r.get("買/賣")) == "買入" else "SELL"
             qty = safe_int_qty(r.get("交易股數"))
             try:
@@ -479,8 +481,12 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
         sess.close()
 
 
+@st.fragment
 def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: str, is_etf: bool, name: str = "") -> None:
-    """奇摩股市式可編輯逐筆交易表：買賣人、買/賣、股數、股價、手續費、當沖可直接改；按鈕整批儲存。"""
+    """奇摩股市式可編輯逐筆交易表：買賣人、買/賣、股數、股價、手續費、當沖可直接改；按鈕整批儲存。
+
+    fragment：在表內勾選、改值只重跑這張表，不整頁重畫；按「儲存」成功才整頁更新。
+    """
     orig_by_id = {int(t.id): t for t in stock_ts}
     # 可選買賣人清單（管理者看全部，一般帳號看有權限者），並含目前表內已出現的人
     trader_opts = (list_trader_names() if is_admin() else get_allowed_traders()) or []
@@ -491,6 +497,7 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
     # 會造成「改了日期/買賣人卻跳回」。市值請看上方持股列。
     df = pd.DataFrame([
         {
+            "刪除": False,
             "id": int(t.id),
             "股名": name or sid,
             "買賣人": (t.user or "").strip() or trader,
@@ -516,6 +523,11 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
         height=_full_h,
         num_rows="dynamic",
         column_config={
+            # 原本刪列要點最左邊很窄的選取格再找右上角垃圾桶，平板很難按；改成明顯的勾選欄
+            "刪除": st.column_config.CheckboxColumn(
+                "🗑 刪除", width="small",
+                help="勾選要刪除的交易，再按下方「儲存修改（並刪除 N 筆）」。",
+            ),
             "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
             "股名": st.column_config.TextColumn(
                 "股名", disabled=True, width="small",
@@ -550,10 +562,25 @@ def _render_stock_tx_list(sid: str, stock_ts: list, cur_price: float, trader: st
     )
     st.caption(
         "✏️ 手續費／證交稅可直接編輯，**儲存時不會自動重算**，你改的數字會保留。"
-        "（自動帶入費率只在最上方『送出此筆交易』新增時計算。）刪列＝刪交易、加列＝新增交易。"
+        "（自動帶入費率只在最上方『送出此筆交易』新增時計算。）要刪交易：勾最左邊「🗑 刪除」再按儲存；加列＝新增交易。"
     )
     st.caption("💡 小提醒：改完最後一格後，先按 Enter 或點一下表格外空白處讓該格生效，再按「儲存修改」，才不會需要按兩次。儲存後此表與下方「當日全部成交」會一起更新。")
-    if st.button("💾 儲存修改", key=f"te_txsave_{sid}", type="primary"):
+    _del_ids = []
+    for _, _r in edited.iterrows():
+        _rid = _r.get("id")
+        if bool(_r.get("刪除")) and _rid is not None and not (isinstance(_rid, float) and pd.isna(_rid)):
+            _del_ids.append(int(_rid))
+    if _del_ids:
+        _desc = "、".join(
+            f"ID {i}（{orig_by_id[i].trade_date} {'買' if str(orig_by_id[i].side).upper() == 'BUY' else '賣'} "
+            f"{int(orig_by_id[i].quantity or 0):,} 股 @ {float(orig_by_id[i].price or 0):,.2f}）"
+            for i in _del_ids if i in orig_by_id
+        )
+        st.warning(f"🗑 已勾選刪除 **{len(_del_ids)} 筆**：{_desc}。按下方按鈕才會真的刪除（含相關沖銷配對）；取消勾選即可放棄。")
+        _save_label = f"💾 儲存修改（並刪除 {len(_del_ids)} 筆）"
+    else:
+        _save_label = "💾 儲存修改"
+    if st.button(_save_label, key=f"te_txsave_{sid}", type="primary"):
         _save_tx_edits(sid, orig_by_id, edited, trader, is_etf)
 
 
