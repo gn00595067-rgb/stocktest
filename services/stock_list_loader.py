@@ -81,15 +81,18 @@ def write_to_stock_master(items: List[dict]) -> Tuple[bool, Optional[str]]:
         # 換成雲端資料庫每筆都是一次網路來回，3000 多檔股票會卡上好幾分鐘。
         # 值沒變的欄位 SQLAlchemy 不會發 UPDATE，所以沒變動時這裡只有 1 次查詢。
         existing_by_id = {m.stock_id: m for m in sess.query(StockMaster).all()}
+        changed = 0
         for item in items:
             existing = existing_by_id.get(item["stock_id"])
             if existing:
-                existing.name = item["name"]
-                existing.industry_name = item["industry_name"]
-                existing.market = item["market"]
-                existing.exchange = item["exchange"]
-                existing.is_etf = item["is_etf"]
+                # 只改有變的欄位；全都沒變就不存檔（每位使用者開 app 都會跑這裡，
+                # 無謂的存檔會讓「交易資料快取」失效，下一頁又得整批重讀）
+                for f in ("name", "industry_name", "market", "exchange", "is_etf"):
+                    if getattr(existing, f) != item[f]:
+                        setattr(existing, f, item[f])
+                        changed += 1
             else:
+                changed += 1
                 sess.add(StockMaster(
                     stock_id=item["stock_id"],
                     name=item["name"],
@@ -98,7 +101,8 @@ def write_to_stock_master(items: List[dict]) -> Tuple[bool, Optional[str]]:
                     exchange=item["exchange"],
                     is_etf=item["is_etf"],
                 ))
-        sess.commit()
+        if changed:
+            sess.commit()
         return True, None
     except OperationalError as e:
         sess.rollback()

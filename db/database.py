@@ -151,6 +151,26 @@ else:
 
 _sheet_synced_once = False
 
+# 資料版本：任何 ORM commit 後 +1，給讀取快取判斷「資料有沒有變」（services/data_cache.py）。
+# 加上行程代號：Streamlit 部署後重新載入本模組時計數歸零，代號不同就不會誤用舊快取。
+import uuid as _uuid
+from sqlalchemy import event as _event
+from sqlalchemy.orm import Session as _OrmSession
+_DATA_TOKEN = _uuid.uuid4().hex
+_DATA_COUNTER = 0
+
+
+def _bump_data_version(_session) -> None:
+    global _DATA_COUNTER
+    _DATA_COUNTER += 1
+
+
+_event.listen(_OrmSession, "after_commit", _bump_data_version)
+
+
+def data_version():
+    return (_DATA_TOKEN, _DATA_COUNTER)
+
 
 def get_engine():
     """回傳目前使用的 engine（供手動同步到 Google 試算表等用途）。"""

@@ -50,6 +50,7 @@ render_auth_sidebar()
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
 # 欄寬：展開鈕｜股名/股號｜股價/漲跌｜持有股數｜持股成本均價｜市值｜已實現｜未實現｜交易筆數
 _COLS = [0.35, 1.3, 1.25, 1.0, 1.15, 1.35, 1.35, 1.35, 0.7]
+_ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 8 欄合成一個 HTML grid
 
 st.markdown("""
 <style>
@@ -78,6 +79,9 @@ st.markdown("""
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepDown"],
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepUp"] { display: none; }
 .yh-desc { color: #888; font-size: .9rem; }
+/* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多 */
+.yh-grid { display: grid; grid-template-columns: 1.3fr 1.25fr 1fr 1.15fr 1.35fr 1.35fr 1.35fr 0.7fr;
+           align-items: center; column-gap: .8rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -105,19 +109,10 @@ def _pnl_html(amount, pct, show: bool = True) -> str:
 
 
 def _load():
-    sess = get_session()
-    try:
-        trades = filter_trades_by_permission(sess.query(Trade).order_by(Trade.id).all())
-        rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in
-                 sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
-        masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-        for t in trades:
-            sess.expunge(t)
-        for m in masters.values():
-            sess.expunge(m)
-    finally:
-        sess.close()
-    return trades, rules, masters
+    """交易、沖銷規則、主檔：資料沒變就用快取（不重讀遠端資料庫），再依權限篩交易。"""
+    from services.data_cache import load_trades_rules_masters
+    all_trades, rules, masters = load_trades_rules_masters()
+    return filter_trades_by_permission(all_trades), rules, masters
 
 
 # ─── 分頁的新增／編輯／刪除／新增股票（對話框） ─────────────────────────────
@@ -283,7 +278,6 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
     return final, err
 
 
-@st.fragment
 def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict):
     sid = row["stock_id"]
     price_now = row["price"] or 0.0
@@ -498,47 +492,57 @@ if summary["unmatched_sells"]:
     st.info(f"ℹ️ 此分頁有 {len(summary['unmatched_sells'])} 筆賣出（{sids}，共 {n_sh:,} 股）在分頁內找不到對應買進"
             "（多半是買在分頁起始日之前），這些股數不計入此分頁的已實現損益。")
 
-# 持股表
-st.write("")
-h = st.columns(_COLS)
-for c, lab, left in zip(h, ["", "股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "市值", "已實現損益", "未實現損益", "交易筆數"],
-                        [1, 1, 0, 0, 0, 0, 0, 0, 0]):
-    c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
+# 持股表（fragment）：展開／收合、在展開區輸入都只重畫這張表；送出或刪除成功才整頁更新
+@st.fragment
+def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
+    st.write("")
+    h0, h1 = st.columns(_ROW_COLS)
+    h1.markdown('<div class="yh-grid">' + "".join(
+        f'<div class="yh-th{" l" if left else ""}">{lab}</div>'
+        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "市值", "已實現損益", "未實現損益", "交易筆數"],
+                             [1, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
 
-open_key = f"yh_open_{trader}"
-trades_by_sid = {}
-for t in g_trades:
-    trades_by_sid.setdefault(str(t.stock_id).strip(), []).append(t)
+    open_key = f"yh_open_{trader}"
+    trades_by_sid = {}
+    for t in g_trades:
+        trades_by_sid.setdefault(str(t.stock_id).strip(), []).append(t)
 
-if not summary["rows"]:
-    st.info("這個分頁目前沒有交易。按「新增股票」加入股票，再展開輸入第一筆交易。")
+    if not summary["rows"]:
+        st.info("這個分頁目前沒有交易。按「新增股票」加入股票，再展開輸入第一筆交易。")
 
-for r in summary["rows"]:
-    sid = r["stock_id"]
-    is_open = st.session_state.get(open_key) == sid
-    with st.container(key=f"yh_row_{sid}"):
-        c = st.columns(_COLS, vertical_alignment="center")
-        if c[0].button("▾" if is_open else "▸", key=f"yh_tg_{sid}", help="收合" if is_open else "展開交易明細／新增交易"):
-            st.session_state[open_key] = None if is_open else sid
-            st.rerun()
-        suffix = ".TWO" if str(r.get("exchange") or "").upper() in ("TPEX", "OTC") else ".TW"
-        c[1].markdown(f'<div class="yh-td l"><b>{r["name"]}</b><br><span class="sub">{sid}{suffix}</span></div>', unsafe_allow_html=True)
-        if r["price"] is not None:
-            c[2].markdown(f'<div class="yh-td"><b class="{_cls(r["change"])}">{r["price"]:,.2f}</b><br>'
-                          f'<span class="{_cls(r["change"])}">{_arrow(r["change"])} {abs(r["change"]):,.2f} ({abs(r["change_pct"]):.2f}%)</span></div>',
-                          unsafe_allow_html=True)
-        else:
-            c[2].markdown('<div class="yh-td">-</div>', unsafe_allow_html=True)
-        c[3].markdown(f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span></div>', unsafe_allow_html=True)
-        avg_s = f"{r['avg_cost']:,.2f}" if r["qty"] else "-"
-        mv_s = f"{r['market_value']:,.2f}" if r["qty"] else "-"
-        c[4].markdown(f'<div class="yh-td">{avg_s}<span class="unit">TWD</span></div>', unsafe_allow_html=True)
-        c[5].markdown(f'<div class="yh-td">{mv_s}</div>', unsafe_allow_html=True)
-        c[6].markdown(_pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"]), unsafe_allow_html=True)
-        c[7].markdown(_pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"])), unsafe_allow_html=True)
-        c[8].markdown(f'<div class="yh-td">{r["n_trades"]}筆</div>', unsafe_allow_html=True)
-    if is_open:
-        with st.container(border=True, key=f"yh_exp_{sid}"):
-            _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {})
+    for r in summary["rows"]:
+        sid = r["stock_id"]
+        is_open = st.session_state.get(open_key) == sid
+        with st.container(key=f"yh_row_{sid}"):
+            c0, c1 = st.columns(_ROW_COLS, vertical_alignment="center")
+            if c0.button("▾" if is_open else "▸", key=f"yh_tg_{sid}", help="收合" if is_open else "展開交易明細／新增交易"):
+                st.session_state[open_key] = None if is_open else sid
+                _rerun_fragment()   # 只重畫持股表，不重跑整頁（不重讀資料庫、不重抓報價）
+            suffix = ".TWO" if str(r.get("exchange") or "").upper() in ("TPEX", "OTC") else ".TW"
+            if r["price"] is not None:
+                price_html = (f'<div class="yh-td"><b class="{_cls(r["change"])}">{r["price"]:,.2f}</b><br>'
+                              f'<span class="{_cls(r["change"])}">{_arrow(r["change"])} {abs(r["change"]):,.2f} '
+                              f'({abs(r["change_pct"]):.2f}%)</span></div>')
+            else:
+                price_html = '<div class="yh-td">-</div>'
+            avg_s = f"{r['avg_cost']:,.2f}" if r["qty"] else "-"
+            mv_s = f"{r['market_value']:,.2f}" if r["qty"] else "-"
+            c1.markdown(
+                '<div class="yh-grid">'
+                f'<div class="yh-td l"><b>{r["name"]}</b><br><span class="sub">{sid}{suffix}</span></div>'
+                + price_html
+                + f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span></div>'
+                + f'<div class="yh-td">{avg_s}<span class="unit">TWD</span></div>'
+                + f'<div class="yh-td">{mv_s}</div>'
+                + _pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"])
+                + _pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"]))
+                + f'<div class="yh-td">{r["n_trades"]}筆</div>'
+                '</div>', unsafe_allow_html=True)
+        if is_open:
+            with st.container(border=True, key=f"yh_exp_{sid}"):
+                _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {})
+
+
+_holdings_table(summary, trader, group, g_trades, trader_pos, quotes)
 
 print(f"[page] 股票輸入（仿Yahoo） 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)
