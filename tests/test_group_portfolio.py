@@ -106,3 +106,11 @@ def test_validate_new_trade():
     assert e and "超過目前持股" in e[0]
     e, w = gp.validate_new_trade("BUY", 500, 250, 250.0, holding_qty=0)
     assert e == [] and w and "零股" in w[0]
+
+
+def test_validate_match_plan():
+    assert gp.validate_match_plan([(1, 600, 1000), (2, 400, 500)], 1000) is None
+    assert "還差" in gp.validate_match_plan([(1, 600, 1000)], 1000)
+    assert "多了" in gp.validate_match_plan([(1, 1000, 1000), (2, 100, 500)], 1000)
+    assert "只剩" in gp.validate_match_plan([(1, 1200, 1000)], 1200)
+    assert "負數" in gp.validate_match_plan([(1, -1, 1000)], 0)

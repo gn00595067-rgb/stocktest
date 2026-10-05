@@ -320,3 +320,20 @@ def validate_new_trade(side: str, qty, price, prev_close: Optional[float], holdi
     if qty % 1000 != 0:
         warnings.append(f"{qty:,} 股不是整張（1000 股的倍數），確定是零股嗎？")
     return errors, warnings
+
+
+def validate_match_plan(rows: List[Tuple[int, int, int]], sell_qty: int) -> Optional[str]:
+    """賣出沖銷配對檢查。rows = [(買進ID, 本次沖銷股數, 該批可沖銷股數)]。回傳錯誤訊息或 None。"""
+    total = 0
+    for buy_id, q, remaining in rows:
+        q = int(q or 0)
+        if q < 0:
+            return f"買進 ID {buy_id} 的沖銷股數不能是負數。"
+        if q > int(remaining):
+            return f"買進 ID {buy_id} 只剩 {int(remaining):,} 股可沖銷，不能沖 {q:,} 股。"
+        total += q
+    if total != int(sell_qty):
+        diff = int(sell_qty) - total
+        return (f"沖銷股數合計 {total:,} 股，與賣出 {int(sell_qty):,} 股不符"
+                f"（{'還差' if diff > 0 else '多了'} {abs(diff):,} 股）。")
+    return None

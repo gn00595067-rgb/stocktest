@@ -33,6 +33,10 @@ from services.trade_fees import fees_for_trade
 from services.prefs import resolve_default_trader
 from services.trader_service import list_trader_names, ensure_traders_seeded
 from services.position_cost import compute_position_and_cost_by_stock
+from services.trade_entry_service import (
+    get_open_buy_lots, combined_match_plan, sort_lots_by_strategy, estimate_match_row_net_pnl,
+)
+import pandas as pd
 from services.mobile_ui import inject_mobile_css
 import services.group_portfolio as gp
 
@@ -224,6 +228,61 @@ def _rerun_fragment():
 
 # ─── 展開區：交易明細＋新增交易（fragment：輸入時不整頁重畫） ──────────────
 
+_MATCH_METHODS = {
+    "nearest_avg": "⚖️ 接近均價", "fifo": "先進先出", "profit_max": "💰 賺多",
+    "profit_min": "🪙 賺少", "loss_max": "🔻 賠多", "loss_min": "🩹 賠少",
+}
+_MATCH_TIMES = {"all": "全部", "3d": "近3天", "5d": "近5天"}
+
+
+def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, tax: float, k: str):
+    """賣出沖銷配對（同舊「交易輸入」頁的口徑：預設接近均價，可換方式、可逐批改）。
+
+    回傳 (plan=[(買進ID, 股數)], 錯誤訊息或 None)。
+    """
+    lots = get_open_buy_lots(trades, sid, trader, rules, POLICY)
+    st.markdown("**沖銷配對**：這筆賣出要沖掉哪幾批買進（預設接近均價，可換方式或直接改「本次沖銷」）")
+    if not lots:
+        return [], "這一檔目前沒有可沖銷的買進庫存。"
+    m1, m2 = st.columns([3, 1.2])
+    method = m1.radio("沖銷方式", list(_MATCH_METHODS), format_func=_MATCH_METHODS.get, horizontal=True,
+                      key=f"{k}_mm", label_visibility="collapsed")
+    tmode = m2.radio("時間範圍", list(_MATCH_TIMES), format_func=_MATCH_TIMES.get, horizontal=True,
+                     key=f"{k}_mt", label_visibility="collapsed")
+    plan = dict(combined_match_plan(qty, lots, tmode, method, price))
+    shown = sort_lots_by_strategy(lots, method)  # 表格順序跟著沖銷方式走，配到的批次排在前面
+    df = pd.DataFrame([{
+        "買進ID": int(l["trade_id"]), "買進日": str(l["date"])[:10], "買價": float(l["price"]),
+        "可沖銷": int(l["remaining_qty"]), "本次沖銷": int(plan.get(l["trade_id"], 0)),
+    } for l in shown])
+    # 方式、範圍、股數、價格一改就換 key：表格回到新的預設配對
+    edited = st.data_editor(
+        df, key=f"{k}_mx_{method}_{tmode}_{qty}_{price}", hide_index=True, use_container_width=True,
+        height=min(35 * (len(df) + 1) + 3, 320), num_rows="fixed",
+        column_config={
+            "買進ID": st.column_config.NumberColumn(disabled=True, width="small"),
+            "買進日": st.column_config.TextColumn(disabled=True),
+            "買價": st.column_config.NumberColumn(disabled=True, format="%.2f"),
+            "可沖銷": st.column_config.NumberColumn(disabled=True, format="%d 股"),
+            "本次沖銷": st.column_config.NumberColumn(min_value=0, step=1, format="%d 股",
+                                                  help="可直接改；空白或 0＝不沖這批"),
+        },
+    )
+    rows = [(int(r["買進ID"]), int(r["本次沖銷"] or 0), int(r["可沖銷"])) for _, r in edited.iterrows()]
+    err = gp.validate_match_plan(rows, qty)
+    final = [(b, q) for b, q, _ in rows if q > 0]
+    total = sum(q for _, q in final)
+    by_id = {t.id: t for t in trades}
+    est = sum(estimate_match_row_net_pnl(price, float(next(l["price"] for l in lots if l["trade_id"] == b)), q,
+                                         by_id.get(b), fee, tax, qty)[1] for b, q in final)
+    if err:
+        st.error(f"已配 {total:,} / {qty:,} 股。{err}")
+    else:
+        st.success(f"已配 {total:,} / {qty:,} 股　預估這筆已實現淨損益："
+                   f"{'▲' if est > 0 else ('▼' if est < 0 else '')}{abs(est):,.0f} 元")
+    return final, err
+
+
 @st.fragment
 def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict):
     sid = row["stock_id"]
@@ -253,9 +312,15 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
                       f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}</span></div>', unsafe_allow_html=True)
     else:
         fee = tax = 0.0
+    match_plan = []
+    if side == "SELL" and qty and price and not errors:
+        match_plan, match_err = _sell_match_ui(sid, group.trader, int(qty), float(price), fee, tax, k)
+        if match_err:
+            errors.append(match_err)
     shown_errors = [e for e in errors if not ("請輸入" in e and not (qty or price))]
     for e in shown_errors:
-        st.error(e)
+        if e not in ("這一檔目前沒有可沖銷的買進庫存。",) and not e.startswith(("沖銷股數合計", "買進 ID")):
+            st.error(e)
     ok_warn = True
     if warns and not errors:
         for w in warns:
@@ -275,9 +340,18 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             st.session_state["yh_last_submit"] = (sig, time.monotonic())
             sess = get_session()
             try:
-                sess.add(Trade(user=group.trader, stock_id=sid, trade_date=d, side=side, price=float(price),
-                               quantity=int(qty), is_daytrade=False, fee=fee, tax=tax))
+                new_t = Trade(user=group.trader, stock_id=sid, trade_date=d, side=side, price=float(price),
+                              quantity=int(qty), is_daytrade=False, fee=fee, tax=tax)
+                sess.add(new_t)
+                sess.flush()
+                if side == "SELL":   # 賣出：照上面配好的批次寫自定沖銷規則（與交易同一筆存檔）
+                    for buy_id, mq in match_plan:
+                        sess.add(CustomMatchRule(sell_trade_id=new_t.id, buy_trade_id=int(buy_id), matched_qty=int(mq)))
                 sess.commit()
+            except Exception as e:
+                sess.rollback()
+                st.error(f"存檔失敗：{e}")
+                st.stop()
             finally:
                 sess.close()
             st.session_state[f"yh_form_n_{sid}"] = n + 1
