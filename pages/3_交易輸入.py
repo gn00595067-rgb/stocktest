@@ -66,6 +66,12 @@ from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="交易輸入", layout="wide")
 _PAGE_T0 = time.monotonic()  # 整頁執行耗時（印在 log，診斷「點了很久才更新」用）
+_PAGE_MARKS = []
+
+
+def _mark(label: str) -> None:
+    """記錄到目前為止的累計秒數，整頁跑完一起印在 log。"""
+    _PAGE_MARKS.append(f"{label} {time.monotonic() - _PAGE_T0:.1f}")
 from services.mobile_ui import inject_mobile_css
 inject_mobile_css()
 
@@ -1326,6 +1332,7 @@ _init_session_defaults()
 ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()
+_mark("登入")
 
 st.title("交易輸入")
 _inject_trade_entry_css()
@@ -1339,6 +1346,7 @@ ensure_traders_seeded()
 
 try:
     trades, masters, custom_rules, stocks = _load_data()
+    _mark("讀資料庫")
 except OperationalError:
     st.warning("資料庫無法使用。雲端請設定 USE_GOOGLE_SHEET 與 Google Sheet Secrets。")
     st.stop()
@@ -1428,6 +1436,7 @@ _sids_for_quote |= set(st.session_state.get(_added_stocks_key(trader), []))
 if _sids_for_quote:
     _ex_map = {sid: getattr(masters.get(sid), "exchange", None) for sid in _sids_for_quote}
     get_quotes_cached(list(_sids_for_quote), exchanges=_ex_map)
+_mark("抓報價")
 
 holdings = build_holdings_summary(
     trades,
@@ -1450,6 +1459,7 @@ period_total, _ = compute_realized_in_range(
 unrealized_total = sum(h["unrealized"] for h in holdings)
 market_value_total = sum(h["market_value"] for h in holdings)
 invested_cost_total = sum(h["total_cost"] for h in holdings)
+_mark("算損益")
 
 k1, k2, k3, k4, k5, k6 = st.columns(6)
 # 損益數字：賠=紅、賺=藍、中性不上色、保留 +/− 號；成本/市值為中性不上色不加號
@@ -1596,13 +1606,17 @@ else:
     st.caption("所選日期尚無成交。")
 
 with st.expander("報價連線狀態"):
-    dbg = get_finmind_debug("2330")
-    if dbg.get("token_set") and not dbg.get("error"):
-        st.success(dbg.get("message", "FinMind 正常"))
-    elif not dbg.get("token_set"):
-        st.warning("未設定 FINMIND_TOKEN，目前為模擬報價。")
+    # 按了才檢查：expander 收合時內容照樣每次執行，以前每次整頁重跑都連一次 FinMind（正式站在美國，一次好幾秒）
+    if st.button("檢查 FinMind 連線", key="te_fm_check"):
+        dbg = get_finmind_debug("2330")
+        if dbg.get("token_set") and not dbg.get("error"):
+            st.success(dbg.get("message", "FinMind 正常"))
+        elif not dbg.get("token_set"):
+            st.warning("未設定 FINMIND_TOKEN，目前為模擬報價。")
+        else:
+            st.warning(dbg.get("message", ""))
     else:
-        st.warning(dbg.get("message", ""))
+        st.caption("即時報價主要來自證交所；FinMind 只在證交所沒回時補價。需要時按上面按鈕檢查。")
 
 # ---------- 設定（平常不太需要動，收在頁尾） ----------
 st.markdown("---")
@@ -1664,4 +1678,4 @@ if is_admin():
             st.caption("刪除只是把名字從選單移除，該買賣人已輸入的交易與歷史不受影響。")
 
 # 整頁跑完才印（中途 st.rerun / st.stop 的那幾次不會印）
-print(f"[page] 交易輸入 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)
+print(f"[page] 交易輸入 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒（累計：{'、'.join(_PAGE_MARKS)}）", flush=True)

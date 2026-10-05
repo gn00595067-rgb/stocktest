@@ -492,9 +492,13 @@ def get_finmind_debug(stock_id: str = "2330") -> dict:
         r = requests.get(url4, params=params4, headers={"Authorization": f"Bearer {token}"}, timeout=10)
         if r.status_code == 200:
             data = r.json()
+            # 成功也要寫快取：以前只有失敗路徑有快取，正常時每次整頁重跑都重打一次 FinMind
             if data.get("data"):
-                return {"token_set": True, "error": None, "message": "FinMind 連線正常（v4）"}
-            return {"token_set": True, "error": "API 回傳無資料", "message": f"可能股票 {stock_id} 無該日資料。"}
+                result = {"token_set": True, "error": None, "message": "FinMind 連線正常（v4）"}
+            else:
+                result = {"token_set": True, "error": "API 回傳無資料", "message": f"可能股票 {stock_id} 無該日資料。"}
+            _debug_cache[stock_id] = (result, time.time())
+            return result
         if r.status_code in (402, 403, 400):
             # 解析 v4 回傳內容（402 常見：Requests reach the upper limit 或方案權限不足）
             v4_msg = ""
