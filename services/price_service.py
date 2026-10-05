@@ -294,7 +294,7 @@ class TwseMisProvider(PriceProvider):
                 self.BASE,
                 params={"ex_ch": "|".join(channels), "json": "1", "delay": "0"},
                 headers=self.HEADERS,
-                timeout=8,
+                timeout=5,  # 正常 1 秒內回；卡住時別讓整頁跟著等太久
             )
             if r.status_code != 200:
                 return {}
@@ -330,42 +330,90 @@ def clear_quote_cache() -> None:
     _price_cache.clear()
 
 
+# 查不到報價的股票（下市、代號錯、來源暫時失敗）也記一下，這段時間內不再重查：
+# 否則每次整頁重跑都要逐檔重試、每檔等到逾時，持股一多就卡上一分鐘。
+NEG_CACHE_SECONDS = 60
+# 證交所批次沒拿到的才用 FinMind 補；同時查、整批最多等這麼久，等不到的先顯示無報價。
+FALLBACK_BUDGET_SECONDS = 6
+
+
+def _cache_lookup(sid: str, now: float):
+    """回傳 (命中?, 報價或 None)。查不到的負快取命中時回傳 (True, None)。"""
+    cached = _price_cache.get(sid)
+    if not cached:
+        return False, None
+    data, ts = cached
+    if data is not None and now - ts < CACHE_SECONDS:
+        return True, data
+    if data is None and now - ts < NEG_CACHE_SECONDS:
+        return True, None
+    return False, None
+
+
+def _fallback_quotes(stock_ids: List[str]) -> dict:
+    """FinMind / Mock 補價：多檔同時查，整批最多等 FALLBACK_BUDGET_SECONDS 秒。"""
+    if not stock_ids:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor, wait
+    svc = get_price_service()
+    ex = ThreadPoolExecutor(max_workers=8)
+    futs = {ex.submit(svc.get_quote, sid): sid for sid in stock_ids}
+    done, _ = wait(futs, timeout=FALLBACK_BUDGET_SECONDS)
+    ex.shutdown(wait=False, cancel_futures=True)  # 沒查完的不等，下次再補
+    out = {}
+    for f in done:
+        try:
+            q = f.result()
+        except Exception:
+            q = None
+        if q:
+            out[futs[f]] = q
+    return out
+
+
 def get_quote_cached(stock_id: str) -> Optional[dict]:
     now = time.time()
-    if stock_id in _price_cache:
-        data, ts = _price_cache[stock_id]
-        if now - ts < CACHE_SECONDS:
-            return data
+    hit, data = _cache_lookup(stock_id, now)
+    if hit:
+        return data
     # 主源：TWSE MIS 官方即時（免 token）；失敗再退回 FinMind / Mock
     data = _mis_provider.get_quote(stock_id)
     if not data:
-        data = get_price_service().get_quote(stock_id)
-    if data:
-        _price_cache[stock_id] = (data, now)
+        data = _fallback_quotes([stock_id]).get(stock_id)
+    _price_cache[stock_id] = (data, now)  # 查不到也記（負快取），避免每次重跑都重試
     return data
 
 
 def get_quotes_cached(stock_ids: List[str], exchanges: Optional[dict] = None) -> dict:
     """批次取價（供持倉頁一次抓多檔）：先讀快取，未命中的用 TWSE MIS 一次批次補齊，
-    仍缺者再逐檔退回 FinMind/Mock。回傳 {stock_id: quote}。"""
+    仍缺者再用 FinMind/Mock 同時補（有時間上限）。回傳 {stock_id: quote}。"""
     now = time.time()
     result = {}
     missing = []
     for sid in {str(s).strip() for s in stock_ids if str(s).strip()}:
-        cached = _price_cache.get(sid)
-        if cached and now - cached[1] < CACHE_SECONDS:
-            result[sid] = cached[0]
+        hit, data = _cache_lookup(sid, now)
+        if hit:
+            if data is not None:
+                result[sid] = data
         else:
             missing.append(sid)
     if missing:
+        t0 = time.monotonic()
         fresh = _mis_provider.get_quotes(missing, exchanges=exchanges)
+        need = [sid for sid in missing if not fresh.get(sid)]
+        fb = _fallback_quotes(need)
         for sid in missing:
-            data = fresh.get(sid)
-            if not data:
-                data = get_price_service().get_quote(sid)
+            data = fresh.get(sid) or fb.get(sid)
+            _price_cache[sid] = (data, now)
             if data:
-                _price_cache[sid] = (data, now)
                 result[sid] = data
+        n_fail = len(need) - len(fb)
+        # 印在 Streamlit Cloud log：判斷「頁面慢」是不是卡在抓報價
+        print(
+            f"[quotes] 查 {len(missing)} 檔：證交所 {len(missing) - len(need)}、FinMind 補 {len(fb)}、"
+            f"查不到 {n_fail}，耗時 {time.monotonic() - t0:.1f} 秒",
+            flush=True,
+        )
     return result
 
 

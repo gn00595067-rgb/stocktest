@@ -65,6 +65,7 @@ from services.trade_entry_service import (
 from services.position_cost import compute_position_and_cost_by_stock
 
 st.set_page_config(page_title="交易輸入", layout="wide")
+_PAGE_T0 = time.monotonic()  # 整頁執行耗時（印在 log，診斷「點了很久才更新」用）
 from services.mobile_ui import inject_mobile_css
 inject_mobile_css()
 
@@ -353,6 +354,8 @@ def _render_holding_row(row: dict, sid: str, open_now: bool, is_etf: bool = Fals
                     if str(k).startswith("te_open_"):
                         st.session_state[k] = False
             st.session_state[f"te_open_{sid}"] = new_state
+            if new_state:
+                st.session_state["te_scroll_to"] = sid  # 重畫後捲到這檔（整頁重畫後畫面常跳回最上面）
             st.rerun()
 
 
@@ -1198,6 +1201,28 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                         sess.close()
 
 
+def _scroll_to_stock(sid: str) -> None:
+    """把畫面捲到剛展開的那檔（以該檔「收合」按鈕為錨點）。
+
+    整頁重畫後瀏覽器常跳回頁首，同事得自己往下找；元件在 iframe 裡，透過 parent 文件找元素，
+    重畫需要時間所以每 200ms 重試一次，最多 5 秒；上方留 90px 避開 Streamlit 頂端列。
+    """
+    import streamlit.components.v1 as components
+    components.html(
+        f"""<script>
+        (function() {{
+          let n = 0;
+          const t = setInterval(function() {{
+            const el = window.parent.document.querySelector('.st-key-te_toggle_{sid}');
+            if (el) {{ el.style.scrollMarginTop = '90px'; el.scrollIntoView({{behavior: 'smooth', block: 'start'}}); clearInterval(t); }}
+            if (++n > 25) clearInterval(t);
+          }}, 200);
+        }})();
+        </script>""",
+        height=0,
+    )
+
+
 def _render_stock_trade_panel(
     row: dict,
     masters: dict,
@@ -1219,6 +1244,9 @@ def _render_stock_trade_panel(
 
     if not open_now:
         return
+    if st.session_state.get("te_scroll_to") == sid:
+        st.session_state.pop("te_scroll_to", None)
+        _scroll_to_stock(sid)
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("市值", f"{row['market_value']:,.0f}")
@@ -1634,3 +1662,6 @@ if is_admin():
                     if ok:
                         st.rerun()
             st.caption("刪除只是把名字從選單移除，該買賣人已輸入的交易與歷史不受影響。")
+
+# 整頁跑完才印（中途 st.rerun / st.stop 的那幾次不會印）
+print(f"[page] 交易輸入 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)
