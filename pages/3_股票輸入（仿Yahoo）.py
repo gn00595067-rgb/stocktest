@@ -54,8 +54,8 @@ render_auth_sidebar()
 
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
 # 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
-_DETAIL_COLS = [1.15, 0.85, 0.9, 0.9, 0.6, 0.6, 1.2, 0.3, 0.3]   # 最後兩欄＝✏️、🗑
-_FORM_COLS = [1.15, 0.85, 0.9, 0.9, 0.6, 0.6, 1.2, 0.6]          # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
+_DETAIL_COLS = [1.15, 1.05, 0.9, 0.95, 0.6, 0.6, 1.1, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
+_FORM_COLS = [1.15, 1.05, 0.9, 0.95, 0.6, 0.6, 1.1, 0.7]          # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
 _ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 9 欄合成一個 HTML grid（.yh-grid）
 
 st.markdown("""
@@ -90,7 +90,12 @@ st.markdown("""
   .yh-card .cell + .cell { border-left: none; }
   .yh-card .cell:nth-child(3) { border-top: 1px solid #eee; }
 }
-.st-key-yh_new_group button p, .st-key-yh_refresh button p { white-space: nowrap; }
+/* 按鈕、表頭、數字一律不折行（折行會讓列高不一、看起來歪） */
+.st-key-yh_new_group button p, .st-key-yh_refresh button p, .st-key-yh_add_stock button p,
+.st-key-yh_edit_group button p, .st-key-yh_del_group button p { white-space: nowrap; }
+.yh-th, .yh-td { white-space: nowrap; }
+.yh-grid { font-size: .92rem; }
+.yh-grid .yh-th { font-size: .82rem; }
 .yh-th { color: #888; font-size: .9rem; text-align: right; }
 .yh-th.l { text-align: left; }
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
@@ -101,12 +106,16 @@ st.markdown("""
 .yh-up { color: #e0262b; } .yh-down { color: #12a150; } .yh-flat { color: #666; }
 [class*="st-key-yh_row_"] { background: #f4f5f7; border-radius: 6px; padding: .15rem .4rem; margin-bottom: .35rem; }
 [class*="st-key-yh_row_"] button { border: none; background: transparent; }
+/* 交易明細的 ✏️🗑：小方鈕、不撐高列、不超出右框 */
+[class*="st-key-yh_tr_"] button { min-height: 0; height: 1.9rem; width: 1.9rem; padding: 0; }
+[class*="st-key-yh_tr_"] button p { font-size: .95rem; line-height: 1; }
+[class*="st-key-yh_tr_"] [data-testid="stColumn"] { min-width: 0; }
 [class*="st-key-yh_tg_"] button p { font-size: 1.5rem; font-weight: 700; line-height: 1; }
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepDown"],
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepUp"] { display: none; }
 .yh-desc { color: #888; font-size: .9rem; }
 /* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多 */
-.yh-grid { display: grid; grid-template-columns: 1.2fr 1.15fr .9fr 1.05fr 1.05fr 1.25fr 1.25fr 1.25fr 0.6fr;
+.yh-grid { display: grid; grid-template-columns: 1.15fr 1.15fr .9fr 1.05fr 1.05fr 1.2fr 1.2fr 1.2fr 0.7fr;
            align-items: center; column-gap: .8rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -503,7 +512,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     _all = sorted(stock_trades, key=lambda x: (x.trade_date, x.id), reverse=True)
     _show_all = st.session_state.get(f"yh_showall_{sid}", False)
     for t in (_all if _show_all else _all[:10]):
-        c = st.columns(_dcols)
+        with st.container(key=f"yh_tr_{t.id}"):   # 一筆交易一列：文字與 ✏️🗑 垂直置中
+            c = st.columns(_dcols, vertical_alignment="center")
         is_buy = str(t.side).upper() == "BUY"
         c[0].markdown(f'<div class="yh-td l">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
         side_s = "買入" if is_buy else ("賣出（當沖）" if t.is_daytrade else "賣出")
@@ -599,7 +609,7 @@ with top_l:
 group = next(g for g in groups if g.id == gid)
 
 # 分頁操作列
-a = st.columns([0.9, 1.0, 1.0, 0.45, 0.45, 4.2])
+a = st.columns([1.1, 1.15, 1.15, 0.45, 0.45, 3.7], vertical_alignment="center")
 if a[0].button("新增股票", key="yh_add_stock"):
     _dlg_add_stock(trader, group)
 if not group.is_builtin:
