@@ -36,6 +36,7 @@ def test_filter_by_trader_date_and_list():
 
 def test_all_group_matches_full_engine():
     g = gp.builtin_all_group("雅雲姐")
+    assert g.is_full
     s = gp.summarize_group(TRADES, g, [], "CUSTOM_PLUS_FIFO", {"2330": {"price": 1300}}, {})
     r = {x["stock_id"]: x for x in s["rows"]}
     assert r["2330"]["qty"] == 1000 and r["2330"]["avg_cost"] == pytest.approx(1100)   # FIFO 先沖 9/30 那批
@@ -85,29 +86,60 @@ def sess():
 
 
 def test_group_crud_never_touches_trades(sess):
+    """分頁屬於登入帳號（owner）；一個帳號的分頁可以是不同人的帳。"""
     sess.add(Trade(id=1, user="雅雲姐", stock_id="2330", trade_date=date(2026, 10, 1), side="BUY", price=1, quantity=1))
     sess.commit()
-    gid, err = gp.create_group(sess, "雅雲姐", "1001起", start_date=date(2026, 10, 1))
+    gid0, _ = gp.create_group(sess, "admin", "Peggy姐", "Peggy姐")                 # 人的全部帳
+    gid, err = gp.create_group(sess, "admin", "Peggy姐", "1001起", start_date=date(2026, 10, 1))
     assert err is None
-    gid2, _ = gp.create_group(sess, "雅雲姐", "10月短線", stock_ids=["2327"], only_listed=True)
-    assert [g.name for g in gp.list_groups(sess, "雅雲姐")] == ["全部", "1001起", "10月短線"]
-    assert gp.list_groups(sess, "Peggy姐")[0].name == "全部" and len(gp.list_groups(sess, "Peggy姐")) == 1
-    gp.move_group(sess, "雅雲姐", gid2, -1)
-    assert [g.name for g in gp.list_groups(sess, "雅雲姐")] == ["全部", "10月短線", "1001起"]
+    gid2, _ = gp.create_group(sess, "admin", "小孩", "小孩")                         # 另一個人的全部帳
+    gs = gp.list_groups(sess, "admin")
+    assert [(g.name, g.trader, g.is_full) for g in gs] == [
+        ("Peggy姐", "Peggy姐", True), ("1001起", "Peggy姐", False), ("小孩", "小孩", True)]
+    assert gp.list_groups(sess, "別的帳號") == []                                   # 只看得到自己的分頁
+    assert [g.name for g in gp.list_groups(sess, "admin", can_access=lambda t: t != "小孩")] == ["Peggy姐", "1001起"]
+    gp.move_group(sess, "admin", gid2, -1)
+    assert [g.name for g in gp.list_groups(sess, "admin")] == ["Peggy姐", "小孩", "1001起"]
     gp.add_stock_to_group(sess, gid2, "6173")
-    assert gp.list_groups(sess, "雅雲姐")[1].stock_ids == ["2327", "6173"]
+    assert gp.list_groups(sess, "admin")[1].stock_ids == ["6173"] and gp.list_groups(sess, "admin")[1].is_full
+    # 每個分頁都能改名（含人的全部帳），也能改成別人的帳
+    assert gp.update_group(sess, gid0, "1001起", None, None, [], False) is not None   # 同帳號不可同名
+    assert gp.update_group(sess, gid0, "全部", None, None, [], False) is None
+    assert gp.update_group(sess, gid2, "王小姐", None, None, [], False, trader="王小姐") is None
+    assert [(g.name, g.trader) for g in gp.list_groups(sess, "admin")] == [
+        ("全部", "Peggy姐"), ("王小姐", "王小姐"), ("1001起", "Peggy姐")]
     gp.delete_group(sess, gid)
-    assert [g.name for g in gp.list_groups(sess, "雅雲姐")] == ["全部", "10月短線"]
+    assert [g.name for g in gp.list_groups(sess, "admin")] == ["全部", "王小姐"]
     assert sess.query(Trade).count() == 1          # 刪分頁不動交易
 
 
+def test_ensure_owner_groups_claims_old_tabs(sess):
+    """舊資料（owner 是 NULL）：第一次進來時認領有權限的舊分頁，並在最前面補一個預設買賣人的全部帳。"""
+    from db.models import PortfolioGroup
+    sess.add_all([
+        PortfolioGroup(owner=None, trader="Peggy姐", name="1001短線", start_date=date(2026, 10, 6), sort_order=1),
+        PortfolioGroup(owner=None, trader="雅雲姐", name="雅雲的", sort_order=2),
+    ])
+    sess.commit()
+    gp.ensure_owner_groups(sess, "admin", "Peggy姐", can_access=lambda t: t == "Peggy姐")
+    assert [(g.name, g.trader, g.is_full) for g in gp.list_groups(sess, "admin")] == [
+        ("Peggy姐", "Peggy姐", True), ("1001短線", "Peggy姐", False)]
+    gp.ensure_owner_groups(sess, "admin", "Peggy姐")          # 已有分頁：不重複建立
+    assert len(gp.list_groups(sess, "admin")) == 2
+    # 全部刪光 → 再補一個
+    for g in gp.list_groups(sess, "admin"):
+        gp.delete_group(sess, g.id)
+    gp.ensure_owner_groups(sess, "admin", "Peggy姐", can_access=lambda t: t == "Peggy姐")
+    assert [g.name for g in gp.list_groups(sess, "admin")] == ["Peggy姐"]
+
+
 def test_group_validation(sess):
-    assert gp.create_group(sess, "雅雲姐", "  ")[1]
-    assert gp.create_group(sess, "雅雲姐", "全部")[1]
-    assert gp.create_group(sess, "雅雲姐", "x", start_date=date(2026, 10, 2), end_date=date(2026, 10, 1))[1]
-    gp.create_group(sess, "雅雲姐", "A")
-    assert "已經有" in gp.create_group(sess, "雅雲姐", "A")[1]
-    assert gp.create_group(sess, "Peggy姐", "A")[1] is None      # 不同買賣人可同名
+    assert gp.create_group(sess, "admin", "雅雲姐", "  ")[1]
+    assert gp.create_group(sess, "admin", "", "沒有人")[1]
+    assert gp.create_group(sess, "admin", "雅雲姐", "x", start_date=date(2026, 10, 2), end_date=date(2026, 10, 1))[1]
+    gp.create_group(sess, "admin", "雅雲姐", "A")
+    assert "已經有" in gp.create_group(sess, "admin", "Peggy姐", "A")[1]   # 同帳號分頁名不可重複
+    assert gp.create_group(sess, "user2", "雅雲姐", "A")[1] is None        # 不同帳號可同名
 
 
 def test_validate_new_trade():

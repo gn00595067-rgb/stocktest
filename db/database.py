@@ -111,6 +111,24 @@ try:
 except Exception:
     pass
 
+# 若 portfolio_groups 尚無 owner 欄位則補上（仿Yahoo 分頁改成屬於登入帳號；只加欄位、不動資料）
+try:
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        if engine.dialect.name == "sqlite":
+            cols = [row[1] for row in conn.execute(text("PRAGMA table_info(portfolio_groups)"))]
+            missing = "owner" not in cols
+        else:
+            missing = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'portfolio_groups' AND column_name = 'owner'"
+            )).fetchone() is None
+        if missing:
+            conn.execute(text("ALTER TABLE portfolio_groups ADD COLUMN owner VARCHAR(50)"))
+            conn.commit()
+except Exception:
+    pass
+
 # 試算表模式：Session 在 commit 後自動寫回試算表
 if USE_GOOGLE_SHEET:
     from sqlalchemy.orm import Session as _BaseSession

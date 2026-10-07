@@ -8,11 +8,11 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 
-ALL_GROUP_ID = 0          # 內建「全部」分頁（不存表、不能刪）
+ALL_GROUP_ID = 0          # 不存表的後備分頁 id
 NAME_MAX_LEN = 20
 
 
@@ -26,26 +26,26 @@ class GroupSpec:
     stock_ids: List[str] = field(default_factory=list)
     only_listed: bool = False
     sort_order: int = 0
+    owner: Optional[str] = None
 
     @property
-    def is_builtin(self) -> bool:
-        return self.id == ALL_GROUP_ID
+    def is_full(self) -> bool:
+        """這個人的全部帳（沒設日期、沒限定股票）＝原本的「全部」。"""
+        return not self.start_date and not self.end_date and not self.only_listed
 
     def describe(self) -> str:
         """一行說明分頁條件，顯示在分頁下方。"""
-        parts = []
+        if self.is_full:
+            return f"{self.trader} 的全部交易"
+        parts = [self.trader]
         if self.start_date and self.end_date:
-            parts.append(f"{self.start_date:%Y/%m/%d}～{self.end_date:%Y/%m/%d}")
+            parts.append(f"{self.start_date:%Y/%m/%d}～{self.end_date:%Y/%m/%d} 買進")
         elif self.start_date:
-            parts.append(f"{self.start_date:%Y/%m/%d} 起")
+            parts.append(f"{self.start_date:%Y/%m/%d} 起買進")
         elif self.end_date:
-            parts.append(f"到 {self.end_date:%Y/%m/%d}")
-        else:
-            parts.append("全部日期")
+            parts.append(f"到 {self.end_date:%Y/%m/%d} 買進")
         if self.only_listed:
             parts.append(f"只看 {len(self.stock_ids)} 檔")
-        else:
-            parts.append("全部股票")
         return "・".join(parts)
 
 
@@ -64,26 +64,61 @@ def _to_spec(row) -> GroupSpec:
         id=int(row.id), trader=row.trader, name=row.name,
         start_date=row.start_date, end_date=row.end_date,
         stock_ids=parse_stock_ids(row.stock_ids), only_listed=bool(row.only_listed),
-        sort_order=int(row.sort_order or 0),
+        sort_order=int(row.sort_order or 0), owner=getattr(row, "owner", None),
     )
 
 
 def builtin_all_group(trader: str) -> GroupSpec:
-    return GroupSpec(id=ALL_GROUP_ID, trader=trader, name="全部")
+    """不存表的「某人全部帳」（測試與找不到分頁時的後備）。"""
+    return GroupSpec(id=ALL_GROUP_ID, trader=trader, name=trader)
 
 
-# ─── 存取（session 由呼叫端傳入，方便測試） ───────────────────────────────
+# ─── 存取（session 由呼叫端傳入，方便測試）；分頁屬於登入帳號（owner） ──────────
 
-def list_groups(sess, trader: str) -> List[GroupSpec]:
-    """該買賣人的分頁（第一個永遠是內建「全部」）。"""
+def _owner_rows(sess, owner: str):
     from db.models import PortfolioGroup
-    rows = (sess.query(PortfolioGroup).filter(PortfolioGroup.trader == trader)
+    return (sess.query(PortfolioGroup).filter(PortfolioGroup.owner == owner)
             .order_by(PortfolioGroup.sort_order, PortfolioGroup.id).all())
-    return [builtin_all_group(trader)] + [_to_spec(r) for r in rows]
 
 
-def validate_group(sess, trader: str, name: str, start_date, end_date,
-                   exclude_id: Optional[int] = None) -> Optional[str]:
+def list_groups(sess, owner: str, can_access: Optional[Callable[[str], bool]] = None) -> List[GroupSpec]:
+    """這個登入帳號的分頁（依排序）；沒有權限的買賣人的分頁不列出。"""
+    out = [_to_spec(r) for r in _owner_rows(sess, owner)]
+    return [g for g in out if can_access is None or can_access(g.trader)]
+
+
+def ensure_owner_groups(sess, owner: str, default_trader: str,
+                        can_access: Optional[Callable[[str], bool]] = None) -> None:
+    """帳號還沒有任何（看得到的）分頁時：認領沒有擁有者的舊分頁，並建一個預設買賣人的全部帳分頁放第一個。"""
+    from db.models import PortfolioGroup
+    if list_groups(sess, owner, can_access):
+        return
+    ok = (lambda t: True) if can_access is None else can_access
+    orphans = (sess.query(PortfolioGroup).filter(PortfolioGroup.owner.is_(None))
+               .order_by(PortfolioGroup.sort_order, PortfolioGroup.id).all())
+    k = 1
+    for r in orphans:
+        if ok(r.trader):
+            r.owner = owner
+            r.sort_order = k
+            k += 1
+    sess.add(PortfolioGroup(owner=owner, trader=default_trader, name=_free_name(sess, owner, default_trader),
+                            stock_ids="", only_listed=False, sort_order=0))
+    sess.commit()
+
+
+def _free_name(sess, owner: str, base: str) -> str:
+    names = {r.name for r in _owner_rows(sess, owner)}
+    if base not in names:
+        return base
+    i = 2
+    while f"{base}{i}" in names:
+        i += 1
+    return f"{base}{i}"
+
+
+def validate_group(sess, owner: str, name: str, start_date, end_date,
+                   exclude_id: Optional[int] = None, trader: Optional[str] = None) -> Optional[str]:
     """回傳錯誤訊息；沒問題回傳 None。"""
     from db.models import PortfolioGroup
     name = (name or "").strip()
@@ -91,11 +126,11 @@ def validate_group(sess, trader: str, name: str, start_date, end_date,
         return "請輸入分頁名稱。"
     if len(name) > NAME_MAX_LEN:
         return f"分頁名稱最多 {NAME_MAX_LEN} 字。"
-    if name == "全部":
-        return "「全部」是內建分頁，請換一個名稱。"
+    if trader is not None and not (trader or "").strip():
+        return "請選擇這個分頁是誰的帳。"
     if start_date and end_date and start_date > end_date:
         return "起始日不能晚於結束日。"
-    q = sess.query(PortfolioGroup).filter(PortfolioGroup.trader == trader, PortfolioGroup.name == name)
+    q = sess.query(PortfolioGroup).filter(PortfolioGroup.owner == owner, PortfolioGroup.name == name)
     if exclude_id is not None:
         q = q.filter(PortfolioGroup.id != exclude_id)
     if q.first() is not None:
@@ -103,16 +138,16 @@ def validate_group(sess, trader: str, name: str, start_date, end_date,
     return None
 
 
-def create_group(sess, trader: str, name: str, start_date=None, end_date=None,
+def create_group(sess, owner: str, trader: str, name: str, start_date=None, end_date=None,
                  stock_ids: Optional[List[str]] = None, only_listed: bool = False) -> Tuple[Optional[int], Optional[str]]:
     from db.models import PortfolioGroup
-    err = validate_group(sess, trader, name, start_date, end_date)
+    err = validate_group(sess, owner, name, start_date, end_date, trader=trader)
     if err:
         return None, err
-    last = (sess.query(PortfolioGroup).filter(PortfolioGroup.trader == trader)
+    last = (sess.query(PortfolioGroup).filter(PortfolioGroup.owner == owner)
             .order_by(PortfolioGroup.sort_order.desc()).first())
     row = PortfolioGroup(
-        trader=trader, name=name.strip(), start_date=start_date, end_date=end_date,
+        owner=owner, trader=trader.strip(), name=name.strip(), start_date=start_date, end_date=end_date,
         stock_ids=",".join(parse_stock_ids(",".join(stock_ids or []))),
         only_listed=bool(only_listed) and bool(stock_ids),
         sort_order=(int(last.sort_order) + 1) if last else 1,
@@ -123,16 +158,18 @@ def create_group(sess, trader: str, name: str, start_date=None, end_date=None,
 
 
 def update_group(sess, group_id: int, name: str, start_date, end_date,
-                 stock_ids: List[str], only_listed: bool) -> Optional[str]:
+                 stock_ids: List[str], only_listed: bool, trader: Optional[str] = None) -> Optional[str]:
     from db.models import PortfolioGroup
     row = sess.get(PortfolioGroup, int(group_id))
     if row is None:
         return "找不到這個分頁（可能已被刪除）。"
-    err = validate_group(sess, row.trader, name, start_date, end_date, exclude_id=row.id)
+    err = validate_group(sess, row.owner, name, start_date, end_date, exclude_id=row.id, trader=trader)
     if err:
         return err
     ids = parse_stock_ids(",".join(stock_ids or []))
     row.name = name.strip()
+    if trader:
+        row.trader = trader.strip()
     row.start_date = start_date
     row.end_date = end_date
     row.stock_ids = ",".join(ids)
@@ -150,11 +187,9 @@ def delete_group(sess, group_id: int) -> None:
         sess.commit()
 
 
-def move_group(sess, trader: str, group_id: int, direction: int) -> None:
+def move_group(sess, owner: str, group_id: int, direction: int) -> None:
     """direction = -1 往左、+1 往右。"""
-    from db.models import PortfolioGroup
-    rows = (sess.query(PortfolioGroup).filter(PortfolioGroup.trader == trader)
-            .order_by(PortfolioGroup.sort_order, PortfolioGroup.id).all())
+    rows = _owner_rows(sess, owner)
     idx = next((i for i, r in enumerate(rows) if r.id == group_id), None)
     if idx is None:
         return
@@ -168,6 +203,7 @@ def move_group(sess, trader: str, group_id: int, direction: int) -> None:
 
 
 def add_stock_to_group(sess, group_id: int, stock_id: str) -> None:
+    """把股票加進分頁清單（全部帳分頁：多顯示一列 0 股；只看清單的分頁：加入清單）。"""
     from db.models import PortfolioGroup
     row = sess.get(PortfolioGroup, int(group_id))
     if row is None:

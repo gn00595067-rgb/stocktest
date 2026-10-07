@@ -93,14 +93,15 @@ class UserTraderBinding(Base):
 
 
 class PortfolioGroup(Base):
-    """股票輸入（仿 Yahoo）的分頁：只存篩選條件（買賣人、日期範圍、股票清單），不存交易。
+    """股票輸入（仿 Yahoo）的分頁＝投資組合：只存條件（擁有帳號、買賣人、日期範圍、股票清單），不存交易。
 
     刪除分頁只刪條件，絕不動交易。見 docs/specs/股票輸入_仿Yahoo.md。
     """
     __tablename__ = "portfolio_groups"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    trader = Column(String(50), nullable=False)
+    owner = Column(String(50), nullable=True)      # 分頁屬於哪個登入帳號（NULL＝舊資料，第一次進來時認領）
+    trader = Column(String(50), nullable=False)    # 這個分頁是誰的帳（買賣人）
     name = Column(String(50), nullable=False)
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)

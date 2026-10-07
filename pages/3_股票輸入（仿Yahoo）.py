@@ -23,15 +23,15 @@ except Exception:
     pass
 
 from db.database import get_session
-from db.models import Trade, StockMaster, CustomMatchRule
+from db.models import Trade, StockMaster, CustomMatchRule, PortfolioGroup
 from services.auth_service import (
-    ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin,
+    ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin, get_current_user,
     get_allowed_traders, can_access_trader, filter_trades_by_permission,
 )
 from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache
 from services.trade_fees import fees_for_trade
 from services.prefs import resolve_default_trader
-from services.trader_service import list_trader_names, ensure_traders_seeded
+from services.trader_service import list_trader_names, ensure_traders_seeded, add_trader
 from services.position_cost import compute_position_and_cost_by_stock
 from services.trade_entry_service import (
     get_open_buy_lots, combined_match_plan, sort_lots_by_strategy, estimate_match_row_net_pnl,
@@ -42,8 +42,12 @@ import services.group_portfolio as gp
 import importlib
 import inspect
 # Streamlit Cloud 部署後只重跑頁面、不一定重載 services 模組：簽名不對就是舊版，強制重載一次
-if "group" not in inspect.signature(gp.summarize_group).parameters or not hasattr(gp, "validate_edit_trade"):
+if (not hasattr(gp, "ensure_owner_groups") or not hasattr(gp, "validate_edit_trade")
+        or "group" not in inspect.signature(gp.summarize_group).parameters):
     gp = importlib.reload(gp)
+if not hasattr(PortfolioGroup, "owner"):   # 資料模型（db.models）是舊版：不能熱重載，要重開 app 才會補欄位
+    st.error("系統剛更新，資料表需要重新載入。請管理者到 Streamlit Cloud「Manage app → Reboot app」重開一次。")
+    st.stop()
 
 st.set_page_config(page_title="股票輸入（仿Yahoo）", layout="wide")
 _PAGE_T0 = time.monotonic()
@@ -165,59 +169,95 @@ def _stock_options():
     return {s["stock_id"]: f'{s["stock_id"]} {s.get("name") or ""}' for s in lst if s.get("stock_id")}
 
 
+_NEW_PERSON = "＋ 新增人…"
+_KIND_FULL, _KIND_FILTER = "full", "filter"
+
+
 @st.dialog("新增分頁")
-def _dlg_new_group(trader: str):
-    _group_form(trader, None)
+def _dlg_new_group(owner: str, trader_opts: list, default_trader: str):
+    _group_form(owner, None, trader_opts, default_trader)
 
 
 @st.dialog("編輯此分頁")
-def _dlg_edit_group(trader: str, group_id: int):
-    _group_form(trader, group_id)
+def _dlg_edit_group(owner: str, group_id: int, trader_opts: list, default_trader: str):
+    _group_form(owner, group_id, trader_opts, default_trader)
 
 
-def _group_form(trader: str, group_id):
+def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
+    """分頁＝投資組合：哪個人＋（可選）日期／股票條件。"""
     sess = get_session()
     try:
-        g = next((x for x in gp.list_groups(sess, trader) if x.id == group_id), None) if group_id else None
+        g = next((x for x in gp.list_groups(sess, owner) if x.id == group_id), None) if group_id else None
     finally:
         sess.close()
-    name = st.text_input("分頁名稱", value=g.name if g else "", placeholder="例：1001起、10月短線", max_chars=gp.NAME_MAX_LEN)
-    c1, c2 = st.columns(2)
-    use_start = c1.checkbox("限定起始日", value=bool(g and g.start_date))
-    start = c1.date_input("起始日", value=(g.start_date if g and g.start_date else date.today()),
-                          disabled=not use_start, format="YYYY/MM/DD")
-    use_end = c2.checkbox("限定結束日", value=bool(g and g.end_date))
-    end = c2.date_input("結束日", value=(g.end_date if g and g.end_date else date.today()),
-                        disabled=not use_end, format="YYYY/MM/DD")
-    opts = _stock_options()
+    people = list(trader_opts)
+    if g and g.trader not in people:
+        people.insert(0, g.trader)
+    if is_admin():
+        people.append(_NEW_PERSON)
+    cur_person = g.trader if g else default_trader
+    person = st.selectbox("這是誰的帳", people, index=people.index(cur_person) if cur_person in people else 0,
+                          help="在這個分頁輸入的交易，會記在這個人名下。")
+    new_person = ""
+    if person == _NEW_PERSON:
+        new_person = st.text_input("新的人名", placeholder="例：小孩、王小姐", max_chars=50).strip()
+    kind = st.radio("分頁類型", [_KIND_FULL, _KIND_FILTER], horizontal=True,
+                    index=0 if (g is None or g.is_full) else 1,
+                    format_func={_KIND_FULL: "這個人的全部帳", _KIND_FILTER: "只看某段日期／某些股票"}.get)
+    who = new_person if person == _NEW_PERSON else person
+    name = st.text_input("分頁名稱", value=g.name if g else "", max_chars=gp.NAME_MAX_LEN,
+                         placeholder=(who or "例：小孩") if kind == _KIND_FULL else "例：1001起、10月短線")
+    use_start = use_end = only = False
+    start = end = date.today()
     cur = list(g.stock_ids) if g else []
-    for s in cur:
-        opts.setdefault(s, s)
-    picked = st.multiselect("股票清單（可搜尋代號或名稱）", options=list(opts.keys()), default=cur,
-                            format_func=lambda k: opts.get(k, k))
-    only = st.checkbox("只看清單內的股票（不勾＝這位買賣人的全部股票）", value=bool(g and g.only_listed))
-    st.caption("分頁只是篩選條件：同一筆交易可以同時出現在好幾個分頁；刪除分頁不會刪任何交易。")
+    picked = cur
+    if kind == _KIND_FILTER:
+        c1, c2 = st.columns(2)
+        use_start = c1.checkbox("限定起始日（這天起買進的）", value=bool(g and g.start_date))
+        start = c1.date_input("起始日", value=(g.start_date if g and g.start_date else date.today()),
+                              disabled=not use_start, format="YYYY/MM/DD")
+        use_end = c2.checkbox("限定結束日", value=bool(g and g.end_date))
+        end = c2.date_input("結束日", value=(g.end_date if g and g.end_date else date.today()),
+                            disabled=not use_end, format="YYYY/MM/DD")
+        opts = _stock_options()
+        for s_ in cur:
+            opts.setdefault(s_, s_)
+        picked = st.multiselect("股票清單（可搜尋代號或名稱）", options=list(opts.keys()), default=cur,
+                                format_func=lambda k: opts.get(k, k))
+        only = st.checkbox("只看清單內的股票（不勾＝這個人的全部股票）", value=bool(g and g.only_listed))
+    st.caption("分頁只是看帳的方式：同一筆交易可以出現在好幾個分頁；刪除分頁不會刪任何交易。")
     if st.button("儲存", type="primary", use_container_width=True):
+        if person == _NEW_PERSON:
+            if not new_person:
+                st.error("請輸入新的人名。")
+                return
+            if new_person not in trader_opts:
+                ok, msg = add_trader(new_person)
+                if not ok:
+                    st.error(msg)
+                    return
+        final_name = (name or "").strip() or (who if kind == _KIND_FULL else "")
+        s_from = start if (kind == _KIND_FILTER and use_start) else None
+        s_to = end if (kind == _KIND_FILTER and use_end) else None
         s2 = get_session()
         try:
             if g:
-                err = gp.update_group(s2, g.id, name, start if use_start else None, end if use_end else None, picked, only)
+                err = gp.update_group(s2, g.id, final_name, s_from, s_to, picked, only, trader=who)
                 new_id = g.id
             else:
-                new_id, err = gp.create_group(s2, trader, name, start if use_start else None,
-                                              end if use_end else None, picked, only)
+                new_id, err = gp.create_group(s2, owner, who, final_name, s_from, s_to, picked, only)
         finally:
             s2.close()
         if err:
             st.error(err)
         else:
-            st.session_state[f"yh_goto_{trader}"] = new_id  # 下一輪建立分頁列前再切過去（不能直接改已建立的 widget）
+            st.session_state[f"yh_goto_{owner}"] = new_id  # 下一輪建立分頁列前再切過去（不能直接改已建立的 widget）
             st.rerun()
 
 
 @st.dialog("刪除此分頁")
-def _dlg_delete_group(trader: str, g: gp.GroupSpec):
-    st.warning(f"確定刪除分頁「{g.name}」？\n\n只會刪除這個分頁的條件，**不會刪除任何交易**。")
+def _dlg_delete_group(owner: str, g: gp.GroupSpec):
+    st.warning(f"確定刪除分頁「{g.name}」？\n\n只會刪除這個分頁，**{g.trader} 的交易一筆都不會刪**。")
     c1, c2 = st.columns(2)
     if c1.button("確定刪除", type="primary", use_container_width=True):
         sess = get_session()
@@ -225,7 +265,7 @@ def _dlg_delete_group(trader: str, g: gp.GroupSpec):
             gp.delete_group(sess, g.id)
         finally:
             sess.close()
-        st.session_state[f"yh_goto_{trader}"] = gp.ALL_GROUP_ID
+        st.session_state.pop(f"yh_group_{owner}", None)   # 回到第一個分頁
         st.rerun()
     if c2.button("取消", use_container_width=True):
         st.rerun()
@@ -238,16 +278,11 @@ def _dlg_add_stock(trader: str, g: gp.GroupSpec):
                        format_func=lambda k: opts.get(k, "請選擇…") if k else "請選擇…")
     st.caption("加入後會在列表顯示一列（0 股），展開即可輸入第一筆交易。")
     if st.button("加入", type="primary", use_container_width=True, disabled=not sid):
-        if g.is_builtin:
-            st.session_state.setdefault(f"yh_extra_{trader}", [])
-            if sid not in st.session_state[f"yh_extra_{trader}"]:
-                st.session_state[f"yh_extra_{trader}"].append(sid)
-        else:
-            sess = get_session()
-            try:
-                gp.add_stock_to_group(sess, g.id, sid)
-            finally:
-                sess.close()
+        sess = get_session()
+        try:
+            gp.add_stock_to_group(sess, g.id, sid)   # 存進分頁，重整也還在
+        finally:
+            sess.close()
         st.session_state[f"yh_open_{trader}"] = sid
         st.rerun()
 
@@ -586,52 +621,49 @@ if not trader_opts:
 _def = st.session_state.get("last_user")
 if _def not in trader_opts:
     _def = resolve_default_trader(trader_opts) or trader_opts[0]
-
-top_l, top_r = st.columns([4, 1.2])
-with top_r:
-    trader = st.selectbox("買賣人", trader_opts, index=trader_opts.index(_def), key="yh_trader")
-st.session_state["last_user"] = trader
+owner = str((get_current_user() or {}).get("username") or "")
 
 sess = get_session()
 try:
-    groups = gp.list_groups(sess, trader)
+    gp.ensure_owner_groups(sess, owner, _def, can_access=can_access_trader)   # 第一次進來：建預設分頁、認領舊分頁
+    groups = gp.list_groups(sess, owner, can_access=can_access_trader)
 finally:
     sess.close()
-gkey = f"yh_group_{trader}"
+gkey = f"yh_group_{owner}"
 ids = [g.id for g in groups]
-_goto = st.session_state.pop(f"yh_goto_{trader}", None)
+_goto = st.session_state.pop(f"yh_goto_{owner}", None)
 if _goto is not None and _goto in ids:
     st.session_state[gkey] = _goto
 if st.session_state.get(gkey) not in ids:
-    st.session_state[gkey] = gp.ALL_GROUP_ID
-with top_l:
-    tc, nc = st.columns([5, 1.3], vertical_alignment="center")
-    with tc:
-        with st.container(key="yh_tabs"):
-            gid = st.radio("分頁", ids, key=gkey, horizontal=True, label_visibility="collapsed",
-                           format_func=lambda i, _n={g.id: g.name for g in groups}: _n.get(i, str(i)))
-    if nc.button("＋ 新增分頁", key="yh_new_group"):
-        _dlg_new_group(trader)
+    st.session_state[gkey] = ids[0]
+tc, nc = st.columns([6, 1.1], vertical_alignment="center")
+with tc:
+    with st.container(key="yh_tabs"):
+        gid = st.radio("分頁", ids, key=gkey, horizontal=True, label_visibility="collapsed",
+                       format_func=lambda i, _n={g.id: g.name for g in groups}: _n.get(i, str(i)))
+if nc.button("＋ 新增分頁", key="yh_new_group"):
+    _dlg_new_group(owner, trader_opts, _def)
 group = next(g for g in groups if g.id == gid)
+trader = group.trader                      # 這個分頁是誰的帳：輸入的交易記在這個人名下
+st.session_state["last_user"] = trader
 
 # 分頁操作列
 a = st.columns([1.1, 1.15, 1.15, 0.45, 0.45, 3.7], vertical_alignment="center")
 if a[0].button("新增股票", key="yh_add_stock"):
     _dlg_add_stock(trader, group)
-if not group.is_builtin:
-    if a[1].button("編輯此分頁", key="yh_edit_group"):
-        _dlg_edit_group(trader, group.id)
-    if a[2].button("刪除此分頁", key="yh_del_group"):
-        _dlg_delete_group(trader, group)
-    if a[3].button("◀", key="yh_move_l", help="分頁往左移"):
-        s_ = get_session(); gp.move_group(s_, trader, group.id, -1); s_.close(); st.rerun()
-    if a[4].button("▶", key="yh_move_r", help="分頁往右移"):
-        s_ = get_session(); gp.move_group(s_, trader, group.id, +1); s_.close(); st.rerun()
-a[5].markdown(f'<div class="yh-desc" style="text-align:right">分頁條件：{group.describe()}</div>', unsafe_allow_html=True)
+if a[1].button("編輯此分頁", key="yh_edit_group", help="改名、改成誰的帳、改日期／股票條件"):
+    _dlg_edit_group(owner, group.id, trader_opts, _def)
+if a[2].button("刪除此分頁", key="yh_del_group"):
+    _dlg_delete_group(owner, group)
+if a[3].button("◀", key="yh_move_l", help="分頁往左移"):
+    s_ = get_session(); gp.move_group(s_, owner, group.id, -1); s_.close(); st.rerun()
+if a[4].button("▶", key="yh_move_r", help="分頁往右移"):
+    s_ = get_session(); gp.move_group(s_, owner, group.id, +1); s_.close(); st.rerun()
+a[5].markdown(f'<div class="yh-desc" style="text-align:right">{group.describe()}</div>', unsafe_allow_html=True)
 
 # 計算
 g_trades = gp.filter_trades(trades, group)
-extra = list(group.stock_ids) + (st.session_state.get(f"yh_extra_{trader}", []) if group.is_builtin else [])
+extra = list(group.stock_ids)
 all_sids = sorted({str(t.stock_id).strip() for t in g_trades} | set(extra))
 quotes = get_quotes_cached(all_sids, exchanges={s: getattr(_MASTERS.get(s), "exchange", None) for s in all_sids}) if all_sids else {}
 summary = gp.summarize_group(trades, group, rules, POLICY, quotes, _MASTERS, extra_stock_ids=extra)
