@@ -54,8 +54,8 @@ render_auth_sidebar()
 
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
 # 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
-_DETAIL_COLS = [1.15, 1.05, 0.9, 0.95, 0.6, 0.6, 1.1, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
-_FORM_COLS = [1.15, 1.05, 0.9, 0.95, 0.6, 0.6, 1.1, 0.7]          # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
+_DETAIL_COLS = [1.1, 0.95, 0.95, 0.95, 0.8, 0.8, 1.2, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
+_FORM_COLS = [1.1, 0.95, 0.95, 0.95, 0.8, 0.8, 1.2, 0.7]           # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
 _ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 9 欄合成一個 HTML grid（.yh-grid）
 
 st.markdown("""
@@ -101,7 +101,9 @@ st.markdown("""
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
 .yh-td.l { text-align: left; }
 .yh-td .sub { color: #999; font-size: .85rem; }
-.yh-td.sm { font-size: .85rem; color: #777; }
+.yh-td.sm { color: #888; }
+.yh-td, .yh-th { font-variant-numeric: tabular-nums; }
+.yh-th .u { font-size: .75rem; color: #aaa; margin-left: .15rem; }
 .yh-td .unit { color: #999; font-size: .8rem; margin-left: .2rem; }
 .yh-up { color: #e0262b; } .yh-down { color: #12a150; } .yh-flat { color: #666; }
 [class*="st-key-yh_row_"] { background: #f4f5f7; border-radius: 6px; padding: .15rem .4rem; margin-bottom: .35rem; }
@@ -504,7 +506,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     st.markdown("**交易明細**")
     _dcols = _DETAIL_COLS
     hdr = st.columns(_dcols)
-    for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", "交易股數", "交易股價", "手續費", "稅", "市值"],
+    for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", '交易股數<span class="u">股</span>',
+                                  '交易股價<span class="u">元</span>', "手續費", "稅", "市值"],
                             [1, 1, 0, 0, 0, 0, 0]):
         c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
     pend_key = f"yh_del_pending_{sid}"
@@ -518,8 +521,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         c[0].markdown(f'<div class="yh-td l">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
         side_s = "買入" if is_buy else ("賣出（當沖）" if t.is_daytrade else "賣出")
         c[1].markdown(f'<div class="yh-td l">{side_s}</div>', unsafe_allow_html=True)
-        c[2].markdown(f'<div class="yh-td">{int(t.quantity):,}<span class="unit">股</span></div>', unsafe_allow_html=True)
-        c[3].markdown(f'<div class="yh-td">{float(t.price):,.2f}<span class="unit">TWD</span></div>', unsafe_allow_html=True)
+        c[2].markdown(f'<div class="yh-td">{int(t.quantity):,}</div>', unsafe_allow_html=True)
+        c[3].markdown(f'<div class="yh-td">{float(t.price):,.2f}</div>', unsafe_allow_html=True)
         c[4].markdown(f'<div class="yh-td sm">{float(t.fee or 0):,.0f}</div>', unsafe_allow_html=True)
         c[5].markdown(f'<div class="yh-td sm">{float(t.tax or 0):,.0f}</div>', unsafe_allow_html=True)
         c[6].markdown(f'<div class="yh-td">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
