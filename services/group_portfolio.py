@@ -2,7 +2,7 @@
 """股票輸入（仿 Yahoo）的分頁：存取分頁條件、依條件篩交易、計算分頁內持股與損益。
 
 分頁＝存起來的篩選條件（買賣人、日期範圍、股票清單），交易仍只有一本總帳。
-計算沿用全站同一套沖銷引擎（自定沖銷＋其餘先進先出），只是只餵「符合條件的交易」。
+計算沿用全站同一套沖銷引擎（自定沖銷＋其餘先進先出），以該買賣人全部交易配對後，只取「買進符合條件」的批次。
 規格：docs/specs/股票輸入_仿Yahoo.md
 """
 from collections import defaultdict
@@ -11,7 +11,6 @@ from datetime import date
 from typing import Dict, List, Optional, Tuple
 
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
-from services.position_cost import compute_position_and_cost_by_stock
 
 ALL_GROUP_ID = 0          # 內建「全部」分頁（不存表、不能刪）
 NAME_MAX_LEN = 20
@@ -203,48 +202,68 @@ def _is_buy(t) -> bool:
     return (getattr(t, "side", None) or "").strip().upper() in ("BUY", "配股")
 
 
-def summarize_group(trades, custom_rules, policy: str, quotes: Dict[str, dict],
+def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes: Dict[str, dict],
                     masters: dict, extra_stock_ids: Optional[List[str]] = None) -> dict:
-    """分頁內每檔的持股、均價、市值、已實現、未實現（同全站引擎），加總與「找不到買進的賣出」提示。
+    """分頁內每檔的持股、均價、底價、市值、已實現、未實現。
 
-    trades：已經依分頁條件篩好的交易。
+    口徑「以買進歸屬」（2026-10-07 Peggy 確認）：沖銷用該買賣人「全部」交易照全站引擎配對
+    （自定沖銷＋其餘先進先出），分頁只算「買進符合條件」的那幾批——
+      - 持股／均價＝這些買進批次剩下的股數與成本；
+      - 已實現＝賣出沖到這些批次的部分（不管賣出日期）；沖到分頁以外舊批次的賣出不算。
+    所以「全部」分頁與庫存損益頁同數字；「10/06 起」只看 10/06 起買進的那幾批。
+
+    trades：該買賣人的全部交易（不需先篩分頁；這裡會依 group 篩）。
     """
+    from services.trade_fees import breakeven_sell_price
+
+    trader = (group.trader or "").strip()
+    mine = [t for t in trades if (getattr(t, "user", "") or "").strip() == trader]
+    in_group = [t for t in mine if trade_in_group(t, group)]
+    group_ids = {t.id for t in in_group}
     by_stock = defaultdict(list)
-    for t in trades:
+    for t in mine:
         by_stock[str(t.stock_id).strip()].append(t)
-    pos = compute_position_and_cost_by_stock(trades, custom_rules=custom_rules, policy=policy)
-    trade_by_id = {t.id: t for t in trades}
+    n_by_stock = defaultdict(int)
+    for t in in_group:
+        n_by_stock[str(t.stock_id).strip()] += 1
+    trade_by_id = {t.id: t for t in mine}
 
     rows = []
-    unmatched_sells = []   # [(stock_id, trade_id, 找不到買進的股數)]
-    for sid in set(by_stock) | set(extra_stock_ids or []):
+    for sid in set(n_by_stock) | set(extra_stock_ids or []):
         ts = sorted(by_stock.get(sid, []), key=lambda t: (t.trade_date, t.id))
         buys = [Lot(t.id, int(t.quantity or 0), float(t.price or 0), str(t.trade_date)) for t in ts if _is_buy(t)]
         sells = [Lot(t.id, int(t.quantity or 0), float(t.price or 0), str(t.trade_date)) for t in ts if not _is_buy(t)]
         matches = compute_matches(buys, sells, policy, custom_rules=custom_rules or []) if sells else []
-        realized = sum(net_pnl_for_match(m, trade_by_id) for m in matches)
+        g_matches = [m for m in matches if m[0] in group_ids]
+        realized = sum(net_pnl_for_match(m, trade_by_id) for m in g_matches)
         realized_cost = 0.0
-        matched_by_sell = defaultdict(int)
+        matched_by_buy = defaultdict(int)
         for m in matches:
-            buy_id, sell_id, qty, bp = m[0], m[1], int(m[2]), float(m[3])
-            bt = trade_by_id.get(buy_id)
-            fee_share = float(getattr(bt, "fee", 0) or 0) * (qty / bt.quantity) if bt and bt.quantity else 0.0
-            realized_cost += bp * qty + fee_share
-            matched_by_sell[sell_id] += qty
-        for t in ts:
-            if not _is_buy(t):
-                miss = int(t.quantity or 0) - matched_by_sell.get(t.id, 0)
-                if miss > 0:
-                    unmatched_sells.append((sid, t.id, miss))
+            matched_by_buy[m[0]] += int(m[2])
+        for m in g_matches:
+            bt = trade_by_id.get(m[0])
+            qty_m = int(m[2])
+            fee_share = float(getattr(bt, "fee", 0) or 0) * (qty_m / bt.quantity) if bt and bt.quantity else 0.0
+            realized_cost += float(m[3]) * qty_m + fee_share
+        qty, cost = 0, 0.0
+        for b in buys:
+            if b.trade_id not in group_ids:
+                continue
+            rem = int(b.qty) - matched_by_buy.get(b.trade_id, 0)
+            if rem <= 0:
+                continue
+            bt = trade_by_id.get(b.trade_id)
+            fee = float(getattr(bt, "fee", 0) or 0)
+            qty += rem
+            cost += rem * float(b.price) + (fee * rem / b.qty if b.qty else 0.0)
 
-        info = pos.get(sid, {"qty": 0, "cost": 0.0})
-        qty, cost = int(info["qty"]), float(info["cost"])
         q = quotes.get(sid) or {}
         avg = cost / qty if qty else 0.0
         price = float(q["price"]) if q.get("price") else (avg if qty else 0.0)
         mv = price * qty
         unrealized = (price - avg) * qty if qty else 0.0
         m = masters.get(sid)
+        is_etf = bool(getattr(m, "is_etf", False)) if m else False
         rows.append({
             "stock_id": sid,
             "name": (getattr(m, "name", None) or sid) if m else sid,
@@ -255,13 +274,14 @@ def summarize_group(trades, custom_rules, policy: str, quotes: Dict[str, dict],
             "qty": qty,
             "avg_cost": avg,
             "cost": cost,
+            "breakeven": breakeven_sell_price(cost, qty, is_etf=is_etf) if qty else None,
             "market_value": mv,
             "realized": realized,
             "realized_pct": (realized / realized_cost * 100) if realized_cost else None,
-            "has_realized": bool(matches),
+            "has_realized": bool(g_matches),
             "unrealized": unrealized,
             "unrealized_pct": (unrealized / cost * 100) if qty and cost else None,
-            "n_trades": len(ts),
+            "n_trades": n_by_stock.get(sid, 0),
         })
     rows.sort(key=lambda r: (-r["market_value"], -r["n_trades"], r["stock_id"]))
 
@@ -280,7 +300,6 @@ def summarize_group(trades, custom_rules, policy: str, quotes: Dict[str, dict],
         "unrealized_pct": (tot_unreal / tot_cost * 100) if tot_cost else None,
         "realized": tot_real,
         "realized_pct": (tot_real / tot_real_cost * 100) if tot_real_cost else None,
-        "unmatched_sells": unmatched_sells,
     }
 
 

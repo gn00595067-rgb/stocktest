@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""股票輸入（仿 Yahoo）分頁：條件篩選、分頁內損益、找不到買進的賣出、分頁存取、防呆。"""
+"""股票輸入（仿 Yahoo）分頁：條件篩選、分頁內損益（以買進歸屬）、分頁存取、防呆。"""
 from datetime import date
 from types import SimpleNamespace as T
 
@@ -36,26 +36,41 @@ def test_filter_by_trader_date_and_list():
 
 def test_all_group_matches_full_engine():
     g = gp.builtin_all_group("雅雲姐")
-    s = gp.summarize_group(gp.filter_trades(TRADES, g), [], "CUSTOM_PLUS_FIFO", {"2330": {"price": 1300}}, {})
+    s = gp.summarize_group(TRADES, g, [], "CUSTOM_PLUS_FIFO", {"2330": {"price": 1300}}, {})
     r = {x["stock_id"]: x for x in s["rows"]}
     assert r["2330"]["qty"] == 1000 and r["2330"]["avg_cost"] == pytest.approx(1100)   # FIFO 先沖 9/30 那批
     assert r["2330"]["realized"] == pytest.approx(200 * 1000)
     assert r["2330"]["realized_pct"] == pytest.approx(20.0)
     assert r["2330"]["unrealized"] == pytest.approx(200 * 1000)
-    assert s["unmatched_sells"] == []
+    assert r["2330"]["breakeven"] is not None and r["2330"]["breakeven"] >= 1100
+    assert "2327" in r and r["2327"]["qty"] == 2000   # 別的買賣人（Peggy姐 那 500 股）不算進來
 
 
-def test_start_date_group_flags_unmatched_sell():
-    """1001 起的分頁：10/02 的賣出在分頁內只沖得到 10/01 那批 → 不缺；改成賣 2000 股就會缺 1000 股。"""
-    trades = TRADES[:2] + [t(3, "2330", date(2026, 10, 2), "SELL", 2000, 1200)] + TRADES[3:]
+def test_start_date_group_counts_by_buy_lot():
+    """以買進歸屬：10/01 起的分頁只算 10/01 起買進的批次。
+
+    FIFO 下 10/02 賣出沖到的是 9/30 那批（分頁外）→ 分頁內已實現 0，10/01 那批 1000 股仍在。
+    """
     g = gp.GroupSpec(id=1, trader="雅雲姐", name="1001起", start_date=date(2026, 10, 1))
-    s = gp.summarize_group(gp.filter_trades(trades, g), [], "CUSTOM_PLUS_FIFO", {}, {})
-    assert s["unmatched_sells"] == [("2330", 3, 1000)]
+    s = gp.summarize_group(TRADES, g, [], "CUSTOM_PLUS_FIFO", {}, {})
+    r = {x["stock_id"]: x for x in s["rows"]}
+    assert r["2330"]["qty"] == 1000 and r["2330"]["avg_cost"] == pytest.approx(1100)
+    assert r["2330"]["realized"] == 0 and not r["2330"]["has_realized"]
+    assert r["2330"]["n_trades"] == 2   # 分頁內列出的交易：10/01 買、10/02 賣
+    # 自定沖銷改沖 10/01 那批 → 算進分頁的已實現
+    s = gp.summarize_group(TRADES, g, [(3, 2, 1000)], "CUSTOM_PLUS_FIFO", {}, {})
+    r = {x["stock_id"]: x for x in s["rows"]}
+    assert r["2330"]["qty"] == 0 and r["2330"]["realized"] == pytest.approx(100 * 1000)
+    # 賣出日在分頁結束日之後也算（沖到的是分頁內的買進）
+    later = TRADES + [t(6, "2327", date(2026, 12, 1), "SELL", 2000, 650)]
+    g2 = gp.GroupSpec(id=2, trader="雅雲姐", name="10月", start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))
+    r = {x["stock_id"]: x for x in gp.summarize_group(later, g2, [], "CUSTOM_PLUS_FIFO", {}, {})["rows"]}
+    assert r["2327"]["qty"] == 0 and r["2327"]["realized"] == pytest.approx(50 * 2000)
 
 
 def test_extra_listed_stock_shows_zero_row():
     g = gp.builtin_all_group("雅雲姐")
-    s = gp.summarize_group(gp.filter_trades(TRADES, g), [], "CUSTOM_PLUS_FIFO", {}, {}, extra_stock_ids=["2454"])
+    s = gp.summarize_group(TRADES, g, [], "CUSTOM_PLUS_FIFO", {}, {}, extra_stock_ids=["2454"])
     r = {x["stock_id"]: x for x in s["rows"]}
     assert r["2454"]["qty"] == 0 and r["2454"]["n_trades"] == 0
 

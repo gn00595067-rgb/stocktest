@@ -48,9 +48,10 @@ login_guard()
 render_auth_sidebar()
 
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
-# 欄寬：展開鈕｜股名/股號｜股價/漲跌｜持有股數｜持股成本均價｜市值｜已實現｜未實現｜交易筆數
-_COLS = [0.35, 1.3, 1.25, 1.0, 1.15, 1.35, 1.35, 1.35, 0.7]
-_ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 8 欄合成一個 HTML grid
+# 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
+_DETAIL_COLS = [1.15, 0.85, 0.9, 0.9, 0.6, 0.6, 1.2, 0.3, 0.3]   # 最後兩欄＝✏️、🗑
+_FORM_COLS = [1.15, 0.85, 0.9, 0.9, 0.6, 0.6, 1.2, 0.6]          # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
+_ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 9 欄合成一個 HTML grid（.yh-grid）
 
 st.markdown("""
 <style>
@@ -71,6 +72,7 @@ st.markdown("""
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
 .yh-td.l { text-align: left; }
 .yh-td .sub { color: #999; font-size: .85rem; }
+.yh-td.sm { font-size: .85rem; color: #777; }
 .yh-td .unit { color: #999; font-size: .8rem; margin-left: .2rem; }
 .yh-up { color: #e0262b; } .yh-down { color: #12a150; } .yh-flat { color: #666; }
 [class*="st-key-yh_row_"] { background: #f4f5f7; border-radius: 6px; padding: .15rem .4rem; margin-bottom: .35rem; }
@@ -80,7 +82,7 @@ st.markdown("""
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepUp"] { display: none; }
 .yh-desc { color: #888; font-size: .9rem; }
 /* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多 */
-.yh-grid { display: grid; grid-template-columns: 1.3fr 1.25fr 1fr 1.15fr 1.35fr 1.35fr 1.35fr 0.7fr;
+.yh-grid { display: grid; grid-template-columns: 1.2fr 1.15fr .9fr 1.05fr 1.05fr 1.25fr 1.25fr 1.25fr 0.6fr;
            align-items: center; column-gap: .8rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -357,46 +359,86 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     st.markdown("**新增交易**")
     n = st.session_state.get(f"yh_form_n_{sid}", 0)
     k = f"yh_new_{sid}_{n}"
-    f = st.columns([1.4, 1.1, 1.0, 1.0, 1.3, 0.5])
-    d = f[0].date_input("交易日期", value=date.today(), key=f"{k}_d", format="YYYY/MM/DD", label_visibility="collapsed")
-    side = f[1].selectbox("買/賣", ["BUY", "SELL"], key=f"{k}_s", label_visibility="collapsed",
-                          format_func=lambda x: "買入" if x == "BUY" else "賣出")
-    qty = f[2].number_input("股數", min_value=0, value=None, step=1000, key=f"{k}_q",
-                            placeholder="股數", label_visibility="collapsed")
-    price = f[3].number_input("股價", min_value=0.0, value=None, step=0.05, format="%.2f", key=f"{k}_p",
-                              placeholder="股價", label_visibility="collapsed")
-    errors, warns = gp.validate_new_trade(
-        side, qty, price, (quote or {}).get("prev_close"), holding_qty, is_today=(d == date.today()),
-    )
-    if not gp.trade_in_group(_NS(user=group.trader, trade_date=d, stock_id=sid), group):
-        warns.append(f"這筆的日期或股票不在分頁「{group.name}」的條件內，送出後不會出現在此分頁（其他分頁仍看得到）。")
-    if qty and price and not [e for e in errors if "請輸入" in e]:
-        is_etf = bool(getattr(_MASTERS.get(sid), "is_etf", False))
-        fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=False)
-        tax = tax if side == "SELL" else 0.0
-        f[4].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
-                      f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}</span></div>', unsafe_allow_html=True)
-    else:
+    rows_key = f"{k}_rows"          # 買入可多列一次送出；賣出一次一筆（要配沖銷）
+    if rows_key not in st.session_state:
+        st.session_state[rows_key] = [0]
+    row_ids = st.session_state[rows_key]
+    is_etf = bool(getattr(_MASTERS.get(sid), "is_etf", False))
+    prev_close = (quote or {}).get("prev_close")
+    side, entries = "BUY", []
+    for i, rid in enumerate(row_ids):
+        if i > 0 and side == "SELL":
+            break
+        rk = f"{k}_{rid}"
+        f = st.columns(_FORM_COLS)
+        d0 = st.session_state.get(f"{k}_{row_ids[i - 1]}_d", date.today()) if i else date.today()
+        d = f[0].date_input("交易日期", value=d0, key=f"{rk}_d", format="YYYY/MM/DD", label_visibility="collapsed")
+        if i == 0:
+            side = f[1].selectbox("買/賣", ["BUY", "SELL"], key=f"{k}_s", label_visibility="collapsed",
+                                  format_func=lambda x: "買入" if x == "BUY" else "賣出")
+        else:
+            f[1].markdown('<div class="yh-td l">買入</div>', unsafe_allow_html=True)
+        qty = f[2].number_input("股數", min_value=0, value=None, step=1000, key=f"{rk}_q",
+                                placeholder="股數", label_visibility="collapsed")
+        price = f[3].number_input("股價", min_value=0.0, value=None, step=0.05, format="%.2f", key=f"{rk}_p",
+                                  placeholder="股價", label_visibility="collapsed")
+        is_dt = False
+        if side == "SELL":
+            is_dt = f[7].checkbox("當沖", key=f"{rk}_dt", help="當沖賣出：證交稅減半")
+        elif i > 0 and f[7].button("✕", key=f"{rk}_x", help="移除這一列"):
+            row_ids.remove(rid)
+            _rerun_fragment()
+        if i > 0 and not qty and not price:
+            continue   # 多出來的空白列：略過
+        errors, warns = gp.validate_new_trade(side, qty, price, prev_close, holding_qty, is_today=(d == date.today()))
+        if not gp.trade_in_group(_NS(user=group.trader, trade_date=d, stock_id=sid), group):
+            warns.append(f"日期或股票不在分頁「{group.name}」的條件內，送出後不會算進此分頁（其他分頁仍看得到）。")
         fee = tax = 0.0
-    match_plan = []
-    if side == "SELL" and qty and price and not errors:
-        match_plan, match_err = _sell_match_ui(sid, group.trader, int(qty), float(price), fee, tax, k)
+        if qty and price and not [e for e in errors if "請輸入" in e]:
+            fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=is_dt)
+            tax = tax if side == "SELL" else 0.0
+            f[4].markdown(f'<div class="yh-td sm">{fee:,.0f}</div>', unsafe_allow_html=True)
+            f[5].markdown(f'<div class="yh-td sm">{tax:,.0f}</div>', unsafe_allow_html=True)
+            f[6].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}</div>', unsafe_allow_html=True)
+        entries.append(dict(d=d, qty=qty, price=price, is_dt=is_dt, fee=fee, tax=tax, errors=errors, warns=warns))
+    if side == "BUY":
+        if st.button("＋ 再加一筆買入", key=f"{k}_addrow", help="一次輸入多筆買入，最後一起送出"):
+            row_ids.append(max(row_ids) + 1)
+            _rerun_fragment()
+    elif len(row_ids) > 1:
+        st.caption("賣出一次一筆（要配沖銷）；其他買入列先藏起來，切回「買入」就會出現。")
+
+    multi = len(entries) > 1
+    e0 = entries[0]
+    match_plan, errors, warns = [], [], []
+    for j, e in enumerate(entries):
+        pre = f"第 {j + 1} 筆：" if multi else ""
+        errors += [pre + x for x in e["errors"] if not ("請輸入" in x and not (e["qty"] or e["price"]))]
+        warns += [pre + x for x in e["warns"]]
+    filled = all(e["qty"] and e["price"] for e in entries)
+    if side == "SELL" and e0["qty"] and e0["price"] and not e0["errors"]:
+        match_plan, match_err = _sell_match_ui(sid, group.trader, int(e0["qty"]), float(e0["price"]),
+                                               e0["fee"], e0["tax"], k)
         if match_err:
             errors.append(match_err)
-    shown_errors = [e for e in errors if not ("請輸入" in e and not (qty or price))]
-    for e in shown_errors:
-        if e not in ("這一檔目前沒有可沖銷的買進庫存。",) and not e.startswith(("沖銷股數合計", "買進 ID")):
+    for e in errors:
+        if not e.endswith("這一檔目前沒有可沖銷的買進庫存。") and not e.startswith(("沖銷股數合計", "買進 ID")):
             st.error(e)
     ok_warn = True
-    if warns and not errors:
+    if warns and not errors and filled:
         for w in warns:
             st.warning(w)
         ok_warn = st.checkbox("我確認以上沒問題", key=f"{k}_ack")
-    can_send = (not errors) and ok_warn and bool(qty) and bool(price)
-    label = (f"✅ 確認新增：{'買入' if side == 'BUY' else '賣出'} {int(qty or 0):,} 股 @ {float(price or 0):,.2f}"
-             if qty and price else "✅ 新增交易")
+    can_send = (not errors) and ok_warn and filled
+    if can_send and multi:
+        label = f"✅ 確認新增 {len(entries)} 筆買入（共 {sum(int(e['qty']) for e in entries):,} 股）"
+    elif can_send:
+        label = (f"✅ 確認新增：{'買入' if side == 'BUY' else '賣出'}{'（當沖）' if e0['is_dt'] else ''} "
+                 f"{int(e0['qty']):,} 股 @ {float(e0['price']):,.2f}")
+    else:
+        label = "✅ 新增交易"
     if st.button(label, key=f"{k}_go", type="primary", disabled=not can_send):
-        sig = (group.trader, sid, str(d), side, int(qty), float(price))
+        sig = (group.trader, sid, side, tuple((str(e["d"]), int(e["qty"]), float(e["price"])) for e in entries))
         last = st.session_state.get("yh_last_submit")
         if last and last[0] == sig and time.monotonic() - last[1] < 2.0:
             st.warning("偵測到快速重複送出，已忽略這一次（避免重複記錄）。")
@@ -406,13 +448,16 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             st.session_state["yh_last_submit"] = (sig, time.monotonic())
             sess = get_session()
             try:
-                new_t = Trade(user=group.trader, stock_id=sid, trade_date=d, side=side, price=float(price),
-                              quantity=int(qty), is_daytrade=False, fee=fee, tax=tax)
-                sess.add(new_t)
-                sess.flush()
-                if side == "SELL":   # 賣出：照上面配好的批次寫自定沖銷規則（與交易同一筆存檔）
-                    for buy_id, mq in match_plan:
-                        sess.add(CustomMatchRule(sell_trade_id=new_t.id, buy_trade_id=int(buy_id), matched_qty=int(mq)))
+                for e in entries:   # 多筆買入同一次存檔：要嘛全成功、要嘛全不存
+                    new_t = Trade(user=group.trader, stock_id=sid, trade_date=e["d"], side=side,
+                                  price=float(e["price"]), quantity=int(e["qty"]), is_daytrade=e["is_dt"],
+                                  fee=e["fee"], tax=e["tax"])
+                    sess.add(new_t)
+                    sess.flush()
+                    if side == "SELL":   # 賣出：照上面配好的批次寫自定沖銷規則（與交易同一筆存檔）
+                        for buy_id, mq in match_plan:
+                            sess.add(CustomMatchRule(sell_trade_id=new_t.id, buy_trade_id=int(buy_id),
+                                                     matched_qty=int(mq)))
                 sess.commit()
             except Exception as e:
                 sess.rollback()
@@ -424,9 +469,10 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             st.rerun()   # 整頁：持股、均價、總覽一起更新
 
     st.markdown("**交易明細**")
-    _dcols = [1.4, 1.1, 1.0, 1.0, 1.3, 0.25, 0.25]   # 最後兩欄＝✏️、🗑（合起來同上面新增列的寬度）
+    _dcols = _DETAIL_COLS
     hdr = st.columns(_dcols)
-    for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", "交易股數", "交易股價", "市值", ""], [1, 1, 0, 0, 0, 0]):
+    for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", "交易股數", "交易股價", "手續費", "稅", "市值"],
+                            [1, 1, 0, 0, 0, 0, 0]):
         c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
     pend_key = f"yh_del_pending_{sid}"
     edit_key = f"yh_edit_pending_{sid}"
@@ -436,15 +482,18 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         c = st.columns(_dcols)
         is_buy = str(t.side).upper() == "BUY"
         c[0].markdown(f'<div class="yh-td l">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
-        c[1].markdown(f'<div class="yh-td l">{"買入" if is_buy else "賣出"}</div>', unsafe_allow_html=True)
+        side_s = "買入" if is_buy else ("賣出（當沖）" if t.is_daytrade else "賣出")
+        c[1].markdown(f'<div class="yh-td l">{side_s}</div>', unsafe_allow_html=True)
         c[2].markdown(f'<div class="yh-td">{int(t.quantity):,}<span class="unit">股</span></div>', unsafe_allow_html=True)
         c[3].markdown(f'<div class="yh-td">{float(t.price):,.2f}<span class="unit">TWD</span></div>', unsafe_allow_html=True)
-        c[4].markdown(f'<div class="yh-td">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
-        if c[5].button("✏️", key=f"yh_ed_{t.id}", help="修改這筆交易（日期、股數、股價）"):
+        c[4].markdown(f'<div class="yh-td sm">{float(t.fee or 0):,.0f}</div>', unsafe_allow_html=True)
+        c[5].markdown(f'<div class="yh-td sm">{float(t.tax or 0):,.0f}</div>', unsafe_allow_html=True)
+        c[6].markdown(f'<div class="yh-td">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
+        if c[7].button("✏️", key=f"yh_ed_{t.id}", help="修改這筆交易（日期、股數、股價）"):
             st.session_state[edit_key] = t.id
             st.session_state.pop(pend_key, None)
             _rerun_fragment()
-        if c[6].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
+        if c[8].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
             st.session_state[pend_key] = t.id
             st.session_state.pop(edit_key, None)
             _rerun_fragment()
@@ -545,7 +594,7 @@ g_trades = gp.filter_trades(trades, group)
 extra = list(group.stock_ids) + (st.session_state.get(f"yh_extra_{trader}", []) if group.is_builtin else [])
 all_sids = sorted({str(t.stock_id).strip() for t in g_trades} | set(extra))
 quotes = get_quotes_cached(all_sids, exchanges={s: getattr(_MASTERS.get(s), "exchange", None) for s in all_sids}) if all_sids else {}
-summary = gp.summarize_group(g_trades, rules, POLICY, quotes, _MASTERS, extra_stock_ids=extra)
+summary = gp.summarize_group(trades, group, rules, POLICY, quotes, _MASTERS, extra_stock_ids=extra)
 trader_trades = [t for t in trades if (t.user or "").strip() == trader]
 trader_pos = compute_position_and_cost_by_stock(trader_trades, custom_rules=rules, policy=POLICY)
 
@@ -567,12 +616,6 @@ if rc2.button("🔄 更新股價", key="yh_refresh"):
     clear_quote_cache()
     st.rerun()
 
-if summary["unmatched_sells"]:
-    n_sh = sum(x[2] for x in summary["unmatched_sells"])
-    sids = "、".join(sorted({x[0] for x in summary["unmatched_sells"]}))
-    st.info(f"ℹ️ 此分頁有 {len(summary['unmatched_sells'])} 筆賣出（{sids}，共 {n_sh:,} 股）在分頁內找不到對應買進"
-            "（多半是買在分頁起始日之前），這些股數不計入此分頁的已實現損益。")
-
 # 持股表（fragment）：展開／收合、在展開區輸入都只重畫這張表；送出或刪除成功才整頁更新
 @st.fragment
 def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
@@ -580,8 +623,8 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
     h0, h1 = st.columns(_ROW_COLS)
     h1.markdown('<div class="yh-grid">' + "".join(
         f'<div class="yh-th{" l" if left else ""}">{lab}</div>'
-        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "市值", "已實現損益", "未實現損益", "交易筆數"],
-                             [1, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
+        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "賣出平本底價", "市值", "已實現損益", "未實現損益", "交易筆數"],
+                             [1, 0, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
 
     open_key = f"yh_open_{trader}"
     trades_by_sid = {}
@@ -608,12 +651,14 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
                 price_html = '<div class="yh-td">-</div>'
             avg_s = f"{r['avg_cost']:,.2f}" if r["qty"] else "-"
             mv_s = f"{r['market_value']:,.2f}" if r["qty"] else "-"
+            be_s = f"{r['breakeven']:,.2f}" if r["qty"] and r.get("breakeven") else "-"
             c1.markdown(
                 '<div class="yh-grid">'
                 f'<div class="yh-td l"><b>{r["name"]}</b><br><span class="sub">{sid}{suffix}</span></div>'
                 + price_html
                 + f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span></div>'
                 + f'<div class="yh-td">{avg_s}<span class="unit">TWD</span></div>'
+                + f'<div class="yh-td">{be_s}<span class="unit">TWD</span></div>'
                 + f'<div class="yh-td">{mv_s}</div>'
                 + _pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"])
                 + _pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"]))
