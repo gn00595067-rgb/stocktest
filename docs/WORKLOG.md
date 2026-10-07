@@ -331,3 +331,9 @@
 **驗證**：`pytest` 115 passed（改寫以買進歸屬的測試：FIFO 沖到舊批次不算、自定沖銷沖到分頁批次要算、賣出晚於結束日也算）；AppTest 暫存副本實跑：兩列買入一次存 2 筆、當沖賣出稅 0.15%＋沖銷規則一起寫入、底價欄與明細手續費欄有顯示。
 
 **下一步**：請 Peggy 看 10/06 起分頁的數字是否符合預期；當沖時沖銷配對要不要預設只配同一天的買進，再問。
+
+## 2026-10-07 — 修：仿Yahoo 頁部署後 TypeError（summarize_group 參數錯位）
+
+**做了什麼**：頁面載入時檢查 `gp.summarize_group` 簽名／`validate_edit_trade` 是否存在，不對就 `importlib.reload(gp)`。
+**為什麼**：Streamlit Cloud 拉新程式後只重跑頁面，記憶體裡的 `services.group_portfolio` 還是舊版（舊簽名沒有 `group`），7 個位置參數塞進 6 個 → `got multiple values for argument 'extra_stock_ids'`。
+**下一步**：部署後若仍報錯，到 Manage app → Reboot。之後改 services 簽名時要記得這個地雷。

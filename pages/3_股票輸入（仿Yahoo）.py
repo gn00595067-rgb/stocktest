@@ -39,6 +39,11 @@ from services.trade_entry_service import (
 import pandas as pd
 from services.mobile_ui import inject_mobile_css
 import services.group_portfolio as gp
+import importlib
+import inspect
+# Streamlit Cloud 部署後只重跑頁面、不一定重載 services 模組：簽名不對就是舊版，強制重載一次
+if "group" not in inspect.signature(gp.summarize_group).parameters or not hasattr(gp, "validate_edit_trade"):
+    gp = importlib.reload(gp)
 
 st.set_page_config(page_title="股票輸入（仿Yahoo）", layout="wide")
 _PAGE_T0 = time.monotonic()
