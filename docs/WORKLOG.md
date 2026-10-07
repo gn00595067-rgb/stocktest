@@ -337,3 +337,10 @@
 **做了什麼**：頁面載入時檢查 `gp.summarize_group` 簽名／`validate_edit_trade` 是否存在，不對就 `importlib.reload(gp)`。
 **為什麼**：Streamlit Cloud 拉新程式後只重跑頁面，記憶體裡的 `services.group_portfolio` 還是舊版（舊簽名沒有 `group`），7 個位置參數塞進 6 個 → `got multiple values for argument 'extra_stock_ids'`。
 **下一步**：部署後若仍報錯，到 Manage app → Reboot。之後改 services 簽名時要記得這個地雷。
+
+## 2026-10-07 — 仿Yahoo 總覽卡重排（任何寬度都整齊）
+
+**做了什麼**：總覽卡改成 CSS grid＋container query——寬：市值｜已實現｜未實現三格並排；中等寬：市值一整行、兩個損益並排；手機：上下排。數字不換行、字級依寬度縮放；「＋ 新增分頁」「更新股價」按鈕文字不再折行。
+**為什麼**：Peggy 截圖：卡片在中等寬度時用 flex-wrap 把「未實現」擠到第二行左邊，按鈕文字被折成兩行，很醜。
+**驗證**：Chrome headless 截圖 1400／1100（含側邊欄）／460 寬三種排版都整齊；AppTest 頁面無例外；pytest 115 passed。
+**下一步**：請 Peggy 看各裝置是否 OK。

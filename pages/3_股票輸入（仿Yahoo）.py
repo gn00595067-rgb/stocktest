@@ -67,11 +67,30 @@ st.markdown("""
 .st-key-yh_tabs div[role="radiogroup"] label p { font-size: 1.15rem; font-weight: 600; color: #555; }
 .st-key-yh_tabs div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #222; }
 .st-key-yh_tabs div[role="radiogroup"] label:has(input:checked) p { color: #111; }
-.yh-card { border: 1px solid #e5e5e5; border-radius: 8px; padding: 1.1rem 1.5rem; display: flex; align-items: center; gap: 2.5rem; flex-wrap: wrap; }
-.yh-card .lbl { color: #777; font-size: .95rem; }
-.yh-card .big { font-size: 2.3rem; font-weight: 800; color: #111; }
-.yh-card .mid { font-size: 1.6rem; font-weight: 700; }
-.yh-card .sep { width: 1px; align-self: stretch; background: #ddd; }
+.yh-card { border: 1px solid #e5e5e5; border-radius: 10px; display: grid;
+           grid-template-columns: 1.3fr 1fr 1fr; overflow: hidden; }
+/* 總覽卡：三格等高、標題在上數字在下；數字不換行、字級隨寬度縮放，窄螢幕改成上下排 */
+.yh-card .cell { padding: 1rem 1.5rem; min-width: 0; }
+.yh-card .cell + .cell { border-left: 1px solid #eee; }
+.yh-card .lbl { color: #777; font-size: .9rem; margin-bottom: .25rem; white-space: nowrap; }
+.yh-card .val { font-weight: 800; line-height: 1.15; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.yh-card .big { font-size: clamp(1.5rem, 2.6vw, 2.3rem); color: #111; }
+.yh-card .mid { font-size: clamp(1.2rem, 1.9vw, 1.65rem); }
+.yh-card .unit, .yh-card .pct { font-size: .9rem; font-weight: 600; margin-left: .3rem; }
+.yh-card .unit { color: #999; }
+.yh-cardwrap { container-type: inline-size; }
+@container (max-width: 820px) {   /* 中等寬：市值一整行，兩個損益並排 */
+  .yh-card { grid-template-columns: 1fr 1fr; }
+  .yh-card .cell:first-child { grid-column: 1 / -1; border-bottom: 1px solid #eee; }
+  .yh-card .cell:nth-child(2) { border-left: none; }
+  .yh-card .cell { padding: .8rem 1.1rem; }
+}
+@container (max-width: 480px) {   /* 手機：全部上下排 */
+  .yh-card { grid-template-columns: 1fr; }
+  .yh-card .cell + .cell { border-left: none; }
+  .yh-card .cell:nth-child(3) { border-top: 1px solid #eee; }
+}
+.st-key-yh_new_group button p, .st-key-yh_refresh button p { white-space: nowrap; }
 .yh-th { color: #888; font-size: .9rem; text-align: right; }
 .yh-th.l { text-align: left; }
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
@@ -570,7 +589,7 @@ if _goto is not None and _goto in ids:
 if st.session_state.get(gkey) not in ids:
     st.session_state[gkey] = gp.ALL_GROUP_ID
 with top_l:
-    tc, nc = st.columns([6, 1])
+    tc, nc = st.columns([5, 1.3], vertical_alignment="center")
     with tc:
         with st.container(key="yh_tabs"):
             gid = st.radio("分頁", ids, key=gkey, horizontal=True, label_visibility="collapsed",
@@ -606,14 +625,16 @@ trader_pos = compute_position_and_cost_by_stock(trader_trades, custom_rules=rule
 # 總覽卡
 rp, up = summary["realized_pct"], summary["unrealized_pct"]
 st.markdown(f"""
-<div class="yh-card">
-  <div><span class="lbl">持有股票市值</span>&nbsp;&nbsp;<span class="big">${summary['market_value']:,.0f}</span> <span class="lbl">TWD</span></div>
-  <div class="sep"></div>
-  <div><div class="lbl">已實現損益</div><div class="mid {_cls(summary['realized'])}">{_arrow(summary['realized'])}{abs(summary['realized']):,.2f}{f" ({abs(rp):.2f}%)" if rp is not None else ""}</div></div>
-  <div><div class="lbl">未實現損益</div><div class="mid {_cls(summary['unrealized'])}">{_arrow(summary['unrealized'])}{abs(summary['unrealized']):,.2f}{f" ({abs(up):.2f}%)" if up is not None else ""}</div></div>
-</div>
+<div class="yh-cardwrap"><div class="yh-card">
+  <div class="cell"><div class="lbl">持有股票市值</div>
+    <div class="val big">${summary['market_value']:,.0f}<span class="unit">TWD</span></div></div>
+  <div class="cell"><div class="lbl">已實現損益</div>
+    <div class="val mid {_cls(summary['realized'])}">{_arrow(summary['realized'])}{abs(summary['realized']):,.2f}<span class="pct">{f"({abs(rp):.2f}%)" if rp is not None else ""}</span></div></div>
+  <div class="cell"><div class="lbl">未實現損益</div>
+    <div class="val mid {_cls(summary['unrealized'])}">{_arrow(summary['unrealized'])}{abs(summary['unrealized']):,.2f}<span class="pct">{f"({abs(up):.2f}%)" if up is not None else ""}</span></div></div>
+</div></div>
 """, unsafe_allow_html=True)
-rc1, rc2 = st.columns([5, 1])
+rc1, rc2 = st.columns([5, 1], vertical_alignment="center")
 from datetime import datetime, timezone, timedelta
 _tw = datetime.now(timezone(timedelta(hours=8)))
 rc1.caption(f"畫面更新：{_tw:%H:%M:%S}（台灣時間）・紅▲賺、綠▼賠・盤中股價約 20 秒更新一次")
