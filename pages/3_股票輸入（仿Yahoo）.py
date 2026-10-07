@@ -253,7 +253,7 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
     # 方式、範圍、股數、價格一改就換 key：表格回到新的預設配對
     edited = st.data_editor(
         df, key=f"{k}_mx_{method}_{tmode}_{qty}_{price}", hide_index=True, use_container_width=True,
-        height=min(35 * (len(df) + 1) + 3, 320), num_rows="fixed",
+        height=35 * (len(df) + 1) + 3, num_rows="fixed",   # 全部展開不留捲軸，一眼看完庫存
         column_config={
             "買進ID": st.column_config.NumberColumn(disabled=True, width="small"),
             "買進日": st.column_config.TextColumn(disabled=True),
@@ -276,6 +276,78 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
         st.success(f"已配 {total:,} / {qty:,} 股　預估這筆已實現淨損益："
                    f"{'▲' if est > 0 else ('▼' if est < 0 else '')}{abs(est):,.0f} 元")
     return final, err
+
+
+def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
+    """交易明細的「✏️ 修改」：改日期／股數／股價。買賣方向不給改（要改請刪掉重 key）。
+
+    股數或股價有改 → 手續費／稅依費率重算；股數有改 → 這筆的自定沖銷配對清掉，改回預設沖銷（同舊頁口徑）。
+    """
+    is_buy = str(t.side).upper() == "BUY"
+    side = "BUY" if is_buy else "SELL"
+    old_qty, old_price = int(t.quantity), float(t.price)
+    k = f"yh_edf_{t.id}"
+    with st.container(border=True):
+        st.markdown(f"**修改這筆{'買入' if is_buy else '賣出'}**（ID {t.id}）")
+        f = st.columns([1.4, 1.0, 1.0, 1.6])
+        d = f[0].date_input("交易日期", value=t.trade_date, key=f"{k}_d", format="YYYY/MM/DD")
+        qty = f[1].number_input("股數", min_value=0, value=old_qty, step=1000, key=f"{k}_q")
+        price = f[2].number_input("股價", min_value=0.0, value=old_price, step=0.05, format="%.2f", key=f"{k}_p")
+        errors, warns = gp.validate_edit_trade(
+            side, old_qty, qty, price, (quote or {}).get("prev_close"), holding_qty,
+            is_today=(d == date.today() and (d != t.trade_date or float(price or 0) != old_price)),
+        )
+        changed_core = bool(qty) and int(qty) != old_qty
+        changed_amt = changed_core or (bool(price) and abs(float(price) - old_price) > 1e-9)
+        if changed_amt and not errors:
+            is_etf = bool(getattr(_MASTERS.get(t.stock_id), "is_etf", False))
+            fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=bool(t.is_daytrade))
+            tax = tax if side == "SELL" else 0.0
+            f[3].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
+                          f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}（重算）</span></div>',
+                          unsafe_allow_html=True)
+        else:
+            fee, tax = float(t.fee or 0), float(t.tax or 0)
+        n_rules = sum(1 for s_id, b_id, _ in rules if s_id == t.id or b_id == t.id)
+        if changed_core and n_rules:
+            warns.append(f"股數有改，這筆原本的 {n_rules} 筆沖銷配對會清除，改用預設沖銷（自定沖銷＋其餘先進先出）。"
+                         "要指定配對請改完到「自定沖銷設定」。")
+        for e in errors:
+            st.error(e)
+        ok = True
+        if warns and not errors:
+            for w in warns:
+                st.warning(w)
+            ok = st.checkbox("我確認以上沒問題", key=f"{k}_ack")
+        dirty = d != t.trade_date or changed_amt
+        b1, b2, _ = st.columns([1, 1, 3])
+        if b1.button("💾 儲存修改", key=f"{k}_save", type="primary", disabled=bool(errors) or not ok or not dirty):
+            if not can_access_trader(t.user):
+                st.error("無此買賣人權限。")
+                return
+            sess = get_session()
+            try:
+                row = sess.query(Trade).filter(Trade.id == t.id).first()
+                if row is None:
+                    st.error("找不到這筆交易（可能已被刪除），請重新整理。")
+                    return
+                row.trade_date, row.quantity, row.price = d, int(qty), float(price)
+                row.fee, row.tax = fee, tax
+                if changed_core:
+                    sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == t.id).delete()
+                    sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == t.id).delete()
+                sess.commit()
+            except Exception as e:
+                sess.rollback()
+                st.error(f"存檔失敗：{e}")
+                return
+            finally:
+                sess.close()
+            st.session_state.pop(edit_key, None)
+            st.rerun()   # 整頁：持股、均價、總覽一起更新
+        if b2.button("取消", key=f"{k}_no"):
+            st.session_state.pop(edit_key, None)
+            _rerun_fragment()
 
 
 def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict):
@@ -352,23 +424,32 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             st.rerun()   # 整頁：持股、均價、總覽一起更新
 
     st.markdown("**交易明細**")
-    hdr = st.columns([1.4, 1.1, 1.0, 1.0, 1.3, 0.5])
+    _dcols = [1.4, 1.1, 1.0, 1.0, 1.3, 0.25, 0.25]   # 最後兩欄＝✏️、🗑（合起來同上面新增列的寬度）
+    hdr = st.columns(_dcols)
     for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", "交易股數", "交易股價", "市值", ""], [1, 1, 0, 0, 0, 0]):
         c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
     pend_key = f"yh_del_pending_{sid}"
+    edit_key = f"yh_edit_pending_{sid}"
     _all = sorted(stock_trades, key=lambda x: (x.trade_date, x.id), reverse=True)
     _show_all = st.session_state.get(f"yh_showall_{sid}", False)
     for t in (_all if _show_all else _all[:10]):
-        c = st.columns([1.4, 1.1, 1.0, 1.0, 1.3, 0.5])
+        c = st.columns(_dcols)
         is_buy = str(t.side).upper() == "BUY"
         c[0].markdown(f'<div class="yh-td l">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
         c[1].markdown(f'<div class="yh-td l">{"買入" if is_buy else "賣出"}</div>', unsafe_allow_html=True)
         c[2].markdown(f'<div class="yh-td">{int(t.quantity):,}<span class="unit">股</span></div>', unsafe_allow_html=True)
         c[3].markdown(f'<div class="yh-td">{float(t.price):,.2f}<span class="unit">TWD</span></div>', unsafe_allow_html=True)
         c[4].markdown(f'<div class="yh-td">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
-        if c[5].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
-            st.session_state[pend_key] = t.id
+        if c[5].button("✏️", key=f"yh_ed_{t.id}", help="修改這筆交易（日期、股數、股價）"):
+            st.session_state[edit_key] = t.id
+            st.session_state.pop(pend_key, None)
             _rerun_fragment()
+        if c[6].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
+            st.session_state[pend_key] = t.id
+            st.session_state.pop(edit_key, None)
+            _rerun_fragment()
+        if st.session_state.get(edit_key) == t.id:
+            _edit_trade_form(t, holding_qty, quote, edit_key)
         if st.session_state.get(pend_key) == t.id:
             st.warning(f"確定刪除 {t.trade_date:%Y/%m/%d} {'買入' if is_buy else '賣出'} "
                        f"{int(t.quantity):,} 股 @ {float(t.price):,.2f}？相關沖銷配對也會一起刪除。")

@@ -337,3 +337,21 @@ def validate_match_plan(rows: List[Tuple[int, int, int]], sell_qty: int) -> Opti
         return (f"沖銷股數合計 {total:,} 股，與賣出 {int(sell_qty):,} 股不符"
                 f"（{'還差' if diff > 0 else '多了'} {abs(diff):,} 股）。")
     return None
+
+
+def validate_edit_trade(side: str, old_qty: int, qty, price, prev_close: Optional[float], holding_qty: int,
+                        is_today: bool = True) -> Tuple[List[str], List[str]]:
+    """修改既有交易的防呆：同新增，但持股要先扣回這筆原本的股數。
+
+    holding_qty：修改前該買賣人這檔的總持股（已含這筆原本的股數）。
+    """
+    old_qty = int(old_qty or 0)
+    if side == "SELL":
+        return validate_new_trade(side, qty, price, prev_close, holding_qty + old_qty, is_today)
+    errors, warnings = validate_new_trade(side, qty, price, prev_close, holding_qty, is_today)
+    if not errors:
+        after = holding_qty - old_qty + int(qty)
+        if after < 0:
+            errors.append(f"改成 {int(qty):,} 股後持股會變成 {after:,} 股（後面已有賣出用到這批），"
+                          "請先改或刪後面的賣出。")
+    return errors, warnings

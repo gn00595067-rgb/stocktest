@@ -114,3 +114,19 @@ def test_validate_match_plan():
     assert "多了" in gp.validate_match_plan([(1, 1000, 1000), (2, 100, 500)], 1000)
     assert "只剩" in gp.validate_match_plan([(1, 1200, 1000)], 1200)
     assert "負數" in gp.validate_match_plan([(1, -1, 1000)], 0)
+
+
+def test_validate_edit_trade():
+    # 賣出改股數：可用持股要加回這筆原本的股數
+    e, _ = gp.validate_edit_trade("SELL", 1000, 3000, 100.0, None, holding_qty=2000)
+    assert e == []
+    e, _ = gp.validate_edit_trade("SELL", 1000, 4000, 100.0, None, holding_qty=2000)
+    assert any("超過目前持股" in x for x in e)
+    # 買入 10000 改成 1000：持股 10000 → 1000，沒問題
+    e, _ = gp.validate_edit_trade("BUY", 10000, 1000, 301.5, None, holding_qty=10000)
+    assert e == []
+    # 後面已賣掉 9500 股，買入改成 1000 會讓持股變負
+    e, _ = gp.validate_edit_trade("BUY", 10000, 1000, 301.5, None, holding_qty=500)
+    assert any("持股會變成" in x for x in e)
+    e, _ = gp.validate_edit_trade("BUY", 1000, 0, 100.0, None, holding_qty=1000)
+    assert any("請輸入股數" in x for x in e)
