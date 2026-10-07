@@ -102,6 +102,9 @@ st.markdown("""
 .yh-td.l { text-align: left; }
 .yh-td .sub { color: #999; font-size: .85rem; }
 .yh-td.sm { color: #888; }
+.yh-td.c, .yh-th.c { text-align: center; }
+[class*="st-key-yh_exp_"] input { text-align: center; }
+[class*="st-key-yh_tr_"] [data-testid="stColumn"]:nth-last-child(-n+2) [data-testid="stButton"] { display: flex; justify-content: center; }
 .yh-td, .yh-th { font-variant-numeric: tabular-nums; }
 .yh-th .u { font-size: .75rem; color: #aaa; margin-left: .15rem; }
 .yh-td .unit { color: #999; font-size: .8rem; margin-left: .2rem; }
@@ -432,9 +435,9 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         if qty and price and not [e for e in errors if "請輸入" in e]:
             fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=is_dt)
             tax = tax if side == "SELL" else 0.0
-            f[4].markdown(f'<div class="yh-td sm">{fee:,.0f}</div>', unsafe_allow_html=True)
-            f[5].markdown(f'<div class="yh-td sm">{tax:,.0f}</div>', unsafe_allow_html=True)
-            f[6].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}</div>', unsafe_allow_html=True)
+            f[4].markdown(f'<div class="yh-td sm c">{fee:,.0f}</div>', unsafe_allow_html=True)
+            f[5].markdown(f'<div class="yh-td sm c">{tax:,.0f}</div>', unsafe_allow_html=True)
+            f[6].markdown(f'<div class="yh-td c">{int(qty) * float(price):,.0f}</div>', unsafe_allow_html=True)
         entries.append(dict(d=d, qty=qty, price=price, is_dt=is_dt, fee=fee, tax=tax, errors=errors, warns=warns))
     if side == "BUY":
         if st.button("＋ 再加一筆買入", key=f"{k}_addrow", help="一次輸入多筆買入，最後一起送出"):
@@ -509,7 +512,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", '交易股數<span class="u">股</span>',
                                   '交易股價<span class="u">元</span>', "手續費", "稅", "市值"],
                             [1, 1, 0, 0, 0, 0, 0]):
-        c.markdown(f'<div class="yh-th{" l" if left else ""}">{lab}</div>', unsafe_allow_html=True)
+        c.markdown(f'<div class="yh-th c">{lab}</div>', unsafe_allow_html=True)
     pend_key = f"yh_del_pending_{sid}"
     edit_key = f"yh_edit_pending_{sid}"
     _all = sorted(stock_trades, key=lambda x: (x.trade_date, x.id), reverse=True)
@@ -518,14 +521,14 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         with st.container(key=f"yh_tr_{t.id}"):   # 一筆交易一列：文字與 ✏️🗑 垂直置中
             c = st.columns(_dcols, vertical_alignment="center")
         is_buy = str(t.side).upper() == "BUY"
-        c[0].markdown(f'<div class="yh-td l">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
+        c[0].markdown(f'<div class="yh-td c">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
         side_s = "買入" if is_buy else ("賣出（當沖）" if t.is_daytrade else "賣出")
-        c[1].markdown(f'<div class="yh-td l">{side_s}</div>', unsafe_allow_html=True)
-        c[2].markdown(f'<div class="yh-td">{int(t.quantity):,}</div>', unsafe_allow_html=True)
-        c[3].markdown(f'<div class="yh-td">{float(t.price):,.2f}</div>', unsafe_allow_html=True)
-        c[4].markdown(f'<div class="yh-td sm">{float(t.fee or 0):,.0f}</div>', unsafe_allow_html=True)
-        c[5].markdown(f'<div class="yh-td sm">{float(t.tax or 0):,.0f}</div>', unsafe_allow_html=True)
-        c[6].markdown(f'<div class="yh-td">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
+        c[1].markdown(f'<div class="yh-td c">{side_s}</div>', unsafe_allow_html=True)
+        c[2].markdown(f'<div class="yh-td c">{int(t.quantity):,}</div>', unsafe_allow_html=True)
+        c[3].markdown(f'<div class="yh-td c">{float(t.price):,.2f}</div>', unsafe_allow_html=True)
+        c[4].markdown(f'<div class="yh-td sm c">{float(t.fee or 0):,.0f}</div>', unsafe_allow_html=True)
+        c[5].markdown(f'<div class="yh-td sm c">{float(t.tax or 0):,.0f}</div>', unsafe_allow_html=True)
+        c[6].markdown(f'<div class="yh-td c">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
         if c[7].button("✏️", key=f"yh_ed_{t.id}", help="修改這筆交易（日期、股數、股價）"):
             st.session_state[edit_key] = t.id
             st.session_state.pop(pend_key, None)
