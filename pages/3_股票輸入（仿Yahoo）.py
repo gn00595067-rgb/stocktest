@@ -695,9 +695,12 @@ if rc2.button("🔄 更新股價", key="yh_refresh"):
 def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
     st.write("")
     h0, h1 = st.columns(_ROW_COLS)
+    # 底價：與舊版交易輸入頁同名同說明（滑鼠停留看已含賣出費稅）
+    _be_tip = "全部股數賣在此價，扣掉賣出手續費＋證交稅後剛好不虧（不是均價進位；賣出費稅約 0.34%，所以底價約＝持股成本均價×1.0034 再依升降單位進位）"
     h1.markdown('<div class="yh-grid">' + "".join(
-        f'<div class="yh-th{" l" if left else ""}">{lab}</div>'
-        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "賣出平本底價", "市值", "已實現損益", "未實現損益", "交易筆數"],
+        (f'<div class="yh-th" title="{_be_tip}">{lab} ⓘ</div>' if lab == "底價"
+         else f'<div class="yh-th{" l" if left else ""}">{lab}</div>')
+        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "底價", "市值", "已實現損益", "未實現損益", "交易筆數"],
                              [1, 0, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
 
     open_key = f"yh_open_{trader}"
@@ -725,7 +728,9 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
                 price_html = '<div class="yh-td">-</div>'
             avg_s = f"{r['avg_cost']:,.2f}" if r["qty"] else "-"
             mv_s = f"{r['market_value']:,.2f}" if r["qty"] else "-"
-            be_s = f"{r['breakeven']:,.2f}" if r["qty"] and r.get("breakeven") else "-"
+            # 底價藍字（同舊版），提醒「賣到這個價才打平」
+            be_s = (f'<span style="color:#1565c0;font-weight:700">{r["breakeven"]:,.2f}</span>'
+                    if r["qty"] and r.get("breakeven") else "-")
             c1.markdown(
                 '<div class="yh-grid">'
                 f'<div class="yh-td l"><b>{r["name"]}</b><br><span class="sub">{sid}{suffix}</span></div>'
