@@ -182,9 +182,17 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
 
     # 交割加總放在明細上方：一進來先看到總數（同事回報要往下捲才看得到）
     st.subheader("交割加總")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c34 = st.columns([1, 1, 2])
     c1.metric("交割應收（賣出淨入帳）", f"{total_in:,.0f}")
     c2.metric("交割應付（買進含手續費）", f"{total_out:,.0f}")
+    # 淨交割、當日已實現是每天最常看的兩個數字：淺黃底標出來（Peggy 2026-10-08）
+    st.markdown(
+        "<style>.st-key-dt_key_totals{background:#fff6cc;border:1px solid #f3e1a0;"
+        "border-radius:10px;padding:10px 16px;}</style>",
+        unsafe_allow_html=True,
+    )
+    with c34.container(key="dt_key_totals"):
+        c3, c4 = st.columns(2)
     c3.metric("淨交割（應收－應付）", f"{net:,.0f}")
     realized_cls = "#c62828" if realized >= 0 else "#2e7d32"
     c4.markdown(

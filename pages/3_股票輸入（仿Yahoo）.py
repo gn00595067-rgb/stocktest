@@ -101,6 +101,10 @@ st.markdown("""
 .yh-grid { font-size: .92rem; }
 .yh-grid .yh-th { font-size: .82rem; }
 .yh-th { color: #888; font-size: .9rem; text-align: right; }
+/* 表頭固定：往下捲持股表時表頭黏在畫面上方（top 讓出 Streamlit 頂端列 3.75rem） */
+/* Streamlit 會在 container 外再包一層同高的 stLayoutWrapper，sticky 要加在那層才黏得住 */
+div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; top: 3.75rem; z-index: 20;
+    background: #fff; padding: .35rem 0; border-bottom: 1px solid #eee; }
 .yh-th.l { text-align: left; }
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
 .yh-td.l { text-align: left; }
@@ -122,7 +126,7 @@ st.markdown("""
 [class*="st-key-yh_tg_"] button p { font-size: 1.5rem; font-weight: 700; line-height: 1; }
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepDown"],
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepUp"] { display: none; }
-.yh-desc { color: #888; font-size: .9rem; }
+.yh-desc { color: #888; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多 */
 .yh-grid { display: grid; grid-template-columns: 1.15fr 1.15fr .9fr 1.05fr 1.05fr 1.2fr 1.2fr 1.2fr 0.7fr;
            align-items: center; column-gap: .8rem; }
@@ -648,18 +652,19 @@ trader = group.trader                      # 這個分頁是誰的帳：輸入�
 st.session_state["last_user"] = trader
 
 # 分頁操作列
-a = st.columns([1.1, 1.15, 1.15, 0.45, 0.45, 3.7], vertical_alignment="center")
+# 搜尋框放第二格，但選項要等算完分頁內股票才知道，所以先佔位、稍後才填
+a = st.columns([1.1, 2.1, 1.3, 1.3, 0.5, 0.5, 1.3], vertical_alignment="center")
 if a[0].button("新增股票", key="yh_add_stock"):
     _dlg_add_stock(trader, group)
-if a[1].button("編輯此分頁", key="yh_edit_group", help="改名、改成誰的帳、改日期／股票條件"):
+if a[2].button("編輯此分頁", key="yh_edit_group", help="改名、改成誰的帳、改日期／股票條件"):
     _dlg_edit_group(owner, group.id, trader_opts, _def)
-if a[2].button("刪除此分頁", key="yh_del_group"):
+if a[3].button("刪除此分頁", key="yh_del_group"):
     _dlg_delete_group(owner, group)
-if a[3].button("◀", key="yh_move_l", help="分頁往左移"):
+if a[4].button("◀", key="yh_move_l", help="分頁往左移"):
     s_ = get_session(); gp.move_group(s_, owner, group.id, -1); s_.close(); st.rerun()
-if a[4].button("▶", key="yh_move_r", help="分頁往右移"):
+if a[5].button("▶", key="yh_move_r", help="分頁往右移"):
     s_ = get_session(); gp.move_group(s_, owner, group.id, +1); s_.close(); st.rerun()
-a[5].markdown(f'<div class="yh-desc" style="text-align:right">{group.describe()}</div>', unsafe_allow_html=True)
+a[6].markdown(f'<div class="yh-desc" style="text-align:right" title="{group.describe()}">{group.describe()}</div>', unsafe_allow_html=True)
 
 # 計算
 g_trades = gp.filter_trades(trades, group)
@@ -667,6 +672,22 @@ extra = list(group.stock_ids)
 all_sids = sorted({str(t.stock_id).strip() for t in g_trades} | set(extra))
 quotes = get_quotes_cached(all_sids, exchanges={s: getattr(_MASTERS.get(s), "exchange", None) for s in all_sids}) if all_sids else {}
 summary = gp.summarize_group(trades, group, rules, POLICY, quotes, _MASTERS, extra_stock_ids=extra)
+
+# 搜尋股票：選了就只顯示那一檔並自動展開（每個分頁各自記；清除＝回全部）
+search_key = f"yh_search_{group.id}"
+_row_names = {r["stock_id"]: r["name"] for r in summary["rows"]}
+if st.session_state.get(search_key) not in _row_names:
+    st.session_state[search_key] = None   # 那檔已不在這個分頁（例如被移出清單）
+
+
+def _on_search(_sk=search_key, _ok=f"yh_open_{trader}"):
+    if st.session_state.get(_sk):
+        st.session_state[_ok] = st.session_state[_sk]
+
+
+a[1].selectbox("搜尋股票", list(_row_names), key=search_key, index=None,
+               placeholder="🔍 股名／股號", label_visibility="collapsed",
+               format_func=lambda sid: f"{sid} {_row_names.get(sid, '')}", on_change=_on_search)
 trader_trades = [t for t in trades if (t.user or "").strip() == trader]
 trader_pos = compute_position_and_cost_by_stock(trader_trades, custom_rules=rules, policy=POLICY)
 
@@ -692,9 +713,14 @@ if rc2.button("🔄 更新股價", key="yh_refresh"):
 
 # 持股表（fragment）：展開／收合、在展開區輸入都只重畫這張表；送出或刪除成功才整頁更新
 @st.fragment
-def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
+def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search_sid=None):
+    rows = summary["rows"]
+    if search_sid:
+        rows = [r for r in rows if r["stock_id"] == search_sid]
+        st.caption(f"🔍 只顯示搜尋結果：{search_sid}；按搜尋框的 ✕ 回到全部股票。")
     st.write("")
-    h0, h1 = st.columns(_ROW_COLS)
+    thead = st.container(key="yh_thead")
+    h0, h1 = thead.columns(_ROW_COLS)
     # 底價：與舊版交易輸入頁同名同說明（滑鼠停留看已含賣出費稅）
     _be_tip = "全部股數賣在此價，扣掉賣出手續費＋證交稅後剛好不虧（不是均價進位；賣出費稅約 0.34%，所以底價約＝持股成本均價×1.0034 再依升降單位進位）"
     h1.markdown('<div class="yh-grid">' + "".join(
@@ -711,7 +737,7 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
     if not summary["rows"]:
         st.info("這個分頁目前沒有交易。按「新增股票」加入股票，再展開輸入第一筆交易。")
 
-    for r in summary["rows"]:
+    for r in rows:
         sid = r["stock_id"]
         is_open = st.session_state.get(open_key) == sid
         with st.container(key=f"yh_row_{sid}"):
@@ -748,6 +774,6 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes):
                 _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {})
 
 
-_holdings_table(summary, trader, group, g_trades, trader_pos, quotes)
+_holdings_table(summary, trader, group, g_trades, trader_pos, quotes, st.session_state.get(search_key))
 
 print(f"[page] 股票輸入（仿Yahoo） 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)
