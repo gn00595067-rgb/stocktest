@@ -187,11 +187,11 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
     c2.metric("交割應付（買進含手續費）", f"{total_out:,.0f}")
     # 淨交割、當日已實現是每天最常看的兩個數字：淺黃底標出來（Peggy 2026-10-08）
     st.markdown(
-        "<style>.st-key-dt_key_totals{background:#fff6cc;border:1px solid #f3e1a0;"
+        "<style>[class*=\"st-key-dt_key_totals_\"]{background:#fff6cc;border:1px solid #f3e1a0;"
         "border-radius:10px;padding:10px 16px;}</style>",
         unsafe_allow_html=True,
     )
-    with c34.container(key="dt_key_totals"):
+    with c34.container(key=f"dt_key_totals_{dl_key}"):   # 當日、區間兩個分頁都會呼叫，key 要分開
         c3, c4 = st.columns(2)
     c3.metric("淨交割（應收－應付）", f"{net:,.0f}")
     realized_cls = "#c62828" if realized >= 0 else "#2e7d32"

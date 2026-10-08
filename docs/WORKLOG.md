@@ -405,3 +405,13 @@
 **驗證**：pytest 116 passed；暫存副本（假資料 SQLite）跑真的 Streamlit，Chrome DevTools 截 1400／1050 寬看操作列、表頭捲動、黃底框；AppTest 模擬搜尋選 2317 → 只剩 1 列且展開、清除後回到 23 列。
 
 **下一步**：部署後在 Cloud 上實測搜尋與表頭固定（只改頁面，不需 Reboot）；搜尋框選項目前依市值排序，若 Peggy 想依股號排再調。
+
+## 2026-10-08 修：當日交易明細 StreamlitDuplicateElementKey（上一版造成）
+
+**做了什麼**：淺黃底框的 container key 原寫死 `dt_key_totals`，但 `_render_result` 在「當日」「區間」兩個分頁都會呼叫 → key 重複整頁報錯。改成 `dt_key_totals_{dl_key}`，CSS 用 `[class*="st-key-dt_key_totals_"]` 前綴比對。
+
+**為什麼**：Cloud 上當日交易明細頁打不開。
+
+**驗證**：AppTest 跑整頁（兩分頁都執行）：舊版重現同一錯誤、新版無例外；pytest 116 passed。
+
+**下一步**：之後在會被多次呼叫的函式裡給元件 key，一律帶參數區分。
