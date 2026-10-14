@@ -6,16 +6,22 @@ import pandas as pd
 import sys
 import os
 from collections import defaultdict
+from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
 from sqlalchemy.exc import OperationalError
-from db.database import get_session
+from db.database import get_session, USE_GOOGLE_SHEET
 from db.models import Trade, StockMaster, CustomMatchRule
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission, is_admin
-from services.prefs import resolve_default_trader, shared_policy_selectbox
+from services.prefs import resolve_default_trader, DEFAULT_POLICY
+from services.report_ui import render_report_filter, trader_multiselect, render_page_notes
+from services.manual_figures import load_manual_figures, save_manual_figures
+from reports.daily_detail_report import build_daily_stock_summary, STOCK_SUMMARY_COLUMNS
+from reports.realized_report import build_realized_ledger, monthly_series
+from reports.period_profit import build_period_blocks, manual_period_keys, SYSTEM_START
 from services.trader_service import all_trader_names
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
@@ -25,8 +31,6 @@ ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()
 st.title("當日交易明細")
-st.caption("以「每日」為主體列出當日全部原始買賣，並加總交割應收/應付，協助核對交割金額。")
-st.caption("計算口徑：當日列表之賣出損益已扣買進手續費、賣出手續費、證交稅；交割加總則依當日收付金額（含手續費/證交稅）估算。")
 
 try:
     sess = get_session()
@@ -59,9 +63,6 @@ def _stock_label(sid: str) -> str:
     return f"{sid} {name}".strip() if name else sid
 
 stock_opts = ["全部"] + [_stock_label(sid) for sid in stock_ids]
-user_opts = ["全部"] + users
-_day_def = resolve_default_trader(users)
-_user_default = [_day_def] if _day_def else ["全部"]
 
 def _label_to_sid(lbl: str):
     if lbl == "全部":
@@ -159,11 +160,109 @@ def _build_df(scope_trades):
     return df
 
 
-def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
+def _period_table_html(rows: list) -> str:
+    """一塊期間獲利表（像 Excel：期間｜獲利）；小計、累計列固定深黃。"""
+    def _amt(r):
+        v = r["獲利"]
+        if v is None:
+            return ""
+        color = "#c62828" if v > 0 else ("#2e7d32" if v < 0 else "#374151")
+        tag = '<span class="pp-tag">系統</span>' if r["來源"] == "系統" else ""
+        return f'{tag}<span style="color:{color}">{v:,.0f}</span>'
+
+    body = "".join(
+        f'<tr class="pp-{r["kind"]}"><td>{r["期間"]}</td><td class="num">{_amt(r)}</td></tr>' for r in rows
+    )
+    return f'<table class="pp-tbl"><tr><th>期間</th><th>獲利</th></tr>{body}</table>'
+
+
+_PERIOD_CSS = """<style>
+table.pp-tbl{width:100%;border-collapse:collapse;font-size:0.98rem;margin-bottom:8px}
+table.pp-tbl th{background:#f3f4f6;color:#374151;padding:6px 10px;border:1px solid #d1d5db;text-align:center}
+table.pp-tbl td{padding:5px 10px;border:1px solid #e5e7eb}
+table.pp-tbl td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+table.pp-tbl tr.pp-subtotal td, table.pp-tbl tr.pp-total td{background:#ffc000;font-weight:700;border-color:#e0a800}
+table.pp-tbl tr.pp-balance td{font-weight:700;border-top:2px solid #6b7280}
+.pp-tag{font-size:0.72rem;color:#1d4ed8;background:#e0ecff;border-radius:4px;padding:1px 5px;margin-right:6px;font-weight:500}
+</style>"""
+
+
+def _render_period_tab():
+    """期間獲利表（Peggy Excel 版）：115/9 起用系統數字，之前與帳戶結餘手動輸入。規格見 docs/specs/Peggy回饋_2026-10-14.md §8。"""
+    from db import models as _models
+    if not hasattr(_models, "ManualFigure"):   # Cloud 沒重載 db.models：要 Reboot 才會建新表
+        st.error("系統剛更新，資料表需要重新載入。請管理者到 Streamlit Cloud「Manage app → Reboot app」重開一次。")
+        return
+    if not users:
+        st.info("尚無買賣人。")
+        return
+    st.markdown("#### 篩選條件")
+    _def = resolve_default_trader(users) or users[0]
+    c1, _c2 = st.columns([1.4, 3])
+    trader = c1.selectbox("買賣人", users, index=users.index(_def), key="pp_trader")
+
+    sess = get_session()
+    try:
+        manual = load_manual_figures(sess, trader)
+    finally:
+        sess.close()
+    t_trades = [t for t in trades if (getattr(t, "user", None) or "").strip() == trader]
+    mdf = monthly_series(build_realized_ledger(t_trades, masters, policy, custom_rules=custom_rules))
+    system_monthly = dict(zip(mdf["月份"], mdf["當月已實現"])) if not mdf.empty else {}
+    blocks = build_period_blocks(manual, system_monthly, date.today())
+
+    st.markdown(_PERIOD_CSS, unsafe_allow_html=True)
+    for i in range(0, len(blocks), 3):
+        chunk = blocks[i:i + 3]
+        cols = st.columns(max(2, len(chunk)))
+        for col, rows in zip(cols, chunk):
+            col.markdown(_period_table_html(rows), unsafe_allow_html=True)
+    st.caption(f"標「系統」的月份＝系統已實現損益（{SYSTEM_START:%Y/%m} 起，依賣出月份）；其他為手動輸入，空白＝還沒填。")
+
+    with st.expander("✏️ 輸入／修改手動數字", expanded=not any(v is not None for v in manual.values())):
+        if USE_GOOGLE_SHEET:
+            st.warning("目前是試算表模式：手動數字不會寫進試算表，重開 app 後會不見。")
+        st.caption("點格子直接打數字（灰色 None＝還沒填），全部改完按「💾 儲存」。")
+        keys = manual_period_keys(date.today())
+        edit_df = pd.DataFrame({
+            "key": [k for k, _ in keys],
+            "期間": [lab for _, lab in keys],
+            "獲利": [manual.get(k) for k, _ in keys],
+        })
+        with st.form(f"pp_form_{trader}"):
+            edited = st.data_editor(
+                edit_df, key=f"pp_editor_{trader}", hide_index=True, use_container_width=True,
+                disabled=["期間"], num_rows="fixed",
+                column_config={
+                    "key": None,
+                    "獲利": st.column_config.NumberColumn("獲利（帳戶結餘填金額）", format="localized", step=1),
+                },
+                height=35 * (len(edit_df) + 1) + 3,
+            )
+            saved = st.form_submit_button("💾 儲存", type="primary")
+        if saved:
+            values = {k: (None if pd.isna(v) else float(v)) for k, v in zip(edited["key"], edited["獲利"])}
+            sess = get_session()
+            try:
+                n = save_manual_figures(sess, trader, values)
+                sess.commit()
+            except Exception as e:
+                sess.rollback()
+                st.error(f"儲存失敗：{e}")
+                n = None
+            finally:
+                sess.close()
+            if n is not None:
+                st.toast(f"已儲存 {n} 筆變動。", icon="✅")
+                st.rerun()
+
+
+def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str, scope_word: str):
     # 「當日已實現損益」以原始未湊整值加總、最後 round 一次，與已實現損益頁口徑一致
     realized = round(float(df["_pnl_raw"].fillna(0).sum())) if "_pnl_raw" in df.columns else (
         float(df["單筆損益"].fillna(0).sum()) if "單筆損益" in df.columns else 0.0
     )
+    stock_summary = build_daily_stock_summary(df)
     df = df.drop(columns=["_pnl_raw"]) if "_pnl_raw" in df.columns else df
     fmt = {
         "股數": "{:,.0f}",
@@ -202,9 +301,22 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
         """,
         unsafe_allow_html=True,
     )
-    st.caption("提醒：此處以交易金額 ± 手續費/證交稅估算交割收付；若券商另有其他費用/利息，請以帳單為準。")
 
-    st.markdown("---")
+    # 每股損益簡表（像 Peggy Excel 的每股合計列；Peggy 2026-10-14：先看每股，再看每筆）
+    st.subheader(f"每股{scope_word}損益簡表")
+    _money = {c: "{:,.0f}" for c in STOCK_SUMMARY_COLUMNS[1:]}
+    n_last = len(stock_summary) - 1
+
+    def _total_row(r):
+        # 只有合計列固定深黃（Peggy：加總固定深黃色，其他不用照 Excel 上色）
+        return ["background-color:#ffc000;font-weight:700"] * len(r) if r.name == n_last else [""] * len(r)
+
+    st.dataframe(
+        stock_summary.style.format(_money, na_rep="—").map(_style_signed, subset=["損益"]).apply(_total_row, axis=1),
+        use_container_width=True, hide_index=True, height=35 * (len(stock_summary) + 1) + 3,
+    )
+
+    st.subheader("每筆明細")
     sty = df.style.format(fmt, na_rep="—")
     for c in ["單筆損益", "累計損益"]:
         if c in df.columns:
@@ -223,27 +335,23 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str):
     )
 
 
-# 沖銷方式：與「已實現損益」頁共用（改一頁另一頁同步），讓兩頁已實現口徑一致
-_pc1, _pc2 = st.columns([1.3, 3])
-with _pc1:
-    policy = shared_policy_selectbox("沖銷方式")
-with _pc2:
-    st.markdown("<div style='height:1.75rem'></div>", unsafe_allow_html=True)
-    st.caption("此設定與「已實現損益」頁同步，改這裡兩頁的已實現配對口徑會一起變。")
+# 沖銷口徑固定（與「已實現損益」頁相同），說明在頁尾
+policy = DEFAULT_POLICY
 
-tab_day, tab_range = st.tabs(["當日交易明細", "區間交易明細"])
+tab_day, tab_range, tab_period = st.tabs(["當日交易明細", "區間交易明細", "期間獲利表"])
 
 with tab_day:
-    f1, f2, f3 = st.columns([1.2, 1.2, 1.2])
+    # 篩選條件：與其他報表同格式（買賣人放最右）
+    st.markdown("#### 篩選條件")
+    f1, f2, f3 = st.columns([1, 1.2, 1.4])
     with f1:
         day = st.date_input("日期", value=dates[-1], key="daily_page_date")
     with f2:
         stock_label_day = st.selectbox("股票", options=stock_opts, key="daily_page_stock")
     with f3:
-        picked_users_day = st.multiselect("買賣人", options=user_opts, default=_user_default, key="daily_page_user_multi")
+        selected_users_day = trader_multiselect(users, "daily_page_user_multi")
     sid_filter_day = _label_to_sid(stock_label_day)
     daily = [t for t in trades if getattr(t, "trade_date", None) == day]
-    selected_users_day = [] if (not picked_users_day or "全部" in picked_users_day) else picked_users_day
     if selected_users_day:
         daily = [t for t in daily if (getattr(t, "user", None) or "").strip() in selected_users_day]
     if sid_filter_day:
@@ -252,23 +360,21 @@ with tab_day:
     if not daily:
         st.info("此日期下沒有符合篩選條件的交易。")
     else:
-        _render_result(_build_df(daily), "當日已實現損益", f"當日交易明細_{day}", f"daily_trades_{day}")
+        _render_result(_build_df(daily), "當日已實現損益", f"當日交易明細_{day}", f"daily_trades_{day}", "當日")
 
 with tab_range:
-    r1, r2, r3, r4 = st.columns([1.1, 1.1, 1.2, 1.2])
-    with r1:
-        start_day = st.date_input("開始日期", value=dates[-1], key="range_page_start")
-    with r2:
-        end_day = st.date_input("結束日期", value=dates[-1], key="range_page_end")
-    with r3:
-        stock_label_range = st.selectbox("股票", options=stock_opts, key="range_page_stock")
-    with r4:
-        picked_users_range = st.multiselect("買賣人", options=user_opts, default=_user_default, key="range_page_user_multi")
-    if start_day > end_day:
-        start_day, end_day = end_day, start_day
+    # 預設：最近一個有交易的日期（同舊版）；快速鈕可切當週／當月／當年…
+    if "dtr_start" not in st.session_state:
+        st.session_state["dtr_start"] = st.session_state["dtr_end"] = dates[-1]
+
+    def _stock_box():
+        return st.selectbox("股票", options=stock_opts, key="range_page_stock")
+
+    start_day, end_day, selected_users_range, stock_label_range = render_report_filter(
+        "dtr", users, extra=_stock_box,
+    )
     sid_filter_range = _label_to_sid(stock_label_range)
     ranged = [t for t in trades if start_day <= getattr(t, "trade_date", start_day) <= end_day]
-    selected_users_range = [] if (not picked_users_range or "全部" in picked_users_range) else picked_users_range
     if selected_users_range:
         ranged = [t for t in ranged if (getattr(t, "user", None) or "").strip() in selected_users_range]
     if sid_filter_range:
@@ -277,5 +383,17 @@ with tab_range:
     if not ranged:
         st.info("此區間下沒有符合篩選條件的交易。")
     else:
-        _render_result(_build_df(ranged), "區間已實現損益", f"區間交易明細_{start_day}_{end_day}", f"range_trades_{start_day}_{end_day}")
+        _render_result(_build_df(ranged), "區間已實現損益", f"區間交易明細_{start_day}_{end_day}",
+                       f"range_trades_{start_day}_{end_day}", "區間")
 
+with tab_period:
+    _render_period_tab()
+
+render_page_notes(
+    "以「每日」為主體列出當日全部原始買賣，並加總交割應收／應付，協助核對交割金額。",
+    "**計算口徑**：賣出損益已扣買進手續費、賣出手續費、證交稅；交割加總依當日收付金額（含手續費／證交稅）估算。"
+    "若券商另有其他費用／利息，請以帳單為準。",
+    "**沖銷方式**：自定沖銷 ＋ 其餘先進先出（固定；所有賣出都計入），與「已實現損益」頁相同。",
+    "**每股損益簡表**：買進支出＝成交金額＋手續費；賣出收入＝成交金額－手續費－證交稅；損益＝該檔在這段期間賣出的已實現損益。",
+    "**期間獲利表**：115/9 月起用系統的已實現損益（依賣出月份）；之前的月份與帳戶結餘是手動輸入（在表格下方「✏️ 輸入／修改手動數字」）。",
+)

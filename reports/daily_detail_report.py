@@ -76,3 +76,39 @@ def build_daily_detail_df(trades, masters, policy: str = "CUSTOM", filter_date=N
     if filter_date is not None:
         df = df[df["買賣日"] == str(filter_date)].copy()
     return df
+
+
+STOCK_SUMMARY_COLUMNS = ["股票", "買進股數", "買進支出", "賣出股數", "賣出收入", "手續費", "證交稅", "損益"]
+
+
+def build_daily_stock_summary(detail: pd.DataFrame) -> pd.DataFrame:
+    """每股損益簡表（像 Peggy Excel 的每股「合計」列）：每檔一列，最後一列「合計」。
+
+    detail 為「當日交易明細」頁的每筆明細（欄位：股票、買/賣、股數、手續費、證交稅、
+    交割應收、交割應付，以及原始未湊整的 _pnl_raw）。
+    - 買進支出＝成交金額＋手續費（＝交割應付）；賣出收入＝成交金額－手續費－證交稅（＝交割應收）
+    - 損益＝該檔當日賣出的已實現損益（以原始值加總、最後才四捨五入，與已實現損益頁一致）
+    """
+    if detail is None or detail.empty:
+        return pd.DataFrame(columns=STOCK_SUMMARY_COLUMNS)
+    d = detail.copy()
+    is_sell = d["買/賣"].astype(str).str.upper() == "SELL"
+    d["_buy_qty"] = d["股數"].where(~is_sell, 0)
+    d["_sell_qty"] = d["股數"].where(is_sell, 0)
+    pnl_col = "_pnl_raw" if "_pnl_raw" in d.columns else "單筆損益"
+    d["_pnl"] = pd.to_numeric(d[pnl_col], errors="coerce").fillna(0.0)
+    g = d.groupby("股票", sort=True).agg(
+        買進股數=("_buy_qty", "sum"),
+        買進支出=("交割應付", "sum"),
+        賣出股數=("_sell_qty", "sum"),
+        賣出收入=("交割應收", "sum"),
+        手續費=("手續費", "sum"),
+        證交稅=("證交稅", "sum"),
+        損益=("_pnl", "sum"),
+    ).reset_index()
+    total = {"股票": "合計"}
+    for c in STOCK_SUMMARY_COLUMNS[1:]:
+        total[c] = float(g[c].sum())
+    out = pd.concat([g, pd.DataFrame([total])], ignore_index=True)
+    out["損益"] = out["損益"].round(0)
+    return out[STOCK_SUMMARY_COLUMNS]

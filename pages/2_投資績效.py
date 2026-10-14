@@ -4,7 +4,6 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 from collections import defaultdict
-from datetime import date, timedelta
 import sys
 import os
 
@@ -28,10 +27,10 @@ from services.auth_service import (
     get_allowed_traders,
 )
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
-from services.prefs import resolve_default_trader
 from services.trader_service import all_trader_names
 from services.price_service import get_quote_cached
 from services.position_cost import compute_position_and_cost_by_stock
+from services.report_ui import render_report_filter, inject_kpi_css, kpi_card, pnl_cls
 
 st.set_page_config(page_title="損益總覽與投資績效", layout="wide")
 from services.mobile_ui import inject_mobile_css
@@ -40,69 +39,8 @@ ensure_bootstrap_admin()
 login_guard()
 render_auth_sidebar()
 st.title("損益總覽與投資績效")
-st.caption("計算口徑：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。")
 
-# ---------- 篩選條件：快速區間按鈕 + 日期框（與所選區間連動）、自訂可手動改日期 ----------
-today = date.today()
-if "pl_start" not in st.session_state:
-    st.session_state["pl_start"] = today - timedelta(days=180)  # 預設近半年
-if "pl_end" not in st.session_state:
-    st.session_state["pl_end"] = today
-
-st.markdown("#### 篩選條件")
-
-
-def _pl_set_range(days=None, all_time=False, today_only=False):
-    """快速區間：用 on_click callback 設定日期（callback 在 widget 建立前執行，
-    改 date_input 的 pl_start/pl_end 才會可靠生效並連動到下方結果）。"""
-    if all_time:
-        st.session_state["pl_start"] = date(2000, 1, 1)
-    elif today_only:
-        st.session_state["pl_start"] = today
-    else:
-        st.session_state["pl_start"] = today - timedelta(days=days)
-    st.session_state["pl_end"] = today
-
-
-def _pl_range_active_index(start_date, end_date, today):
-    """回傳目前區間對應的快捷鈕索引 0..6（當日、近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
-    if end_date != today:
-        return -1
-    if start_date == today:
-        return 0
-    d = (today - start_date).days
-    if start_date == date(2000, 1, 1):
-        return 6
-    if d <= 4 and start_date == today - timedelta(days=3):
-        return 1
-    if 6 <= d <= 8 and start_date == today - timedelta(days=7):
-        return 2
-    if 28 <= d <= 32 and start_date == today - timedelta(days=30):
-        return 3
-    if 178 <= d <= 182 and start_date == today - timedelta(days=180):
-        return 4
-    if 363 <= d <= 367 and start_date == today - timedelta(days=365):
-        return 5
-    return -1
-
-
-# 直接用 type="primary" 高亮當前區間鈕（從 session_state 算，最準；不靠全域 CSS 猜位置）
-_pl_active = _pl_range_active_index(st.session_state.get("pl_start"), st.session_state.get("pl_end"), today)
-_pl_cols = st.columns(7)
-for _i, (_lab, _key, _kw) in enumerate([
-    ("當日", "pl_btn_today", {"today_only": True}),
-    ("近3天", "pl_btn_3d", {"days": 3}),
-    ("近1週", "pl_btn_1w", {"days": 7}),
-    ("近1個月", "pl_btn_1m", {"days": 30}),
-    ("近半年", "pl_btn_6m", {"days": 180}),
-    ("近1年", "pl_btn_1y", {"days": 365}),
-    ("全部", "pl_btn_all", {"all_time": True}),
-]):
-    _pl_cols[_i].button(
-        _lab, key=_key, on_click=_pl_set_range, kwargs=_kw,
-        use_container_width=True, type=("primary" if _pl_active == _i else "secondary"),
-    )
-
+# ---------- 篩選條件：與各報表頁同一格式（services/report_ui.py） ----------
 # 先查詢買賣人列表（供篩選用）
 try:
     if is_admin():
@@ -116,6 +54,9 @@ except OperationalError:
     st.stop()
 except Exception:
     pl_users = []
+if not is_admin() and not pl_users:
+    st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
+    st.stop()
 
 # 沖銷口徑固定為「自定沖銷＋其餘先進先出」（所有賣出都計入、且尊重自定沖銷規則）
 policy = "CUSTOM_PLUS_FIFO"
@@ -126,13 +67,10 @@ policy_labels = {
     "CUSTOM_PLUS_OPTIMISTIC": "樂觀（未定沖銷部分）",
     "CUSTOM_PLUS_MEAN": "均值配對（未定沖銷部分）",
 }
-col_d1, col_d2, col_m, col_u = st.columns([1, 1, 1.2, 1])
-with col_d1:
-    start_date = st.date_input("開始日期", key="pl_start")
-with col_d2:
-    end_date = st.date_input("結束日期", key="pl_end")
-with col_m:
-    display_mode = st.selectbox(
+
+
+def _display_mode_box():
+    return st.selectbox(
         "顯示模式",
         ["已實現", "合計", "未實現"],  # 預設「已實現」：只看區間、會隨時間變，最直覺
         format_func=lambda x: {
@@ -141,56 +79,11 @@ with col_m:
             "未實現": "未實現（目前、不隨區間變）",
         }.get(x, x),
     )
-with col_u:
-    if is_admin():
-        pl_user_opts = ["全部"] + pl_users
-        _pl_def = resolve_default_trader(pl_users)
-        picked_users = st.multiselect(
-            "買賣人",
-            options=pl_user_opts,
-            default=([_pl_def] if _pl_def else ["全部"]),
-            key="pl_filter_user_multi",
-        )
-        pl_filter_users = None if (not picked_users or "全部" in picked_users) else picked_users
-    else:
-        if not pl_users:
-            st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
-            st.stop()
-        _pl_def = resolve_default_trader(pl_users)
-        picked_users = st.multiselect(
-            "買賣人",
-            options=pl_users,
-            default=([_pl_def] if _pl_def else pl_users),
-            key="pl_filter_user_multi",
-        )
-        pl_filter_users = picked_users if picked_users else []
-st.caption(
-    "上方按鈕為快速區間；亦可直接修改開始／結束日期自訂區間。日期與區間連動。"
-    "　⚠️ 日期區間只影響「**已實現**」（依賣出日）；「未實現」「持倉市值」一律是**目前**的、不隨區間變。"
+
+
+start_date, end_date, pl_filter_users, display_mode = render_report_filter(
+    "pl", pl_users, default_range="當年", extra=_display_mode_box,
 )
-
-
-# ---------- KPI 樣式（與庫存損益字卡一致） ----------
-def _inject_kpi_style():
-    st.markdown("""
-    <style>
-    .portfolio-kpi-card {
-        background: linear-gradient(145deg, #fff 0%, #f8f9fa 100%);
-        border: 1px solid #e9ecef;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 0.5rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    }
-    .portfolio-kpi-label { font-size: 0.8rem; color: #6c757d; margin-bottom: 0.25rem; }
-    .portfolio-kpi-value { font-size: 1.35rem; font-weight: 700; }
-    .portfolio-kpi-value--positive { color: #c62828; }
-    .portfolio-kpi-value--negative { color: #2e7d32; }
-    .portfolio-kpi-meta { font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem; }
-    .portfolio-kpi-name { font-size: 0.9rem; color: #475569; margin-bottom: 0.2rem; }
-    .portfolio-kpi-card .portfolio-kpi-value + .portfolio-kpi-value { margin-top: 0.2rem; }
-    </style>
-    """, unsafe_allow_html=True)
 
 
 sess = get_session()
@@ -218,9 +111,9 @@ _quotes_now = get_quotes_cached(list(_hold_sids), exchanges=_ex_map) if _hold_si
 _qt = next((q.get("time") for q in _quotes_now.values() if q and q.get("time")), None)
 with _rc2:
     if _qt:
-        st.caption(f"📡 現價來源 TWSE MIS 官方即時，最新報價時間約 **{_qt}**（20 秒快取，按「更新報價」可強制刷新）")
+        st.caption(f"📡 最新報價時間約 **{_qt}**（按「更新報價」重抓）")
     else:
-        st.caption("📡 現價來源 TWSE MIS 官方即時（盤後或無成交的冷門股會顯示昨收）")
+        st.caption("📡 盤後或無成交的冷門股顯示昨收")
 
 
 def _pl_realized_unrealized_for_trades(trades_list, _start, _end, _custom_rules, _masters, _policy="CUSTOM"):
@@ -464,107 +357,49 @@ _fmt_pct = fmt_pct
 _pnl_color = pnl_class
 
 
-# ---------- KPI 區塊：三排 × 四張，每張有內容（無空白格） ----------
-_inject_kpi_style()
+# ---------- KPI 區塊 ----------
+# Peggy 2026-10-14：①未實現 ②已實現 ③最佳個股 ④最差個股 最有參考價值 → 第一列大字＋底色；其他往下放、字不縮小
+inject_kpi_css()
 st.markdown("#### 關鍵績效")
 avg_single_realized = (realized_sum / len(match_pnls)) if match_pnls else None
-
-# 第 1 排：總覽
-r1_1, r1_2, r1_3, r1_4 = st.columns(4)
-with r1_1:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">總損益</div>
-        <div class="portfolio-kpi-value {pnl_class(grand_total)}">{fmt_money_compact(grand_total)}</div>
-        <div class="portfolio-kpi-meta">區間已實現 ＋ 目前未實現</div>
-    </div>""", unsafe_allow_html=True)
-with r1_2:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">已實現（區間）</div>
-        <div class="portfolio-kpi-value {pnl_class(realized_sum)}">{fmt_money_compact(realized_sum)}</div>
-        <div class="portfolio-kpi-meta">報酬率 {fmt_pct_signed(realized_ret_pct)}</div>
-    </div>""", unsafe_allow_html=True)
-with r1_3:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">未實現（目前）</div>
-        <div class="portfolio-kpi-value {pnl_class(unrealized_sum)}">{fmt_money_compact(unrealized_sum)}</div>
-        <div class="portfolio-kpi-meta">不隨區間變 · 報酬率 {fmt_pct_signed(unrealized_ret_pct)}</div>
-    </div>""", unsafe_allow_html=True)
-with r1_4:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">勝率（股票）</div>
-        <div class="portfolio-kpi-value">{fmt_pct(win_rate_pct)}</div>
-        <div class="portfolio-kpi-meta">獲利 {win_stocks} 支｜虧損 {loss_stocks} 支</div>
-    </div>""", unsafe_allow_html=True)
-
-# 第 2 排：表現
 best_label = safe_text(best_row["label"]) if best_row is not None else "—"
 best_val = best_row[pnl_col] if best_row is not None else 0
 worst_label = safe_text(worst_row["label"]) if worst_row is not None else "—"
 worst_val = worst_row[pnl_col] if worst_row is not None else 0
-r2_1, r2_2, r2_3, r2_4 = st.columns(4)
-with r2_1:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最佳個股</div>
-        <div class="portfolio-kpi-name">{best_label}</div>
-        <div class="portfolio-kpi-value {pnl_class(best_val)}">{fmt_money_compact(best_val)}</div>
-    </div>""", unsafe_allow_html=True)
-with r2_2:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最差個股</div>
-        <div class="portfolio-kpi-name">{worst_label}</div>
-        <div class="portfolio-kpi-value {pnl_class(worst_val)}">{fmt_money_compact(worst_val)}</div>
-    </div>""", unsafe_allow_html=True)
-with r2_3:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">獲利／虧損股票數</div>
-        <div class="portfolio-kpi-value">{win_stocks} ／ {loss_stocks}</div>
-        <div class="portfolio-kpi-meta">共 {total_count} 檔</div>
-    </div>""", unsafe_allow_html=True)
-with r2_4:
-    avg_str = fmt_money_compact(avg_single_realized) if avg_single_realized is not None else "—"
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">平均單筆已實現損益</div>
-        <div class="portfolio-kpi-value {pnl_class(avg_single_realized)}">{avg_str}</div>
-        <div class="portfolio-kpi-meta">{len(match_pnls)} 筆配對</div>
-    </div>""", unsafe_allow_html=True)
+_mode_note = {"合計": "依合計", "已實現": "依區間已實現", "未實現": "依目前未實現"}.get(pnl_col, "")
 
-# 第 3 排：風險
+
+def _kpi_row(cards):
+    for col, html in zip(st.columns(len(cards)), cards):
+        col.markdown(html, unsafe_allow_html=True)
+
+
+_kpi_row([
+    kpi_card("未實現（目前）", fmt_money_compact(unrealized_sum), pnl_cls(unrealized_sum),
+             meta=f"不隨區間變 · 報酬率 {fmt_pct_signed(unrealized_ret_pct)}", hero=True),
+    kpi_card("已實現（區間）", fmt_money_compact(realized_sum), pnl_cls(realized_sum),
+             meta=f"報酬率 {fmt_pct_signed(realized_ret_pct)}", hero=True),
+    kpi_card("最佳個股", fmt_money_compact(best_val), pnl_cls(best_val), name=best_label, meta=_mode_note, hero=True),
+    kpi_card("最差個股", fmt_money_compact(worst_val), pnl_cls(worst_val), name=worst_label, meta=_mode_note, hero=True),
+])
+_kpi_row([
+    kpi_card("總損益", fmt_money_compact(grand_total), pnl_cls(grand_total), meta="區間已實現 ＋ 目前未實現"),
+    kpi_card("勝率（股票）", fmt_pct(win_rate_pct), meta=f"獲利 {win_stocks} 支｜虧損 {loss_stocks} 支"),
+    kpi_card("獲利／虧損股票數", f"{win_stocks} ／ {loss_stocks}", meta=f"共 {total_count} 檔"),
+    kpi_card("平均單筆已實現損益",
+             fmt_money_compact(avg_single_realized) if avg_single_realized is not None else "—",
+             pnl_cls(avg_single_realized), meta=f"{len(match_pnls)} 筆配對"),
+])
 pf_str = f"{profit_factor:.2f}" if (profit_factor == profit_factor) else "—"
-r3_1, r3_2, r3_3, r3_4 = st.columns(4)
-with r3_1:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">盈虧比</div>
-        <div class="portfolio-kpi-value">{pf_str}</div>
-        <div class="portfolio-kpi-meta">獲利 ÷ 虧損</div>
-    </div>""", unsafe_allow_html=True)
-with r3_2:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最大回撤</div>
-        <div class="portfolio-kpi-value">{('-' + fmt_money_compact(max_dd).lstrip('+')) if max_dd > 0 else '0'}</div>
-        <div class="portfolio-kpi-meta">累積已實現的最大回落</div>
-    </div>""", unsafe_allow_html=True)
-with r3_3:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最大單筆獲利</div>
-        <div class="portfolio-kpi-value portfolio-kpi-value--positive">盈 {fmt_money_compact(max_single)}</div>
-    </div>""", unsafe_allow_html=True)
-with r3_4:
-    st.markdown(f"""
-    <div class="portfolio-kpi-card">
-        <div class="portfolio-kpi-label">最大單筆虧損</div>
-        <div class="portfolio-kpi-value portfolio-kpi-value--negative">虧 {fmt_money_compact(min_single)}</div>
-    </div>""", unsafe_allow_html=True)
+_single_tip = "單筆＝一次「買進→賣出」的沖銷配對（一筆賣出若沖到多筆買進，會拆成多筆）。取區間內這些配對淨損益的最大值與最小值。"
+_kpi_row([
+    kpi_card("盈虧比", pf_str, meta="獲利 ÷ 虧損"),
+    kpi_card("最大回撤", ("-" + fmt_money_compact(max_dd).lstrip("+")) if max_dd > 0 else "0", meta="累積已實現的最大回落"),
+    kpi_card("最大單筆獲利", f"盈 {fmt_money_compact(max_single)}", "portfolio-kpi-value--positive",
+             meta="單一筆買→賣配對", help_text=_single_tip),
+    kpi_card("最大單筆虧損", f"虧 {fmt_money_compact(min_single)}", "portfolio-kpi-value--negative",
+             meta="單一筆買→賣配對", help_text=_single_tip),
+])
 
 # ---------- 依買賣人加總 ----------
 if pl_users:
@@ -581,93 +416,6 @@ if pl_users:
 
 st.markdown("---")
 st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
-
-# ---------- 計算邏輯說明（合併一份） ----------
-n_buys_range = sum(len(b) for b in buys_by_stock.values())
-n_sells_range = sum(len(s) for s in sells_by_stock.values())
-n_stocks_realized = len(realized_by_stock)
-n_stocks_position = len(position)
-policy_label = policy_labels.get(policy, str(policy))
-n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
-n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
-
-with st.expander("📐 計算邏輯說明", expanded=False):
-    st.markdown("### 「全部」區間定義（兩頁一致才可比較）")
-    st.markdown("""
-    - **本頁**：快速區間選「全部」時，使用 **2000-01-01 ～ 今天**，且 **已實現** 的買賣來自「全部交易」（無日期篩選）。
-    - **庫存損益頁**：點「全部」按鈕時，開始日期 = **2000-01-01**、結束 = 今天；**已實現** = 該區間內賣出與區間內買進依自定沖銷配對後的淨損益。
-    - 兩頁都選「全部」時，區間一致，同一檔股票的 **已實現、未實現、合計** 應相同。若曾不一致，多為持倉頁「全部」先前為 2020-01-01 起算，已改為 2000-01-01 以與本頁對齊。
-    """)
-    st.markdown("### 本頁 KPI 計算方式")
-    st.markdown("""
-    | 指標 | 計算邏輯 |
-    |------|----------|
-    | **總損益** | 已實現 ＋ 未實現（或依「顯示模式」只顯示其一）。 |
-    | **已實現** | 區間內所有「賣出」依所選沖銷方式與買進配對，每筆配對的 **淨損益** 加總。淨損益 ＝ 價差損益 － 買進手續費（按沖銷股數比例）－ 賣出手續費 － 證交稅。 |
-    | **未實現** | 用 **全部交易** 計算目前持倉，持倉成本含買進手續費；未實現 ＝ (現價 － 持倉均價) × 持倉股數。現價來自報價 API，無報價時以持倉均價代替。 |
-    | **勝率（股票）** | 損益為正的股票檔數 ÷ (損益為正 ＋ 損益為負的股票檔數) × 100%。依顯示模式之損益欄位。 |
-    | **最佳 / 最差個股** | 依「顯示模式」選定之損益欄位，取該欄最大值與最小值的股票。 |
-    | **盈虧比** | 總獲利 ÷ 總虧損（虧損取絕對值）；無虧損時以總獲利表示。 |
-    | **最大回撤** | 依「賣出日」累加已實現損益形成累積曲線，從累積高點回落的最大幅度。 |
-    | **最大單筆盈/虧** | 單筆配對淨損益的最大值與最小值。 |
-    """)
-    st.markdown("### 程式計算流程摘要（除錯用）")
-    st.markdown("""
-    | 項目 | 損益總覽與投資績效 | 庫存損益 |
-    |------|-------------------|------------|
-    | 已實現 | 以**賣出日落在區間**為準：區間內賣出 + 歷史全部買進做配對；每筆配對以 `net_pnl_for_match`（已扣費稅）加總。**「全部」時**：等同全期間。 | `sells_in_range = trades where sell_date in [start,end]`，`buys_all = all buys`，逐檔 `compute_matches(buys_all, sells_in_range, ...)`。 |
-    | 未實現 | **全部交易** → 每檔持倉成本與股數 → (現價 − 均價) × 股數；現價 = API 或持倉均價。 | 同上：持倉與成本用 **全部** 交易，未實現 = (現價 − 均價) × 股數。 |
-    | 沖銷 | 自定沖銷：`custom_rules` (sell_id, buy_id, qty)，`_custom_match` 依規則配對，`min(rule_qty, sl.qty, bl.qty)` 且會扣減 lot 剩餘。 | 同一套 `compute_matches` / `custom_rules`。 |
-    """)
-    st.markdown("**若「各股損益」圖表與「庫存損益」頁同一檔股票數字不同**：兩頁的 **已實現** 都是「該頁所選日期區間內」的已實現損益。請確認兩頁皆選「全部」（本頁快速區間選「全部」、庫存損益頁點「全部」按鈕），則區間皆為 2000-01-01 至今，數字應一致。")
-    st.markdown("---")
-    st.markdown("### 本次計算的動態數據")
-    logic_df = pd.DataFrame([
-        {"項目": "區間", "數值": f"{start_date} ～ {end_date}"},
-        {"項目": "沖銷方式", "數值": policy_label},
-        {"項目": "顯示模式", "數值": {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(display_mode, display_mode)},
-        {"項目": "區間內買進筆數", "數值": n_buys_range},
-        {"項目": "區間內賣出筆數", "數值": n_sells_range},
-        {"項目": "有已實現損益的股票數", "數值": n_stocks_realized},
-        {"項目": "目前有持倉的股票數", "數值": n_stocks_position},
-        {"項目": "總損益（本頁）", "數值": f"{_fmt_big(total_pnl)} （{pnl_col}）"},
-        {"項目": "已實現加總", "數值": _fmt_big(realized_sum)},
-        {"項目": "已實現成本（報酬率分母）", "數值": _fmt_big(realized_cost_sum)},
-        {"項目": "已實現報酬率", "數值": fmt_pct_signed(realized_ret_pct)},
-        {"項目": "未實現加總", "數值": _fmt_big(unrealized_sum)},
-        {"項目": "未實現成本（報酬率分母）", "數值": _fmt_big(unrealized_cost_sum)},
-        {"項目": "未實現報酬率", "數值": fmt_pct_signed(unrealized_ret_pct)},
-        {"項目": "未實現現價來源", "數值": f"API現價 {n_quote_api} 檔、持倉均價(無報價) {n_quote_fallback} 檔"},
-    ])
-    # 數值欄混有整數與字串，pyarrow 轉換會報錯；統一轉字串
-    logic_df["數值"] = logic_df["數值"].astype(str)
-    st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
-    st.markdown("---")
-    st.markdown("### 未實現損益的現價來源")
-    st.caption("可由此表確認每檔持倉在計算未實現時是用 **API 現價** 還是 **持倉均價（無報價時）**。")
-    if quote_source_by_sid:
-        source_rows = []
-        for sid in sorted(quote_source_by_sid.keys()):
-            p = position.get(sid, {})
-            qty = p.get("qty", 0)
-            cost = p.get("cost", 0)
-            avg_cost = (cost / qty) if qty else 0
-            m = masters.get(sid)
-            label = (getattr(m, "name", None) or "") or sid if m else sid
-            source_rows.append({
-                "股票": f"{sid} {label}".strip() if label else sid,
-                "現價來源": quote_source_by_sid[sid],
-                "計算用現價": round(last_price_by_sid.get(sid, 0), 2),
-                "持倉均價": round(avg_cost, 2),
-                "持倉股數": qty,
-                "未實現": round(unrealized_by_stock.get(sid, 0), 2),
-            })
-        _src_df = pd.DataFrame(source_rows)
-        # 金額/股數 >1000 以千分位顯示
-        _src_fmt = {"持倉股數": "{:,.0f}", "未實現": "{:,.0f}", "計算用現價": "{:,.2f}", "持倉均價": "{:,.2f}"}
-        st.dataframe(_src_df.style.format(_src_fmt, na_rep="—"), use_container_width=True, hide_index=True)
-    else:
-        st.caption("目前無持倉，無未實現現價來源資料。")
 
 # ---------- 各股損益（由大至小） ----------
 st.subheader("各股損益（由大至小）")
@@ -803,3 +551,94 @@ with st.expander("完整明細表（可排序、匯出 CSV）", expanded=False):
     )
     export_df = df[["stock_id", "name", "industry", "已實現", "未實現", "合計"]].rename(columns={"stock_id": "代號", "name": "名稱", "industry": "產業"})
     st.download_button("匯出 CSV", data=export_df.to_csv(index=False).encode("utf-8-sig"), file_name="pnl_overview.csv", mime="text/csv")
+
+# ---------- 計算邏輯說明（合併一份） ----------
+n_buys_range = sum(len(b) for b in buys_by_stock.values())
+n_sells_range = sum(len(s) for s in sells_by_stock.values())
+n_stocks_realized = len(realized_by_stock)
+n_stocks_position = len(position)
+policy_label = policy_labels.get(policy, str(policy))
+n_quote_api = sum(1 for v in quote_source_by_sid.values() if v == "API現價")
+n_quote_fallback = sum(1 for v in quote_source_by_sid.values() if v == "持倉均價(無報價)")
+
+st.markdown("---")
+with st.expander("📖 說明（計算口徑、計算邏輯）", expanded=False):
+    st.markdown("**計算口徑**：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。")
+    st.markdown("**篩選條件**：上方按鈕為快速區間（當週＝本週一起、當月＝本月 1 日起、當年＝今年 1/1 起），也可直接改開始／結束日期。⚠️ 日期區間只影響「**已實現**」（依賣出日）；「未實現」「持倉市值」一律是**目前**的、不隨區間變。")
+    st.markdown("**最大單筆獲利／虧損**：「單筆」＝一次「買進→賣出」的沖銷配對；一筆賣出若沖到多筆買進會拆成多筆。取區間內這些配對淨損益的最大與最小值。")
+    st.markdown("### 「全部」區間定義（兩頁一致才可比較）")
+    st.markdown("""
+    - **本頁**：快速區間選「全部」時，使用 **2000-01-01 ～ 今天**，且 **已實現** 的買賣來自「全部交易」（無日期篩選）。
+    - **庫存損益頁**：點「全部」按鈕時，開始日期 = **2000-01-01**、結束 = 今天；**已實現** = 該區間內賣出與區間內買進依自定沖銷配對後的淨損益。
+    - 兩頁都選「全部」時，區間一致，同一檔股票的 **已實現、未實現、合計** 應相同。若曾不一致，多為持倉頁「全部」先前為 2020-01-01 起算，已改為 2000-01-01 以與本頁對齊。
+    """)
+    st.markdown("### 本頁 KPI 計算方式")
+    st.markdown("""
+    | 指標 | 計算邏輯 |
+    |------|----------|
+    | **總損益** | 已實現 ＋ 未實現（或依「顯示模式」只顯示其一）。 |
+    | **已實現** | 區間內所有「賣出」依所選沖銷方式與買進配對，每筆配對的 **淨損益** 加總。淨損益 ＝ 價差損益 － 買進手續費（按沖銷股數比例）－ 賣出手續費 － 證交稅。 |
+    | **未實現** | 用 **全部交易** 計算目前持倉，持倉成本含買進手續費；未實現 ＝ (現價 － 持倉均價) × 持倉股數。現價來自報價 API，無報價時以持倉均價代替。 |
+    | **勝率（股票）** | 損益為正的股票檔數 ÷ (損益為正 ＋ 損益為負的股票檔數) × 100%。依顯示模式之損益欄位。 |
+    | **最佳 / 最差個股** | 依「顯示模式」選定之損益欄位，取該欄最大值與最小值的股票。 |
+    | **盈虧比** | 總獲利 ÷ 總虧損（虧損取絕對值）；無虧損時以總獲利表示。 |
+    | **最大回撤** | 依「賣出日」累加已實現損益形成累積曲線，從累積高點回落的最大幅度。 |
+    | **最大單筆盈/虧** | 單筆配對淨損益的最大值與最小值。 |
+    """)
+    st.markdown("### 程式計算流程摘要（除錯用）")
+    st.markdown("""
+    | 項目 | 損益總覽與投資績效 | 庫存損益 |
+    |------|-------------------|------------|
+    | 已實現 | 以**賣出日落在區間**為準：區間內賣出 + 歷史全部買進做配對；每筆配對以 `net_pnl_for_match`（已扣費稅）加總。**「全部」時**：等同全期間。 | `sells_in_range = trades where sell_date in [start,end]`，`buys_all = all buys`，逐檔 `compute_matches(buys_all, sells_in_range, ...)`。 |
+    | 未實現 | **全部交易** → 每檔持倉成本與股數 → (現價 − 均價) × 股數；現價 = API 或持倉均價。 | 同上：持倉與成本用 **全部** 交易，未實現 = (現價 − 均價) × 股數。 |
+    | 沖銷 | 自定沖銷：`custom_rules` (sell_id, buy_id, qty)，`_custom_match` 依規則配對，`min(rule_qty, sl.qty, bl.qty)` 且會扣減 lot 剩餘。 | 同一套 `compute_matches` / `custom_rules`。 |
+    """)
+    st.markdown("**若「各股損益」圖表與「庫存損益」頁同一檔股票數字不同**：兩頁的 **已實現** 都是「該頁所選日期區間內」的已實現損益。請確認兩頁皆選「全部」（本頁快速區間選「全部」、庫存損益頁點「全部」按鈕），則區間皆為 2000-01-01 至今，數字應一致。")
+    st.markdown("---")
+    st.markdown("### 本次計算的動態數據")
+    logic_df = pd.DataFrame([
+        {"項目": "區間", "數值": f"{start_date} ～ {end_date}"},
+        {"項目": "沖銷方式", "數值": policy_label},
+        {"項目": "顯示模式", "數值": {"合計": "合計（已實現+未實現）", "已實現": "已實現", "未實現": "未實現"}.get(display_mode, display_mode)},
+        {"項目": "區間內買進筆數", "數值": n_buys_range},
+        {"項目": "區間內賣出筆數", "數值": n_sells_range},
+        {"項目": "有已實現損益的股票數", "數值": n_stocks_realized},
+        {"項目": "目前有持倉的股票數", "數值": n_stocks_position},
+        {"項目": "總損益（本頁）", "數值": f"{_fmt_big(total_pnl)} （{pnl_col}）"},
+        {"項目": "已實現加總", "數值": _fmt_big(realized_sum)},
+        {"項目": "已實現成本（報酬率分母）", "數值": _fmt_big(realized_cost_sum)},
+        {"項目": "已實現報酬率", "數值": fmt_pct_signed(realized_ret_pct)},
+        {"項目": "未實現加總", "數值": _fmt_big(unrealized_sum)},
+        {"項目": "未實現成本（報酬率分母）", "數值": _fmt_big(unrealized_cost_sum)},
+        {"項目": "未實現報酬率", "數值": fmt_pct_signed(unrealized_ret_pct)},
+        {"項目": "未實現現價來源", "數值": f"API現價 {n_quote_api} 檔、持倉均價(無報價) {n_quote_fallback} 檔"},
+    ])
+    # 數值欄混有整數與字串，pyarrow 轉換會報錯；統一轉字串
+    logic_df["數值"] = logic_df["數值"].astype(str)
+    st.dataframe(logic_df, use_container_width=True, hide_index=True, column_config={"項目": st.column_config.TextColumn("項目", width="medium"), "數值": st.column_config.TextColumn("數值", width="large")})
+    st.markdown("---")
+    st.markdown("### 未實現損益的現價來源")
+    st.caption("可由此表確認每檔持倉在計算未實現時是用 **API 現價** 還是 **持倉均價（無報價時）**。")
+    if quote_source_by_sid:
+        source_rows = []
+        for sid in sorted(quote_source_by_sid.keys()):
+            p = position.get(sid, {})
+            qty = p.get("qty", 0)
+            cost = p.get("cost", 0)
+            avg_cost = (cost / qty) if qty else 0
+            m = masters.get(sid)
+            label = (getattr(m, "name", None) or "") or sid if m else sid
+            source_rows.append({
+                "股票": f"{sid} {label}".strip() if label else sid,
+                "現價來源": quote_source_by_sid[sid],
+                "計算用現價": round(last_price_by_sid.get(sid, 0), 2),
+                "持倉均價": round(avg_cost, 2),
+                "持倉股數": qty,
+                "未實現": round(unrealized_by_stock.get(sid, 0), 2),
+            })
+        _src_df = pd.DataFrame(source_rows)
+        # 金額/股數 >1000 以千分位顯示
+        _src_fmt = {"持倉股數": "{:,.0f}", "未實現": "{:,.0f}", "計算用現價": "{:,.2f}", "持倉均價": "{:,.2f}"}
+        st.dataframe(_src_df.style.format(_src_fmt, na_rep="—"), use_container_width=True, hide_index=True)
+    else:
+        st.caption("目前無持倉，無未實現現價來源資料。")

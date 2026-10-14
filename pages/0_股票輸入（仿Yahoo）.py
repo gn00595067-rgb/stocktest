@@ -28,7 +28,7 @@ from services.auth_service import (
     ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin, get_current_user,
     get_allowed_traders, can_access_trader, filter_trades_by_permission,
 )
-from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache
+from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache, _tw_market_open
 from services.trade_fees import fees_for_trade
 from services.prefs import resolve_default_trader
 from services.trader_service import list_trader_names, ensure_traders_seeded, add_trader
@@ -177,13 +177,26 @@ _NEW_PERSON = "＋ 新增人…"
 _KIND_FULL, _KIND_FILTER = "full", "filter"
 
 
+# 盤中自動更新股價（Peggy 2026-10-14：盤中不可能一直按刷新）。
+# 自動更新是「整頁重跑」，會關掉對話框、可能洗掉打到一半的輸入，所以下列情況暫停：
+# 有展開某檔（在輸入或看明細）、或對話框 90 秒內有動作。
+AUTO_REFRESH_SEC = 30
+_DIALOG_PAUSE_SEC = 90
+
+
+def _mark_dialog():
+    st.session_state["yh_dialog_ts"] = time.time()
+
+
 @st.dialog("新增分頁")
 def _dlg_new_group(owner: str, trader_opts: list, default_trader: str):
+    _mark_dialog()
     _group_form(owner, None, trader_opts, default_trader)
 
 
 @st.dialog("編輯此分頁")
 def _dlg_edit_group(owner: str, group_id: int, trader_opts: list, default_trader: str):
+    _mark_dialog()
     _group_form(owner, group_id, trader_opts, default_trader)
 
 
@@ -261,6 +274,7 @@ def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
 
 @st.dialog("刪除此分頁")
 def _dlg_delete_group(owner: str, g: gp.GroupSpec):
+    _mark_dialog()
     st.warning(f"確定刪除分頁「{g.name}」？\n\n只會刪除這個分頁，**{g.trader} 的交易一筆都不會刪**。")
     c1, c2 = st.columns(2)
     if c1.button("確定刪除", type="primary", use_container_width=True):
@@ -277,6 +291,7 @@ def _dlg_delete_group(owner: str, g: gp.GroupSpec):
 
 @st.dialog("新增股票")
 def _dlg_add_stock(trader: str, g: gp.GroupSpec):
+    _mark_dialog()
     opts = _stock_options()
     sid = st.selectbox("股票（可輸入代號或名稱搜尋）", options=[""] + list(opts.keys()),
                        format_func=lambda k: opts.get(k, "請選擇…") if k else "請選擇…")
@@ -706,10 +721,32 @@ st.markdown(f"""
 rc1, rc2 = st.columns([5, 1], vertical_alignment="center")
 from datetime import datetime, timezone, timedelta
 _tw = datetime.now(timezone(timedelta(hours=8)))
-rc1.caption(f"畫面更新：{_tw:%H:%M:%S}（台灣時間）・紅▲賺、綠▼賠・盤中股價約 20 秒更新一次")
+_live = _tw_market_open()
+_open_key = f"yh_open_{trader}"
+# 展開／收合只重跑持股表、不會重畫這行字，所以暫停條件直接寫在說明裡
+_ar_note = (f"盤中每 {AUTO_REFRESH_SEC} 秒自動更新股價（展開某檔輸入時暫停）" if _live
+            else "已收盤，股價不再自動更新")
+rc1.caption(f"畫面更新：{_tw:%H:%M:%S}（台灣時間）・紅▲賺、綠▼賠・{_ar_note}")
 if rc2.button("🔄 更新股價", key="yh_refresh"):
     clear_quote_cache()
     st.rerun()
+
+if _live:
+    st.session_state["yh_page_ts"] = time.time()
+
+    @st.fragment(run_every=AUTO_REFRESH_SEC)
+    def _auto_refresh(open_key=_open_key):
+        """計時器每 30 秒叫一次：距上次整頁更新夠久、且沒在輸入，就整頁重跑抓新股價。"""
+        now = time.time()
+        if now - st.session_state.get("yh_page_ts", 0) < AUTO_REFRESH_SEC - 2:
+            return   # 整頁剛跑過（含這次整頁執行本身）
+        if st.session_state.get(open_key):
+            return   # 有展開某檔：可能正在打字，不打斷
+        if now - st.session_state.get("yh_dialog_ts", 0) < _DIALOG_PAUSE_SEC:
+            return   # 剛開過對話框：整頁重跑會把對話框關掉
+        st.rerun()
+
+    _auto_refresh()
 
 # 持股表（fragment）：展開／收合、在展開區輸入都只重畫這張表；送出或刪除成功才整頁更新
 @st.fragment

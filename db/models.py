@@ -109,3 +109,16 @@ class PortfolioGroup(Base):
     only_listed = Column(Boolean, default=False, nullable=False)
     sort_order = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ManualFigure(Base):
+    """手動輸入的數字：期間獲利表裡系統上線前的月份獲利、帳戶結餘（見 docs/specs/Peggy回饋_2026-10-14.md §8）。
+
+    period_key 例：2023H2（112/7/19～112/12/31）、2024（113 全年）、2025-03（114/3 月）、balance（帳戶結餘）。
+    """
+    __tablename__ = "manual_figures"
+
+    trader = Column(String(50), primary_key=True)
+    period_key = Column(String(20), primary_key=True)
+    amount = Column(Float, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

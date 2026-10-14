@@ -187,6 +187,27 @@ def aggregate_by(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     return agg
 
 
+def rank_with_share(agg: pd.DataFrame, key_cols: List[str]) -> pd.DataFrame:
+    """aggregate_by 的結果加上「排名」「佔比%」（依淨損益由賺到賠，aggregate_by 已排好）。
+
+    佔比口徑同投資績效頁 Top5：賺錢的項目＝佔全部獲利 %；賠錢的項目＝佔全部虧損 %；打平＝0。
+    （不用「佔總損益」：賺賠互抵後總額很小時，佔比會變成幾百 % 或負的，看不懂。）"""
+    out = agg.copy()
+    pos_sum = float(out.loc[out["淨損益"] > 0, "淨損益"].sum())
+    neg_sum = float(out.loc[out["淨損益"] < 0, "淨損益"].sum())
+
+    def _share(v):
+        if v > 0 and pos_sum:
+            return v / pos_sum * 100
+        if v < 0 and neg_sum:
+            return v / neg_sum * 100
+        return 0.0
+
+    out["佔比%"] = out["淨損益"].astype(float).map(_share)
+    out.insert(0, "排名", range(1, len(out) + 1))
+    return out[["排名"] + list(key_cols) + ["淨損益", "佔比%", "報酬率%", "筆數", "勝率%"]]
+
+
 def monthly_series(df: pd.DataFrame) -> pd.DataFrame:
     """依『賣出月份』彙總每月已實現淨損益與累積損益。"""
     if df is None or df.empty:

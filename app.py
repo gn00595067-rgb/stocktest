@@ -140,5 +140,5 @@ elif _dev_tools:
         st.session_state["show_clear_confirm"] = True
         st.rerun()
 
-# 首頁僅保留側邊欄功能，直接進入投資績效頁
-st.switch_page("pages/0_投資績效.py")
+# 首頁僅保留側邊欄功能，直接進入股票輸入（仿Yahoo）頁（Peggy 2026-10-14：一進來最常用的是輸入）
+st.switch_page("pages/0_股票輸入（仿Yahoo）.py")

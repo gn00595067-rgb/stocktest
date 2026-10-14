@@ -9,7 +9,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from reports.realized_report import (
-    build_realized_ledger, summarize_ledger, aggregate_by, monthly_series,
+    build_realized_ledger, summarize_ledger, aggregate_by, monthly_series, rank_with_share,
 )
 
 
@@ -95,3 +95,18 @@ def test_empty_inputs():
     assert build_realized_ledger([], {}, "CUSTOM_PLUS_FIFO").empty
     s = summarize_ledger(build_realized_ledger([], {}, "CUSTOM_PLUS_FIFO"))
     assert s["筆數"] == 0 and s["總淨損益"] == 0.0
+
+
+def test_rank_with_share_splits_profit_and_loss():
+    agg = pd.DataFrame({
+        "產業": ["半導體", "航運", "金融", "其他"],
+        "淨損益": [300.0, 100.0, -50.0, -150.0],
+        "報酬率%": [1.0, 1.0, -1.0, -1.0],
+        "筆數": [1, 1, 1, 1],
+        "勝率%": [100.0, 100.0, 0.0, 0.0],
+    })
+    out = rank_with_share(agg, ["產業"])
+    assert list(out["排名"]) == [1, 2, 3, 4]
+    assert list(out.columns[:2]) == ["排名", "產業"]
+    # 賺的佔全部獲利 400；賠的佔全部虧損 -200
+    assert [round(v, 1) for v in out["佔比%"]] == [75.0, 25.0, 25.0, 75.0]

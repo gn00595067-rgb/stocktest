@@ -3,7 +3,6 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-from datetime import date, timedelta
 import sys
 import os
 
@@ -28,7 +27,7 @@ from services.auth_service import (
 )
 from reports.portfolio_report import build_portfolio_df, get_realized_pnl_by_stock
 from reports.stock_detail_report import build_stock_detail
-from services.prefs import resolve_default_trader
+from services.report_ui import render_report_filter, inject_kpi_css, kpi_card, render_page_notes
 from services.trader_service import all_trader_names
 from services.price_service import get_quote_cached, fetch_daily_prices
 from services.pnl_engine import Lot, compute_matches
@@ -61,18 +60,6 @@ CHART_CONFIG = {
 def _inject_page_style():
     st.markdown("""
     <style>
-    .portfolio-kpi-card {
-        background: linear-gradient(145deg, #fff 0%, #f8f9fa 100%);
-        border: 1px solid #e9ecef;
-        border-radius: 12px;
-        padding: 1rem 1.25rem;
-        margin-bottom: 0.5rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-    }
-    .portfolio-kpi-label { font-size: 0.8rem; color: #6c757d; margin-bottom: 0.25rem; }
-    .portfolio-kpi-value { font-size: 1.35rem; font-weight: 700; }
-    .portfolio-kpi-value--positive { color: #c62828; }
-    .portfolio-kpi-value--negative { color: #2e7d32; }
     div[data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
     /* 持倉表列選取：未勾選時看起來像空白（仍可點） */
     div[data-testid="stDataFrame"] input[type="checkbox"]:not(:checked) {
@@ -80,28 +67,7 @@ def _inject_page_style():
     }
     </style>
     """, unsafe_allow_html=True)
-
-
-def _range_active_index(start_date, end_date, today):
-    """回傳目前區間對應的快捷鈕索引 0..6（當日、近3天、近1週、近1個月、近半年、近1年、全部），否則 -1。"""
-    if end_date != today:
-        return -1
-    if start_date == today:
-        return 0  # 當日
-    d = (today - start_date).days
-    if start_date == date(2000, 1, 1):
-        return 6  # 全部
-    if d <= 4 and start_date == today - timedelta(days=3):
-        return 1  # 近3天
-    if 6 <= d <= 8 and start_date == today - timedelta(days=7):
-        return 2  # 近1週
-    if 28 <= d <= 32 and start_date == today - timedelta(days=30):
-        return 3  # 近1個月
-    if 178 <= d <= 182 and start_date == today - timedelta(days=180):
-        return 4  # 近半年
-    if 363 <= d <= 367 and start_date == today - timedelta(days=365):
-        return 5  # 近1年
-    return -1
+    inject_kpi_css()   # KPI 卡（含重點大字卡）樣式與其他報表頁共用
 
 
 def _pnl_color(val):
@@ -181,36 +147,17 @@ def build_portfolio_kpi_cards(df: pd.DataFrame, realized_ret_pct=None, unrealize
         cost_basis = total_mv - total_unrealized
         total_return_pct = (total_pnl / cost_basis * 100) if cost_basis and cost_basis != 0 else 0.0
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""
-        <div class="portfolio-kpi-card">
-            <div class="portfolio-kpi-label">持倉市值</div>
-            <div class="portfolio-kpi-value">{_fmt_num(total_mv)}</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        cls = _pnl_color(total_unrealized)
-        st.markdown(f"""
-        <div class="portfolio-kpi-card">
-            <div class="portfolio-kpi-label">未實現損益</div>
-            <div class="portfolio-kpi-value {cls}">{_fmt_num(total_unrealized)}</div>
-            <div class="portfolio-kpi-meta">報酬率 {_fmt_pct_signed(unrealized_ret_pct)}</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        cls = _pnl_color(total_realized)
-        st.markdown(f"""
-        <div class="portfolio-kpi-card">
-            <div class="portfolio-kpi-label">已實現損益</div>
-            <div class="portfolio-kpi-value {cls}">{_fmt_num(total_realized)}</div>
-            <div class="portfolio-kpi-meta">報酬率 {_fmt_pct_signed(realized_ret_pct)}</div>
-        </div>""", unsafe_allow_html=True)
-    with c4:
-        cls = _pnl_color(total_return_pct)
-        st.markdown(f"""
-        <div class="portfolio-kpi-card">
-            <div class="portfolio-kpi-label">總報酬率</div>
-            <div class="portfolio-kpi-value {cls}">{_fmt_pct(total_return_pct)}</div>
-        </div>""", unsafe_allow_html=True)
+    # Peggy 2026-10-14：這四個才是要看的重點 → 大字＋底色
+    cards = [
+        kpi_card("持倉市值", _fmt_num(total_mv), hero=True),
+        kpi_card("未實現損益", _fmt_num(total_unrealized), _pnl_color(total_unrealized),
+                 meta=f"報酬率 {_fmt_pct_signed(unrealized_ret_pct)}", hero=True),
+        kpi_card("已實現損益（區間）", _fmt_num(total_realized), _pnl_color(total_realized),
+                 meta=f"報酬率 {_fmt_pct_signed(realized_ret_pct)}", hero=True),
+        kpi_card("總報酬率", _fmt_pct(total_return_pct), _pnl_color(total_return_pct), hero=True),
+    ]
+    for col, html in zip(st.columns(4), cards):
+        col.markdown(html, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -462,98 +409,34 @@ render_auth_sidebar()
 _inject_page_style()
 
 st.title("庫存損益")
-st.caption("計算口徑：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。")
 
-# ----- 1. 篩選條件 -----
-with st.container():
-    st.markdown("#### 篩選條件")
-    # 先初始化日期 key，避免 widget 同時有 default value 與 session state 的警告
-    # 「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁的「全部」一致，兩頁已實現才會對齊
-    # 預設區間：近半年
-    today = date.today()
-    if "portfolio_start" not in st.session_state:
-        st.session_state["portfolio_start"] = today - timedelta(days=180)
-    if "portfolio_end" not in st.session_state:
-        st.session_state["portfolio_end"] = today
+# ----- 1. 篩選條件（與各報表頁同一格式：services/report_ui.py） -----
+# 先載入資料供篩選與報表使用
+try:
+    sess = get_session()
+    all_trades = sess.query(Trade).order_by(Trade.id).all()
+    masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
+    custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
+    sess.close()
+    all_trades = filter_trades_by_permission(all_trades)
+    if is_admin():
+        # 主檔 ∪ 交易出現過：剛新增、還沒交易的買賣人也能篩選
+        portfolio_users = all_trader_names()
+    else:
+        portfolio_users = get_allowed_traders() or []
+except OperationalError:
+    st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.stop()
+except Exception:
+    st.stop()
+if not is_admin() and not portfolio_users:
+    st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
+    st.stop()
 
-    # 快捷區間按鈕：用 on_click callback 才會可靠連動到下方日期與結果
-    def _pf_set_range(days=None, all_time=False, today_only=False):
-        if all_time:
-            st.session_state["portfolio_start"] = date(2000, 1, 1)
-        elif today_only:
-            st.session_state["portfolio_start"] = today
-        else:
-            st.session_state["portfolio_start"] = today - timedelta(days=days)
-        st.session_state["portfolio_end"] = today
-
-    # 直接用 type="primary" 高亮當前區間鈕（從 session_state 算，最準；不靠全域 CSS）
-    _pf_active = _range_active_index(st.session_state.get("portfolio_start"), st.session_state.get("portfolio_end"), today)
-    _pf_cols = st.columns(7)
-    for _i, (_lab, _key, _kw) in enumerate([
-        ("當日", "btn_today", {"today_only": True}),
-        ("近3天", "btn_3d", {"days": 3}),
-        ("近1週", "btn_1w", {"days": 7}),
-        ("近1個月", "btn_1m", {"days": 30}),
-        ("近半年", "btn_6m", {"days": 180}),
-        ("近1年", "btn_1y", {"days": 365}),
-        ("全部", "btn_all", {"all_time": True}),
-    ]):
-        _pf_cols[_i].button(
-            _lab, key=_key, on_click=_pf_set_range, kwargs=_kw,
-            use_container_width=True, type=("primary" if _pf_active == _i else "secondary"),
-        )
-
-    # 先載入資料供篩選與報表使用
-    try:
-        sess = get_session()
-        all_trades = sess.query(Trade).order_by(Trade.id).all()
-        masters = {m.stock_id: m for m in sess.query(StockMaster).all()}
-        custom_rules = [(r.sell_trade_id, r.buy_trade_id, r.matched_qty) for r in sess.query(CustomMatchRule).order_by(CustomMatchRule.sell_trade_id, CustomMatchRule.buy_trade_id).all()]
-        sess.close()
-        all_trades = filter_trades_by_permission(all_trades)
-        if is_admin():
-            # 主檔 ∪ 交易出現過：剛新增、還沒交易的買賣人也能篩選
-            portfolio_users = all_trader_names()
-        else:
-            portfolio_users = get_allowed_traders() or []
-    except OperationalError:
-        st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
-        st.stop()
-    except Exception:
-        st.stop()
-
-    # 沖銷口徑固定為「自定沖銷＋其餘先進先出」（所有賣出都計入、且尊重自定沖銷規則）
-    policy = "CUSTOM_PLUS_FIFO"
-    col_f1, col_f2, col_f4 = st.columns([1, 1, 1.4])
-    with col_f1:
-        start_date = st.date_input("開始日期", key="portfolio_start")
-    with col_f2:
-        end_date = st.date_input("結束日期", key="portfolio_end")
-    with col_f4:
-        if is_admin():
-            filter_user_options = ["全部"] + portfolio_users
-            _pf_def = resolve_default_trader(portfolio_users)
-            selected_users = st.multiselect(
-                "買賣人",
-                options=filter_user_options,
-                default=([_pf_def] if _pf_def else ["全部"]),
-                key="portfolio_filter_user_multi",
-            )
-            portfolio_filter_users = None if (not selected_users or "全部" in selected_users) else selected_users
-        else:
-            if not portfolio_users:
-                st.warning("目前帳號尚未綁定任何買賣人，請聯絡管理者設定權限。")
-                st.stop()
-            _pf_def = resolve_default_trader(portfolio_users)
-            selected_users = st.multiselect(
-                "買賣人",
-                options=portfolio_users,
-                default=([_pf_def] if _pf_def else portfolio_users),
-                key="portfolio_filter_user_multi",
-            )
-            portfolio_filter_users = selected_users if selected_users else []
-    st.caption("持倉與損益會先套用 **自定沖銷** 規則；若選擇「未定沖銷部分」策略，則會對尚未被規則覆蓋的部分自動補配。")
-    st.caption("**已實現損益**依上列日期區間計算，且**涵蓋全部股票（含已全部賣光的標的）**，與「已實現損益」頁同口徑；**持倉與未實現**依全部交易。點「全部」= 2000-01-01 至今，與「損益總覽與投資績效」頁一致。")
+# 沖銷口徑固定為「自定沖銷＋其餘先進先出」（所有賣出都計入、且尊重自定沖銷規則）
+policy = "CUSTOM_PLUS_FIFO"
+# 「全部」= 2000-01-01 至今，與「投資績效」頁的「全部」一致，兩頁已實現才會對齊
+start_date, end_date, portfolio_filter_users, _ = render_report_filter("portfolio", portfolio_users, default_range="當年")
 
 trades = [t for t in all_trades if start_date <= t.trade_date <= end_date]
 
@@ -572,9 +455,9 @@ _quotes_now = get_quotes_cached(list(_hold_sids), exchanges=_ex_map) if _hold_si
 _qt = next((q.get("time") for q in _quotes_now.values() if q and q.get("time")), None)
 with _rc2:
     if _qt:
-        st.caption(f"📡 現價來源 TWSE MIS 官方即時，最新報價時間約 **{_qt}**（20 秒快取，按「更新報價」可強制刷新）")
+        st.caption(f"📡 最新報價時間約 **{_qt}**（按「更新報價」重抓）")
     else:
-        st.caption("📡 現價來源 TWSE MIS 官方即時（盤後或無成交的冷門股會顯示昨收）")
+        st.caption("📡 盤後或無成交的冷門股顯示昨收")
 
 df, df_industry, df_user, debug_cost = build_portfolio_df(
     all_trades, masters, start_date, end_date, policy, get_quote_cached, custom_rules=custom_rules, filter_users=portfolio_filter_users
@@ -658,7 +541,7 @@ if not df.empty:
 # ----- 3. 持倉明細表 -----
 st.markdown("---")
 st.markdown("#### 📋 持倉明細")
-st.caption("**持倉股數** = 該股票、該買賣人的「買進總股數 − 賣出總股數」。**自定沖銷**只影響已實現損益與成本分攤，不會減少持倉；持倉要歸零，必須在「交易輸入」中該股票的**賣出總股數 ≥ 買進總股數**。若認為已全部賣出卻仍出現持倉，請至「交易輸入」或「個股明細」確認是否漏輸賣出紀錄。")
+st.caption("點表格任一列可展開下方明細 · 🔴 紅＝賺、🟢 綠＝賠 · **底價**＝全部賣在此價扣完費稅剛好不虧（算法見頁尾說明）")
 df_display = df.drop(columns=["買進總股數", "賣出總股數"], errors="ignore") if "買進總股數" in df.columns else df
 # 預設依「市值」由高到低排序（若欄位存在）
 if "市值" in df_display.columns:
@@ -700,14 +583,6 @@ for _idx, row in df_display.iterrows():
     name = row.get("名稱", "")
     user = row.get("買賣人", "")
     detail_rows.append((sid, name, user))
-
-# 簡化操作：不再佔左側空間；僅在有選取時於表格上方顯示一條工具列 + 小收合按鈕
-st.caption(
-    "提示：點表格任一列即可展開下方明細。損益顏色依台股慣例：🔴 紅＝賺、🟢 綠＝賠（與券商 App 相同）。**底價**＝全部股數賣在此價，**扣除賣出手續費與證交稅後**剛好不虧（已依升降單位進位）。"
-    "注意底價**不是**「均價進位」：賣出還要付約 0.34% 的手續費＋證交稅，所以底價約＝均價 × 1.0034 再進位。"
-    "例：均價 869.12、一檔 1 元 → 869.12 ÷ (1 − 0.34%) ≈ 872.04 → 底價 873；若賣 870 扣完費稅仍會小虧。"
-    "每檔的計算過程見表格下方「🧮 底價怎麼算？」。"
-)
 
 event = st.dataframe(
     style_portfolio_dataframe(df_display),
@@ -957,8 +832,18 @@ if not df_user.empty:
 else:
     st.caption("無依買賣人區分之持倉。")
 
-# ----- 7. 除錯／排查（放最下方：非日常查看，避免擠到持倉明細） -----
-st.markdown("---")
+# ----- 7. 說明（Peggy：說明放下面，上面留給重點） -----
+render_page_notes(
+    "**計算口徑**：**已實現損益** = 配對損益（已扣買進手續費、賣出手續費、證交稅）；**未實現損益** = 以現價估算、未預扣未來賣出費稅。",
+    "**日期區間**：只影響「已實現損益」（依賣出日），且**涵蓋全部股票（含已全部賣光的標的）**，與「已實現損益」頁同口徑；**持倉與未實現**一律依全部交易、是目前的數字。點「全部」= 2000-01-01 至今，與「投資績效」頁一致。",
+    "**沖銷**：持倉與損益先套用 **自定沖銷** 規則，沒有規則的部分用先進先出補配。",
+    "**持倉股數** = 該股票、該買賣人的「買進總股數 − 賣出總股數」。**自定沖銷**只影響已實現損益與成本分攤，不會減少持倉；持倉要歸零，必須在「交易輸入」中該股票的**賣出總股數 ≥ 買進總股數**。若認為已全部賣出卻仍出現持倉，請至「交易輸入」或「個股明細」確認是否漏輸賣出紀錄（頁尾「為何還有持倉？」可對照）。",
+    "**底價**＝全部股數賣在此價，**扣除賣出手續費與證交稅後**剛好不虧（已依升降單位進位）。底價**不是**「均價進位」：賣出還要付約 0.34% 的手續費＋證交稅，所以底價約＝均價 × 1.0034 再進位。"
+    "例：均價 869.12、一檔 1 元 → 869.12 ÷ (1 − 0.34%) ≈ 872.04 → 底價 873；若賣 870 扣完費稅仍會小虧。每檔的計算過程見持倉表下方「🧮 底價怎麼算？」。",
+    "**顏色**：依台股慣例 🔴 紅＝賺、🟢 綠＝賠（與券商 App 相同）。",
+)
+
+# ----- 8. 除錯／排查（放最下方：非日常查看，避免擠到持倉明細） -----
 with st.expander("🔍 為何還有持倉？— 買進／賣出總股數對照", expanded=False):
     st.caption("下表為每筆持倉的 **買進總股數** 與 **賣出總股數**，持倉 = 買進 − 賣出。若賣出總股數小於買進總股數，就會有剩餘持倉。請至「交易輸入」補齊該股票、該買賣人的賣出紀錄後，持倉才會歸零。")
     if not df.empty and "買進總股數" in df.columns:
