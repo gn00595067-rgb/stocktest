@@ -435,3 +435,10 @@
 
 **下一步**：部署後**一定要 Reboot app**（db.models 加了 `manual_figures` 表、services 新增模組）。請 Peggy 回答：期間獲利表 Excel 右側紅框「虧(a)／(含虧)c=a+b」是什麼；期間獲利表最後要放哪個分頁；「最大單筆」說明後是否保留。試算表備份不含 manual_figures（同 portfolio_groups 既有缺口）。
 - 2026-10-14 補記：已推上 origin/main（4761e39）；待 Jonathan 在 Streamlit Cloud Reboot app。
+
+## 2026-10-14 期間獲利表加「虧(a)」「(含虧)c=a+b」
+
+**做了什麼**：帳戶結餘下加「虧(a)」（手動輸入，編輯表也多一列）與「(含虧)c=a+b」（＝a＋當年小計，當年小計列標「(b)」，深黃底）。
+**為什麼**：Peggy Excel 右側紅框；意思沒人知道，Jonathan 決定先照字面當字串做。
+**驗證**：pytest 全綠（新增 a+b 測試）。
+**下一步**：問到意思後再改標籤或公式（`reports/period_profit.py` 的 LOSS_* 常數）。不需 Reboot。

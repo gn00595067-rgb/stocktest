@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from db.models import Base
-from reports.period_profit import build_period_blocks, manual_period_keys, BALANCE_KEY
+from reports.period_profit import build_period_blocks, manual_period_keys, BALANCE_KEY, LOSS_A_KEY
 from services.manual_figures import load_manual_figures, save_manual_figures
 
 TODAY = date(2026, 10, 14)
@@ -21,7 +21,7 @@ def test_manual_keys_stop_at_system_start():
     assert keys[:2] == ["2023H2", "2024"]
     assert "2025-01" in keys and "2025-12" in keys
     assert "2026-08" in keys and "2026-09" not in keys   # 115/9 起系統
-    assert keys[-1] == BALANCE_KEY
+    assert keys[-2:] == [LOSS_A_KEY, BALANCE_KEY]
 
 
 def test_blocks_layout_sources_and_totals():
@@ -40,9 +40,19 @@ def test_blocks_layout_sources_and_totals():
     assert by["115/9月"]["來源"] == "系統" and by["115/9月"]["獲利"] == 300.0
     assert by["115/10月"]["獲利"] == -50.0
     assert by["115/11月"]["來源"] == "未到" and by["115/11月"]["獲利"] is None
-    assert by["115/1-12月"]["獲利"] == 255.0
+    assert by["115/1-12月 (b)"]["獲利"] == 255.0
     assert by["112/7/19～115/10月"]["獲利"] == 1385.0
-    assert right[-1]["kind"] == "balance" and right[-1]["獲利"] == 999.0
+    assert right[-3]["kind"] == "balance" and right[-3]["獲利"] == 999.0
+    # 虧(a) 沒填 → c＝0＋當年小計 b
+    assert right[-2]["期間"] == "虧(a)" and right[-2]["獲利"] is None
+    assert right[-1]["期間"] == "(含虧)c=a+b" and right[-1]["獲利"] == 255.0
+
+
+def test_loss_c_equals_a_plus_this_year_subtotal():
+    blocks = build_period_blocks({LOSS_A_KEY: -100.0}, {"2026-09": 300.0}, TODAY)
+    last = blocks[-1]
+    assert last[-2]["獲利"] == -100.0
+    assert last[-1]["獲利"] == 200.0
 
 
 def test_blank_manual_shown_as_none_and_counts_zero():

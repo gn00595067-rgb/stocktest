@@ -12,6 +12,10 @@ SYSTEM_START = date(2026, 9, 1)     # 115/9 起用系統數字
 FIRST_DAY = date(2023, 7, 19)       # 112/7/19 開戶起算
 MONTHLY_FROM_YEAR = 2025            # 114 年起逐月列
 BALANCE_KEY = "balance"
+# Excel 右側紅框：「虧(a)」手動填、「(含虧)c=a+b」＝a＋當年小計(b)。意思待確認，先照字面做（Jonathan 2026-10-14）
+LOSS_A_KEY = "loss_a"
+LOSS_A_LABEL = "虧(a)"
+LOSS_C_LABEL = "(含虧)c=a+b"
 # 逐月之前的整段期間（只有一格）
 LUMP_PERIODS = [("2023H2", "112/7/19～112/12/31"), ("2024", "113/1-12月")]
 
@@ -36,6 +40,7 @@ def manual_period_keys(today: date, system_start: date = SYSTEM_START) -> List[t
             if (y, m) > (today.year, today.month) or is_system_month(y, m, system_start):
                 break
             out.append((month_key(y, m), f"{roc(y)}/{m}月"))
+    out.append((LOSS_A_KEY, LOSS_A_LABEL))
     out.append((BALANCE_KEY, "帳戶結餘"))
     return out
 
@@ -55,6 +60,7 @@ def build_period_blocks(
         return float(x) if x is not None else None
 
     running = 0.0          # 112/7/19 起累計
+    b_this_year = 0.0      # 當年小計（b）
     blocks: List[List[dict]] = []
     first = []
     for key, label in LUMP_PERIODS:
@@ -80,13 +86,19 @@ def build_period_blocks(
         if y == today.year:
             last_m = today.month
         running += year_sum
-        rows.append({"期間": f"{roc(y)}/1-12月", "獲利": year_sum, "來源": "小計", "kind": "subtotal"})
+        # 當年小計標「(b)」：對應下方「(含虧)c=a+b」的 b
+        sub_label = f"{roc(y)}/1-12月" + (" (b)" if y == today.year else "")
+        rows.append({"期間": sub_label, "獲利": year_sum, "來源": "小計", "kind": "subtotal"})
         rows.append({
             "期間": f"{roc(FIRST_DAY.year)}/{FIRST_DAY.month}/{FIRST_DAY.day}～{roc(y)}/{last_m}月",
             "獲利": running, "來源": "累計", "kind": "total",
         })
         blocks.append(rows)
+        b_this_year = year_sum
     if not blocks:          # today 早於逐月年度（理論上不會發生）
         blocks.append(first)
+    a = _v(manual.get(LOSS_A_KEY))
     blocks[-1].append({"期間": "帳戶結餘", "獲利": _v(manual.get(BALANCE_KEY)), "來源": "手動", "kind": "balance"})
+    blocks[-1].append({"期間": LOSS_A_LABEL, "獲利": a, "來源": "手動", "kind": "item"})
+    blocks[-1].append({"期間": LOSS_C_LABEL, "獲利": (a or 0.0) + b_this_year, "來源": "小計", "kind": "subtotal"})
     return blocks
