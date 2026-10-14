@@ -434,3 +434,4 @@
 **驗證**：pytest 129 passed（新增 report_ui、rank_with_share、每股簡表、期間獲利表／手動數字存取測試）。假資料 SQLite 暫存副本跑真 Streamlit，DevTools 截 1300／1050 寬看過六頁；盤中實測仿Yahoo 80 秒內自動整頁更新 3 次、展開某檔時只跑 1 次（暫停生效）。
 
 **下一步**：部署後**一定要 Reboot app**（db.models 加了 `manual_figures` 表、services 新增模組）。請 Peggy 回答：期間獲利表 Excel 右側紅框「虧(a)／(含虧)c=a+b」是什麼；期間獲利表最後要放哪個分頁；「最大單筆」說明後是否保留。試算表備份不含 manual_figures（同 portfolio_groups 既有缺口）。
+- 2026-10-14 補記：已推上 origin/main（4761e39）；待 Jonathan 在 Streamlit Cloud Reboot app。
