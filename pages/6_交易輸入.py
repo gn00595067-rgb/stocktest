@@ -450,6 +450,19 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
                 or (str(t.side).upper() != side)
                 or ((t.user or "") != trader_row)
             )
+            # 當沖勾選／股價／股數／買賣方向改了、但手續費與證交稅沒被手動改 → 依新條件重算
+            # （之前只勾當沖不重算，證交稅仍是 0.3% 全額，例：3189 9/21 兩筆）
+            amt_changed = (
+                bool(t.is_daytrade) != is_dt
+                or abs(float(t.price or 0) - price) > 1e-9
+                or int(t.quantity or 0) != qty
+                or str(t.side).upper() != side
+            )
+            fee_untouched = (abs(fee - float(t.fee or 0)) < 0.5
+                             and abs(tax - (float(t.tax or 0) if side == "SELL" else 0.0)) < 0.5)
+            if amt_changed and fee_untouched:
+                fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
+                tax = tax if side == "SELL" else 0.0
             t.user = trader_row
             t.trade_date = tdate
             t.side = side

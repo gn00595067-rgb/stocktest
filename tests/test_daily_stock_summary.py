@@ -33,6 +33,7 @@ def test_summary_groups_by_stock_and_adds_total():
     assert total["買進支出"] == 159956 + 52018
     assert total["手續費"] == 28 + 28 + 187 + 18
     assert total["損益"] == 5047
+    assert pd.isna(total["買進股數"]) and pd.isna(total["賣出股數"])
 
 
 def test_summary_empty():

@@ -109,6 +109,9 @@ def build_daily_stock_summary(detail: pd.DataFrame) -> pd.DataFrame:
     total = {"股票": "合計"}
     for c in STOCK_SUMMARY_COLUMNS[1:]:
         total[c] = float(g[c].sum())
+    # 不同股票的股數相加沒有意義（Peggy 2026-10-15 回饋 7-2），合計列留空
+    total["買進股數"] = float("nan")
+    total["賣出股數"] = float("nan")
     out = pd.concat([g, pd.DataFrame([total])], ignore_index=True)
     out["損益"] = out["損益"].round(0)
     return out[STOCK_SUMMARY_COLUMNS]

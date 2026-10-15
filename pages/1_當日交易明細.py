@@ -312,7 +312,7 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str, 
         return ["background-color:#ffc000;font-weight:700"] * len(r) if r.name == n_last else [""] * len(r)
 
     st.dataframe(
-        stock_summary.style.format(_money, na_rep="—").map(_style_signed, subset=["損益"]).apply(_total_row, axis=1),
+        stock_summary.style.format(_money, na_rep="").map(_style_signed, subset=["損益"]).apply(_total_row, axis=1),
         use_container_width=True, hide_index=True, height=35 * (len(stock_summary) + 1) + 3,
     )
 
