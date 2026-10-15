@@ -45,6 +45,9 @@ from services.trade_fees import breakeven_sell_price, fees_for_trade, get_fee_ta
 from services.breakeven_panel import render_breakeven_panel
 from services.prefs import resolve_default_trader
 from services.trader_service import (
+    trader_fee_rate,
+    discount_label,
+    trader_discounts,
     list_trader_names,
     add_trader,
     delete_trader,
@@ -321,10 +324,11 @@ def _render_holdings_header():
         c.markdown(f'<div class="te-hold-th" style="text-align:{ta}"{tip}>{shown}</div>', unsafe_allow_html=True)
 
 
-def _render_holding_row(row: dict, sid: str, open_now: bool, is_etf: bool = False):
+def _render_holding_row(row: dict, sid: str, open_now: bool, is_etf: bool = False, trader: str = ""):
     cols = st.columns(_HOLD_COL_WIDTHS)
-    # 底價：全部股數賣在此價，扣除賣出手續費與證交稅後剛好不虧（藍字）
-    _be = breakeven_sell_price(float(row.get("total_cost", 0) or 0), int(row["qty"] or 0), is_etf=is_etf)
+    # 底價：全部股數賣在此價，扣除賣出手續費與證交稅後剛好不虧（藍字；手續費依買賣人折數）
+    _be = breakeven_sell_price(float(row.get("total_cost", 0) or 0), int(row["qty"] or 0), is_etf=is_etf,
+                               fee_rate=trader_fee_rate(trader))
     breakeven = f'<span style="color:#1565c0;font-weight:700">{_be:.2f}</span>' if _be else "—"
     avg_price = f"{row.get('avg_price', 0):.2f}" if row["qty"] else "—"
     avg = f"{row['avg_cost']:.2f}" if row["qty"] else "—"
@@ -413,7 +417,8 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
                 continue  # 略過尚未填完整的空白／新列
             if not has_id:
                 # 新增列（此表加列）：比照初次輸入自動帶入費率
-                fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
+                fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt,
+                                          fee_rate=trader_fee_rate(trader_row))
                 tax = tax if side == "SELL" else 0.0
             else:
                 # 既有列：採用表格內手動值，不自動重算（避免手動修正被洗掉）
@@ -461,7 +466,8 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
             fee_untouched = (abs(fee - float(t.fee or 0)) < 0.5
                              and abs(tax - (float(t.tax or 0) if side == "SELL" else 0.0)) < 0.5)
             if amt_changed and fee_untouched:
-                fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt)
+                fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt,
+                                          fee_rate=trader_fee_rate(trader_row))
                 tax = tax if side == "SELL" else 0.0
             t.user = trader_row
             t.trade_date = tdate
@@ -929,6 +935,7 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
     送出成功才整頁重跑，讓持股、KPI、交易明細一起更新。
     """
     sid = row["stock_id"]
+    _fee_rate = trader_fee_rate(trader)   # 手續費依買賣人折數（這頁不提供每筆切換，要改請直接改明細表的手續費）
     # ── 交易輸入（可多列）：每列一筆；賣出一律走設定的沖銷口徑（先進先出/接近均價等）自動計算 ──
     rowids_key = f"te_rowids_{sid}"
     seq_key = f"te_rowseq_{sid}"
@@ -983,7 +990,7 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
             # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對。
             # 用與其他欄同款的唯讀輸入框顯示，高度自動對齊（桌機/平板皆然）。
             if _p is not None and _q is not None and float(_p) > 0 and int(_q) > 0:
-                _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt)
+                _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt, fee_rate=_fee_rate)
                 _fee_txt = f"{_rf:,.0f}"
                 _tax_txt = f"{_rt:,.0f}" if _s == "SELL" else "—"  # 買進不收證交稅
             else:
@@ -1107,7 +1114,7 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                 _apply_match_plan(sid, _match_key, [], _open)
                 _rerun_fragment()
             _submit_slot = st.container()
-            _fe, _te = fees_for_trade("SELL", _sp, _sq, is_etf=is_etf, is_daytrade=_sdt)
+            _fe, _te = fees_for_trade("SELL", _sp, _sq, is_etf=is_etf, is_daytrade=_sdt, fee_rate=_fee_rate)
             _shown = filter_and_sort_lots(
                 filter_lots_by_time(_open, st.session_state.get(_tkey, "all")),
                 st.session_state.get(_skey, "nearest_avg"), _sp)
@@ -1134,19 +1141,19 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
         _fee_sum = 0.0
         _tax_sum = 0.0
         for (_s, _d, _p, _q, _dt, _n) in submit_rows:
-            _f, _t = fees_for_trade(_s, _p, _q, is_etf=is_etf, is_daytrade=_dt)
+            _f, _t = fees_for_trade(_s, _p, _q, is_etf=is_etf, is_daytrade=_dt, fee_rate=_fee_rate)
             _fee_sum += _f
             _tax_sum += _t
         if _sell_mode:
             st.caption(
                 f"估算（這筆賣出）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
-                f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
+                f"　（{trader} 手續費 {discount_label(trader_discounts(trader)[0])}，可於「主檔設定」調整；稅 {get_fee_tax_rates()[1]:.3%}）。"
                 "　沖銷用下方選定的批次；送出後表單清空，再輸入下一筆賣出。"
             )
         else:
             st.caption(
                 f"估算（{len(submit_rows)} 筆有效）：手續費 **{_fee_sum:,.0f}** 元　證交稅 **{_tax_sum:,.0f}** 元"
-                f"　（費率可於「主檔/設定」調整，目前 {get_fee_tax_rates()[0]:.4%} / 稅 {get_fee_tax_rates()[1]:.3%}）。"
+                f"　（{trader} 手續費 {discount_label(trader_discounts(trader)[0])}，可於「主檔設定」調整；稅 {get_fee_tax_rates()[1]:.3%}）。"
                 "　（買進可一次多筆送出；賣出會自動改為逐筆，方便個別選擇沖銷配對。）"
             )
 
@@ -1191,7 +1198,7 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                         # 多筆賣出依序扣減剩餘庫存，批次內的買進也納入可配對池
                         avail_lots = [dict(l) for l in get_open_buy_lots(trades, sid, trader, custom_rules, policy)]
                         for (s, d, p, q, dt, n) in submit_rows:
-                            _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt)
+                            _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt, fee_rate=_fee_rate)
                             _tr = Trade(
                                 user=trader, stock_id=sid, trade_date=d, side=s,
                                 price=p, quantity=q, is_daytrade=dt,
@@ -1286,7 +1293,7 @@ def _render_stock_trade_panel(
         st.session_state.pop("te_expand_stock", None)
     open_now = bool(st.session_state.get(open_key, False))
 
-    _render_holding_row(row, sid, open_now, is_etf=is_etf)
+    _render_holding_row(row, sid, open_now, is_etf=is_etf, trader=trader)
 
     if not open_now:
         return
@@ -1563,6 +1570,7 @@ if holdings:
             int(h.get("qty", 0) or 0),
             float(h.get("total_cost", 0) or 0),
             bool(getattr(masters.get(h["stock_id"]), "is_etf", False)),
+            trader_fee_rate(trader),
         )
         for h in sorted(holdings, key=lambda x: (-float(x.get("market_value", 0) or 0), x["stock_id"]))
     )
@@ -1686,10 +1694,11 @@ with st.expander("⚙️ 手續費 / 證交稅率（寫入交易時自動帶入�
     fr, tr = get_fee_tax_rates()
     cfa, ctb = st.columns(2)
     with cfa:
-        st.number_input("手續費率", value=fr, format="%.8f", key="te_fee_rate")
+        st.markdown(f"**手續費**：{trader or '（未選買賣人）'} 是 0.1425% × "
+                    f"**{discount_label(trader_discounts(trader)[0])}**（依買賣人，到「主檔設定」改）")
     with ctb:
         st.number_input("證交稅率（賣出）", value=tr, format="%.4f", key="te_tax_rate")
-    st.caption("預設 0.035625%（0.1425% × 2.5 折，國泰基準）／證交稅 0.3%。手續費與稅皆無條件捨去至整數。改率只影響之後新輸入或重算的交易。")
+    st.caption("手續費與稅皆無條件捨去至整數。改折數／稅率只影響之後新輸入或重算的交易。")
 
 if is_admin():
     with st.expander("👥 管理買賣人名單（新增／刪除，會存到 Google 試算表）", expanded=False):

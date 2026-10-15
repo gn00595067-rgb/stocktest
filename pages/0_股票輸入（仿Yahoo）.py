@@ -31,7 +31,9 @@ from services.auth_service import (
 from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache, _tw_market_open
 from services.trade_fees import fees_for_trade
 from services.prefs import resolve_default_trader
-from services.trader_service import list_trader_names, ensure_traders_seeded, add_trader
+from services.trader_service import (
+    list_trader_names, ensure_traders_seeded, add_trader, trader_discounts, trader_fee_rate, discount_label,
+)
 from services.position_cost import compute_position_and_cost_by_stock
 from services.trade_entry_service import (
     get_open_buy_lots, combined_match_plan, sort_lots_by_strategy, estimate_match_row_net_pnl,
@@ -372,6 +374,26 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
     return final, err
 
 
+def _discount_picker(trader: str, key: str, qty: int = 0, price: float = 0.0, stored_fee: float = None):
+    """手續費折數：一般人直接用設定的折數（不出現選項）；有設「另一個折數」的人（如王小姐）多一排讓這筆自己選。
+
+    修改既有交易時，預設選「能算出原本手續費」的那個折數。回傳 (折數, 是否改過原本的折數)。
+    """
+    main, alt = trader_discounts(trader)
+    if not alt:
+        return main, False
+    opts = [main, alt]
+    idx = 0
+    if stored_fee is not None and qty and price:
+        from services.trade_fees import estimate_broker_fee
+        hit = [i for i, d in enumerate(opts)
+               if abs(estimate_broker_fee(price, qty, fee_rate=trader_fee_rate(trader, d)) - stored_fee) < 0.5]
+        idx = hit[0] if hit else 0
+    disc = st.radio("手續費折數", opts, index=idx, key=key, horizontal=True, format_func=discount_label,
+                    help=f"{trader} 有兩種折數，這筆用哪個就選哪個")
+    return disc, stored_fee is not None and disc != opts[idx]
+
+
 def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
     """交易明細的「✏️ 修改」：改日期／股數／股價。買賣方向不給改（要改請刪掉重 key）。
 
@@ -391,11 +413,13 @@ def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
             side, old_qty, qty, price, (quote or {}).get("prev_close"), holding_qty,
             is_today=(d == date.today() and (d != t.trade_date or float(price or 0) != old_price)),
         )
+        is_etf = bool(getattr(_MASTERS.get(t.stock_id), "is_etf", False))
+        disc, changed_disc = _discount_picker(t.user, f"{k}_disc", old_qty, old_price, float(t.fee or 0))
         changed_core = bool(qty) and int(qty) != old_qty
-        changed_amt = changed_core or (bool(price) and abs(float(price) - old_price) > 1e-9)
+        changed_amt = changed_core or (bool(price) and abs(float(price) - old_price) > 1e-9) or changed_disc
         if changed_amt and not errors:
-            is_etf = bool(getattr(_MASTERS.get(t.stock_id), "is_etf", False))
-            fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=bool(t.is_daytrade))
+            fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=bool(t.is_daytrade),
+                                      fee_rate=trader_fee_rate(t.user, disc))
             tax = tax if side == "SELL" else 0.0
             f[3].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
                           f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}（重算）</span></div>',
@@ -457,6 +481,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     row_ids = st.session_state[rows_key]
     is_etf = bool(getattr(_MASTERS.get(sid), "is_etf", False))
     prev_close = (quote or {}).get("prev_close")
+    disc, _ = _discount_picker(group.trader, f"{k}_disc")
+    fee_rate = trader_fee_rate(group.trader, disc)
     side, entries = "BUY", []
     for i, rid in enumerate(row_ids):
         if i > 0 and side == "SELL":
@@ -487,7 +513,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             warns.append(f"日期或股票不在分頁「{group.name}」的條件內，送出後不會算進此分頁（其他分頁仍看得到）。")
         fee = tax = 0.0
         if qty and price and not [e for e in errors if "請輸入" in e]:
-            fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=is_dt)
+            fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=is_dt,
+                                      fee_rate=fee_rate)
             tax = tax if side == "SELL" else 0.0
             f[4].markdown(f'<div class="yh-td sm c">{fee:,.0f}</div>', unsafe_allow_html=True)
             f[5].markdown(f'<div class="yh-td sm c">{tax:,.0f}</div>', unsafe_allow_html=True)

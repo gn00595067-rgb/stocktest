@@ -9,11 +9,15 @@ from services.trade_fees import breakeven_breakdown
 
 
 def render_breakeven_panel(items: Iterable[Tuple[str, str, int, float, bool]], key_hint: str = "") -> None:
-    """items：(股票代號, 名稱, 股數, 持股成本(含買進手續費), 是否 ETF)。無持股的列自動略過。"""
+    """items：(股票代號, 名稱, 股數, 持股成本(含買進手續費), 是否 ETF[, 手續費率])。無持股的列自動略過。
+
+    手續費率依買賣人折數（trader_service.trader_fee_rate）；沒給用預設。
+    """
     rows = []
     rates = None
-    for sid, name, qty, cost, is_etf in items:
-        d = breakeven_breakdown(float(cost or 0), int(qty or 0), is_etf=bool(is_etf))
+    for sid, name, qty, cost, is_etf, *rest in items:
+        d = breakeven_breakdown(float(cost or 0), int(qty or 0), is_etf=bool(is_etf),
+                                fee_rate=(rest[0] if rest else None))
         if not d:
             continue
         rates = rates or d

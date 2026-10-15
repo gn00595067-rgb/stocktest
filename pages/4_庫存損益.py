@@ -28,7 +28,7 @@ from services.auth_service import (
 from reports.portfolio_report import build_portfolio_df, get_realized_pnl_by_stock
 from reports.stock_detail_report import build_stock_detail
 from services.report_ui import render_report_filter, inject_kpi_css, kpi_card, render_page_notes
-from services.trader_service import all_trader_names
+from services.trader_service import all_trader_names, trader_fee_rate
 from services.price_service import get_quote_cached, fetch_daily_prices
 from services.pnl_engine import Lot, compute_matches
 from services.trade_fees import breakeven_sell_price
@@ -560,6 +560,7 @@ if not df_display.empty and {"股數", "均價", "市值", "未實現損益"}.is
         return breakeven_sell_price(
             float(r["市值"]) - float(r["未實現損益"]), int(r["股數"] or 0),
             is_etf=bool(getattr(_m, "is_etf", False)),
+            fee_rate=trader_fee_rate(str(r.get("買賣人") or "")),
         )
     df_display = df_display.copy()
     df_display.insert(df_display.columns.get_loc("均價") + 1, "底價", df_display.apply(_row_breakeven, axis=1).astype(float))
@@ -612,6 +613,7 @@ if not df_display.empty and {"股數", "市值", "未實現損益"}.issubset(df_
             int(_r["股數"] or 0),
             float(_r["市值"]) - float(_r["未實現損益"]),
             bool(getattr(masters.get(str(_r.get("股票代號") or "").strip()), "is_etf", False)),
+            trader_fee_rate(str(_r.get("買賣人") or "")),
         )
         for _, _r in df_display.iterrows()
     )

@@ -8,7 +8,10 @@ import math
 from typing import Optional, Tuple
 
 BROKER_FEE_MIN = 1.0  # 電子下單最低手續費 1 元
-# 手續費率預設：公定 0.1425% 打 2.5 折（0.001425 × 25%）= 0.00035625
+BASE_FEE_RATE = 0.001425  # 公定手續費率 0.1425%
+# 手續費折數依買賣人（見 docs/specs/買賣人手續費折數.md）：Peggy姐 2.5 折、一般人 2.8 折
+DEFAULT_DISCOUNT = 0.28
+# 沒有指定買賣人時的預設：0.1425% 打 2.5 折（0.001425 × 25%）= 0.00035625
 DEFAULT_FEE_RATE = 0.00035625
 DEFAULT_TAX_RATE = 0.003
 DEFAULT_ETF_TAX_RATE = 0.001
@@ -25,13 +28,20 @@ def get_fee_tax_rates() -> Tuple[float, float]:
         return DEFAULT_FEE_RATE, DEFAULT_TAX_RATE
 
 
+def fee_rate_for_discount(discount: Optional[float]) -> float:
+    """折數 → 手續費率（例 0.28 → 0.1425% × 0.28）；空白用一般人 2.8 折。"""
+    d = DEFAULT_DISCOUNT if discount is None or discount != discount or discount <= 0 else float(discount)
+    return BASE_FEE_RATE * d
+
+
 def estimate_broker_fee(price: float, quantity: int, fee_rate: Optional[float] = None) -> float:
     """單筆成交手續費（買賣皆收，最低 1 元，無條件捨去至整數，國泰基準）。"""
     if quantity <= 0 or price <= 0:
         return 0.0
     rate = fee_rate if fee_rate is not None else get_fee_tax_rates()[0]
     amount = price * quantity
-    return float(max(BROKER_FEE_MIN, math.floor(amount * rate)))
+    # 先四捨五入到小數 6 位再捨去：避免 40.0 被浮點算成 39.9999 而少 1 元
+    return float(max(BROKER_FEE_MIN, math.floor(round(amount * rate, 6))))
 
 
 def estimate_sell_tax(
@@ -62,12 +72,14 @@ def fees_for_trade(
     quantity: int,
     is_etf: bool = False,
     is_daytrade: bool = False,
+    fee_rate: Optional[float] = None,
 ) -> Tuple[float, float]:
     """
     回傳 (fee, tax)。
     買進：僅手續費；賣出：手續費 + 證交稅（當沖時一般個股稅減半）。
+    fee_rate：該買賣人的手續費率（trader_service.trader_fee_rate）；空白用設定頁的預設費率。
     """
-    fee = estimate_broker_fee(price, quantity)
+    fee = estimate_broker_fee(price, quantity, fee_rate=fee_rate)
     side_u = (side or "").strip().upper()
     if side_u == "SELL":
         tax = estimate_sell_tax(price, quantity, is_etf=is_etf, is_daytrade=is_daytrade)

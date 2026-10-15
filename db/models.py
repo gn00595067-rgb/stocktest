@@ -71,6 +71,10 @@ class Trader(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(50), unique=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # 手續費折數（見 docs/specs/買賣人手續費折數.md）：空白＝一般人 2.8 折
+    fee_discount = Column(Float, nullable=True)
+    # 可切換的另一個折數（例：王小姐有時 2.5 折）；空白＝不切換，輸入時不出現選項
+    fee_discount_alt = Column(Float, nullable=True)
 
 
 class UserAccount(Base):

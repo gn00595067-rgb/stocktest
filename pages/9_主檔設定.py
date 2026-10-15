@@ -17,7 +17,10 @@ except Exception:
     pass
 from db.database import get_session
 from db.models import StockMaster, Trade
-from services.trade_fees import estimate_sell_tax, estimate_broker_fee, get_fee_tax_rates
+from services.trade_fees import estimate_sell_tax, estimate_broker_fee, get_fee_tax_rates, DEFAULT_DISCOUNT
+from services.trader_service import (
+    list_trader_names, load_fee_discounts, save_fee_discounts, trader_discounts, trader_fee_rate, discount_label,
+)
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 from db.seed_data import run_seed
 from db.mock_data import generate_mock_trades
@@ -148,16 +151,56 @@ if uploaded:
     except Exception as e:
         st.error(str(e))
 
-st.subheader("手續費/稅率設定")
-fee_rate = st.number_input("手續費率（若 trades.fee 為空則用此估算，預設 0.1425% × 2.5 折＝0.00035625，國泰基準）", value=0.00035625, format="%.8f")
+st.subheader("買賣人手續費折數")
+st.caption(
+    f"手續費＝成交金額 × 0.1425% × 折數，無條件捨去、最低 1 元。折數空白＝一般人 {discount_label(DEFAULT_DISCOUNT)}。"
+    "「另一個折數」有填的人（例：王小姐有時 2.5 折），在股票輸入（仿Yahoo）新增／修改交易時會多一排讓那筆自己選；"
+    "沒填就自動帶入、不出現選項。改折數只影響之後新輸入的交易，已存的手續費不變（要重算用下方工具）。"
+)
+_disc = load_fee_discounts()
+_ddf = pd.DataFrame([
+    # 主要折數直接顯示實際套用值（空白者＝一般人 0.28）；另一個折數用文字欄，空白才不會顯示成「None」
+    {"買賣人": n, "折數": trader_discounts(n)[0],
+     "另一個折數": "" if not _disc.get(n, (None, None))[1] else f"{_disc[n][1]:g}"}
+    for n in list_trader_names()
+])
+if _ddf.empty:
+    st.info("尚無買賣人。請先到「交易輸入」頁新增買賣人。")
+else:
+    _ded = st.data_editor(
+        _ddf, hide_index=True, key="fee_discount_editor", disabled=["買賣人"],
+        column_config={
+            "折數": st.column_config.NumberColumn("折數（0.25＝2.5 折）", min_value=0.01, max_value=1.0,
+                                                step=0.01, format="%.2f", required=True),
+            "另一個折數": st.column_config.TextColumn("另一個折數（空白＝不切換）",
+                                                 help="例：0.25。有填的人輸入交易時可每筆選用哪個折數"),
+        },
+    )
+    if st.button("儲存手續費折數", key="fee_discount_save"):
+        _vals, _bad = {}, []
+        for _, r in _ded.iterrows():
+            _alt_s = str(r["另一個折數"] or "").strip()
+            try:
+                _alt = round(float(_alt_s), 4) if _alt_s else None
+                if _alt is not None and not (0 < _alt <= 1):
+                    raise ValueError
+            except ValueError:
+                _bad.append(r["買賣人"])
+                continue
+            _main = None if r["折數"] is None or r["折數"] != r["折數"] else round(float(r["折數"]), 4)
+            _vals[r["買賣人"]] = (_main, _alt)
+        if _bad:
+            st.error(f"「另一個折數」請填 0～1 之間的數字（例 0.25）或留空：{'、'.join(_bad)}")
+        else:
+            try:
+                _n = save_fee_discounts(_vals)
+                st.success(f"已儲存（{_n} 人有變動）。")
+            except Exception as e:
+                st.error(f"儲存失敗：{e}")
+
+st.subheader("證交稅率設定")
 tax_rate = st.number_input("證交稅率（賣出）", value=0.003, format="%.4f")
 st.caption("trades 有填 fee/tax 則以實際為準，否則用上述估算。手續費與證交稅皆無條件捨去至整數（國泰基準）。")
-
-if "fee_rate" not in st.session_state:
-    st.session_state["fee_rate"] = fee_rate
-if "tax_rate" not in st.session_state:
-    st.session_state["tax_rate"] = tax_rate
-st.session_state["fee_rate"] = fee_rate
 st.session_state["tax_rate"] = tax_rate
 
 st.subheader("🔧 一次性維護：當沖證交稅重算（減半）")
@@ -218,11 +261,11 @@ with st.expander("展開檢查／重算當沖證交稅", expanded=False):
     finally:
         _msess.close()
 
-st.subheader("🔧 一次性維護：手續費依現行費率重算")
-_fr_now, _tr_now = get_fee_tax_rates()
+st.subheader("🔧 一次性維護：手續費依買賣人折數重算")
 st.caption(
-    f"把過去以舊費率記錄的手續費，全部重算為**現行費率 {_fr_now:.4%}**（＝0.1425% 打 2.5 折）、最低 1 元。"
-    "買進與賣出都重算；證交稅不動（當沖稅請用上方工具）。會先預覽差異，確認後才寫回並同步 Google 試算表。"
+    "把過去的手續費，依**每個買賣人現在設定的折數**全部重算（0.1425% × 折數、最低 1 元）。"
+    "有設「另一個折數」的人（每筆可能不同）不重算，請手動改。"
+    "買進與賣出都重算；證交稅不動（當沖稅請用上方工具）。會先預覽差異，確認後才寫回。"
 )
 with st.expander("展開檢查／重算手續費", expanded=False):
     _fsess = get_session()
@@ -232,7 +275,10 @@ with st.expander("展開檢查／重算手續費", expanded=False):
         _frows = []
         _fid_to_new = {}
         for t in _all_t:
-            _new_fee = estimate_broker_fee(float(t.price or 0), int(t.quantity or 0))
+            if trader_discounts(t.user)[1]:
+                continue   # 可切換折數的人：猜不到每筆用哪個，不動
+            _new_fee = estimate_broker_fee(float(t.price or 0), int(t.quantity or 0),
+                                           fee_rate=trader_fee_rate(t.user))
             _old_fee = float(t.fee or 0)
             if abs(_old_fee - _new_fee) >= 0.5:  # 有差異才需重算
                 _m = _masters_f.get(t.stock_id)
@@ -252,7 +298,7 @@ with st.expander("展開檢查／重算手續費", expanded=False):
         if not _all_t:
             st.info("目前沒有任何交易。")
         elif not _frows:
-            st.success(f"檢查了 {len(_all_t)} 筆交易，手續費全部已是現行費率，無需重算。")
+            st.success(f"檢查了 {len(_all_t)} 筆交易，手續費全部已符合各買賣人折數，無需重算。")
         else:
             _fprev = pd.DataFrame(_frows)
             st.dataframe(_fprev, hide_index=True, use_container_width=True)

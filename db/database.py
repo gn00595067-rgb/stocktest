@@ -129,6 +129,27 @@ try:
 except Exception:
     pass
 
+# 若 traders 尚無手續費折數欄位則補上（docs/specs/買賣人手續費折數.md）；
+# 第一次加欄位時帶入群組講好的折數：Peggy姐 2.5 折、王小姐可切 2.5 折（其餘空白＝一般人 2.8 折）
+try:
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        if engine.dialect.name == "sqlite":
+            cols = [row[1] for row in conn.execute(text("PRAGMA table_info(traders)"))]
+        else:
+            cols = [r[0] for r in conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'traders'"
+            ))]
+        if "fee_discount" not in cols:
+            conn.execute(text("ALTER TABLE traders ADD COLUMN fee_discount FLOAT"))
+            conn.execute(text("UPDATE traders SET fee_discount = 0.25 WHERE name = 'Peggy姐'"))
+        if "fee_discount_alt" not in cols:
+            conn.execute(text("ALTER TABLE traders ADD COLUMN fee_discount_alt FLOAT"))
+            conn.execute(text("UPDATE traders SET fee_discount_alt = 0.25 WHERE name = '王小姐'"))
+        conn.commit()
+except Exception:
+    pass
+
 # 試算表模式：Session 在 commit 後自動寫回試算表
 if USE_GOOGLE_SHEET:
     from sqlalchemy.orm import Session as _BaseSession

@@ -251,8 +251,10 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
     trades：該買賣人的全部交易（不需先篩分頁；這裡會依 group 篩）。
     """
     from services.trade_fees import breakeven_sell_price
+    from services.trader_service import trader_fee_rate
 
     trader = (group.trader or "").strip()
+    fee_rate = trader_fee_rate(trader)
     mine = [t for t in trades if (getattr(t, "user", "") or "").strip() == trader]
     in_group = [t for t in mine if trade_in_group(t, group)]
     group_ids = {t.id for t in in_group}
@@ -310,7 +312,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             "qty": qty,
             "avg_cost": avg,
             "cost": cost,
-            "breakeven": breakeven_sell_price(cost, qty, is_etf=is_etf) if qty else None,
+            "breakeven": breakeven_sell_price(cost, qty, is_etf=is_etf, fee_rate=fee_rate) if qty else None,
             "market_value": mv,
             "realized": realized,
             "realized_pct": (realized / realized_cost * 100) if realized_cost else None,

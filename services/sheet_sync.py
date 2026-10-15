@@ -32,7 +32,7 @@ TRADES_HEADERS = ["id", "user", "stock_id", "trade_date", "side", "price", "quan
 RULES_HEADERS = ["sell_trade_id", "buy_trade_id", "matched_qty", "created_at"]
 USERS_HEADERS = ["id", "username", "password_hash", "role", "is_active", "created_at"]
 USER_BINDINGS_HEADERS = ["user_id", "trader_name", "created_at"]
-TRADERS_HEADERS = ["id", "name", "created_at"]
+TRADERS_HEADERS = ["id", "name", "created_at", "fee_discount", "fee_discount_alt"]
 
 # 需寫入試算表時用的範圍（Scopes）
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.file"]
@@ -359,14 +359,24 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
                     except (ValueError, TypeError):
                         tid = None
                     created_at = _parse_datetime(r.get("created_at"))
+
+                    def _disc(v):   # 舊備份沒有折數欄 → 空白（＝一般人預設）
+                        try:
+                            return float(v) if v is not None and str(v).strip() else None
+                        except (ValueError, TypeError):
+                            return None
+                    params = {"name": name, "created_at": created_at,
+                              "fd": _disc(r.get("fee_discount")), "fda": _disc(r.get("fee_discount_alt"))}
                     if tid is not None:
                         conn.execute(text(
-                            "INSERT INTO traders (id, name, created_at) VALUES (:id, :name, :created_at)"
-                        ), {"id": tid, "name": name, "created_at": created_at})
+                            "INSERT INTO traders (id, name, created_at, fee_discount, fee_discount_alt) "
+                            "VALUES (:id, :name, :created_at, :fd, :fda)"
+                        ), {"id": tid, **params})
                     else:
                         conn.execute(text(
-                            "INSERT INTO traders (name, created_at) VALUES (:name, :created_at)"
-                        ), {"name": name, "created_at": created_at})
+                            "INSERT INTO traders (name, created_at, fee_discount, fee_discount_alt) "
+                            "VALUES (:name, :created_at, :fd, :fda)"
+                        ), params)
                 conn.commit()
 
         # 插入 trades（保留 id）
@@ -548,7 +558,7 @@ def _read_db_payload(engine):
             ORDER BY user_id, trader_name
         """)).fetchall()
         r_traders = conn.execute(text("""
-            SELECT id, name, created_at
+            SELECT id, name, created_at, fee_discount, fee_discount_alt
             FROM traders
             ORDER BY id
         """)).fetchall()
@@ -598,6 +608,7 @@ def _read_db_payload(engine):
     def row_trader(r):
         return [
             r[0], r[1], _datetime_str(r[2]),
+            "" if r[3] is None else r[3], "" if r[4] is None else r[4],
         ]
 
     # 準備各表資料（含表頭）
@@ -708,7 +719,14 @@ def _sync_db_to_sheet_locked(engine, force: bool) -> Tuple[bool, Optional[str], 
                 ws = spread.add_worksheet(title=title, rows=1000, cols=cols)
                 by_title[title] = ws
                 wss.append(ws)
-            return by_title[title]
+            ws = by_title[title]
+            # 表頭加欄（如 traders 加手續費折數）：舊分頁欄數不夠會「超出格線」寫入失敗，先補欄
+            try:
+                if int(getattr(ws, "col_count", cols) or cols) < cols:
+                    _retry_on_quota(lambda: ws.add_cols(cols - int(ws.col_count)))
+            except Exception:
+                pass
+            return ws
         ws_trades = _ensure_ws(SHEET_TRADES, len(TRADES_HEADERS))
         _ensure_ws(SHEET_RULES, len(RULES_HEADERS))
         _ensure_ws(SHEET_USERS, len(USERS_HEADERS))
