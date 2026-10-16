@@ -311,18 +311,32 @@ def _render_result(df: pd.DataFrame, pnl_label: str, dl_name: str, dl_key: str, 
         # 只有合計列固定深黃（Peggy：加總固定深黃色，其他不用照 Excel 上色）
         return ["background-color:#ffc000;font-weight:700"] * len(r) if r.name == n_last else [""] * len(r)
 
+    # 合計列的股數是空值（不同股票股數相加沒意義）；st.dataframe 遇空值一律顯示「None」，
+    # 所以畫面上先補 0，再把合計列那兩格的顯示文字設成空白
+    _qty_cols = ["買進股數", "賣出股數"]
+    _disp = stock_summary.copy()
+    _disp[_qty_cols] = _disp[_qty_cols].fillna(0)
     st.dataframe(
-        stock_summary.style.format(_money, na_rep="").map(_style_signed, subset=["損益"]).apply(_total_row, axis=1),
+        _disp.style.format(_money)
+        .format(lambda v: "", subset=pd.IndexSlice[[n_last], _qty_cols])
+        .map(_style_signed, subset=["損益"]).apply(_total_row, axis=1),
         use_container_width=True, hide_index=True, height=35 * (len(stock_summary) + 1) + 3,
     )
 
     st.subheader("每筆明細")
-    sty = df.style.format(fmt, na_rep="—")
-    for c in ["單筆損益", "累計損益"]:
-        if c in df.columns:
-            sty = sty.map(_style_signed, subset=[c])
+    # 買進列沒有損益（空值）；st.dataframe 遇空值一律顯示「None」、不吃 na_rep，
+    # 所以畫面上先補 0，再把原本是空值的格子顯示成「—」（下載的 CSV 仍用原始 df）
+    _pnl_cols = [c for c in ["單筆損益", "累計損益"] if c in df.columns]
+    _na = df[_pnl_cols].isna()
+    _df_disp = df.copy()
+    _df_disp[_pnl_cols] = _df_disp[_pnl_cols].fillna(0)
+    sty = _df_disp.style.format(fmt, na_rep="—")
+    for c in _pnl_cols:
+        if _na[c].any():
+            sty = sty.format(lambda v: "—", subset=pd.IndexSlice[_na.index[_na[c]], [c]])
+        sty = sty.map(_style_signed, subset=[c])
     # 全部展開（每列約 35px + 表頭），不在小框內上下捲動
-    st.dataframe(sty, use_container_width=True, hide_index=True, height=35 * (len(df) + 1) + 3)
+    st.dataframe(sty, use_container_width=True, hide_index=True, height=35 * (len(_df_disp) + 1) + 3)
 
     csv_buf = io.BytesIO()
     df.to_csv(csv_buf, index=False, encoding="utf-8-sig")

@@ -54,6 +54,11 @@ if not is_admin():
     st.stop()
 
 st.title("帳號與權限管理")
+# 存檔成功後會 st.rerun()，直接 st.success 會一閃就被洗掉；改成存進 session，重跑後在這裡顯示（右下角也跳提示）
+_flash = st.session_state.pop("_acct_flash", None)
+if _flash:
+    st.success(_flash)
+    st.toast(_flash, icon="✅")
 st.caption("角色分為管理者 / 一般。一般帳號可綁定多位買賣人，只能查看與操作綁定資料。")
 
 # 買賣人可綁定名單＝主檔 ∪ 交易出現過（含剛新增、還沒任何交易的買賣人）。
@@ -103,7 +108,7 @@ if create_submitted:
                 sess.commit()
                 ok, err = _sync_to_sheet_after_auth_change()
                 if ok:
-                    st.success(f"帳號建立成功{_SAVED_SUFFIX}")
+                    st.session_state["_acct_flash"] = (f"帳號建立成功{_SAVED_SUFFIX}")
                     st.rerun()
                 else:
                     st.error(f"帳號已建立，但同步到 Google Sheet 失敗：{err}")
@@ -167,7 +172,7 @@ for u in users:
                             sess2.commit()
                             ok, err = _sync_to_sheet_after_auth_change()
                             if ok:
-                                st.success(f"已更新 {uname}{_SAVED_SUFFIX}")
+                                st.session_state["_acct_flash"] = (f"已更新 {uname}{_SAVED_SUFFIX}")
                                 st.rerun()
                             else:
                                 st.error(f"已更新 {uname}，但同步到 Google Sheet 失敗：{err}")
@@ -197,7 +202,7 @@ for u in users:
                     sess3.commit()
                     ok, err = _sync_to_sheet_after_auth_change()
                     if ok:
-                        st.success(f"已更新 {u.username} 綁定買賣人{_SAVED_SUFFIX}")
+                        st.session_state["_acct_flash"] = (f"已更新 {u.username} 綁定買賣人{_SAVED_SUFFIX}")
                         st.rerun()
                     else:
                         st.error(f"已更新 {u.username} 綁定，但同步到 Google Sheet 失敗：{err}")

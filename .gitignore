@@ -40,3 +40,6 @@ htmlcov/
 dist/
 build/
 *.log
+scripts/manual/demo.db
+scripts/manual/shots/
+scripts/manual/chprof*/
