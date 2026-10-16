@@ -29,7 +29,7 @@ from services.auth_service import (
     get_allowed_traders, can_access_trader, filter_trades_by_permission,
 )
 from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache, _tw_market_open
-from services.trade_fees import fees_for_trade
+from services.trade_fees import fees_for_trade, daytrade_capacity
 from services.prefs import resolve_default_trader
 from services.trader_service import (
     list_trader_names, ensure_traders_seeded, add_trader, trader_discounts, trader_fee_rate, discount_label,
@@ -418,8 +418,10 @@ def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
         changed_core = bool(qty) and int(qty) != old_qty
         changed_amt = changed_core or (bool(price) and abs(float(price) - old_price) > 1e-9) or changed_disc
         if changed_amt and not errors:
+            dt_qty = (min(int(qty), daytrade_capacity(trades, t.user, t.stock_id, d, exclude_id=t.id))
+                      if t.is_daytrade else None)
             fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=bool(t.is_daytrade),
-                                      fee_rate=trader_fee_rate(t.user, disc))
+                                      fee_rate=trader_fee_rate(t.user, disc), daytrade_qty=dt_qty)
             tax = tax if side == "SELL" else 0.0
             f[3].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
                           f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}（重算）</span></div>',
@@ -513,9 +515,14 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             warns.append(f"日期或股票不在分頁「{group.name}」的條件內，送出後不會算進此分頁（其他分頁仍看得到）。")
         fee = tax = 0.0
         if qty and price and not [e for e in errors if "請輸入" in e]:
+            # 當沖只有「當天買進可對沖」的股數減半，其餘是賣庫存、照一般稅率
+            dt_qty = min(int(qty), daytrade_capacity(trades, group.trader, sid, d)) if is_dt else None
             fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=is_dt,
-                                      fee_rate=fee_rate)
+                                      fee_rate=fee_rate, daytrade_qty=dt_qty)
             tax = tax if side == "SELL" else 0.0
+            if is_dt and dt_qty < int(qty):
+                warns.append(f"當天可當沖的只有 {dt_qty:,} 股（當天買進扣掉已當沖的部分），"
+                             f"其餘 {int(qty) - dt_qty:,} 股是賣庫存，證交稅照一般 0.3% 計算。")
             f[4].markdown(f'<div class="yh-td sm c">{fee:,.0f}</div>', unsafe_allow_html=True)
             f[5].markdown(f'<div class="yh-td sm c">{tax:,.0f}</div>', unsafe_allow_html=True)
             f[6].markdown(f'<div class="yh-td c">{int(qty) * float(price):,.0f}</div>', unsafe_allow_html=True)

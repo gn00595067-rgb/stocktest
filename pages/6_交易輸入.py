@@ -41,7 +41,7 @@ from services.auth_service import (
     can_access_trader,
     filter_trades_by_permission,
 )
-from services.trade_fees import breakeven_sell_price, fees_for_trade, get_fee_tax_rates
+from services.trade_fees import breakeven_sell_price, fees_for_trade, get_fee_tax_rates, daytrade_capacity
 from services.breakeven_panel import render_breakeven_panel
 from services.prefs import resolve_default_trader
 from services.trader_service import (
@@ -396,6 +396,10 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
     sess = get_session()
     try:
         seen_ids = set()
+        _sid_trades = sess.query(Trade).filter(Trade.stock_id == sid).all()   # 當沖股數判斷用
+
+        def _dtq(user, d, q, dt, exclude_id=None):
+            return min(q, daytrade_capacity(_sid_trades, user, sid, d, exclude_id)) if dt else None
         for _, r in edited_df.iterrows():
             rid = r.get("id")
             has_id = rid is not None and not (isinstance(rid, float) and pd.isna(rid))
@@ -418,7 +422,8 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
             if not has_id:
                 # 新增列（此表加列）：比照初次輸入自動帶入費率
                 fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt,
-                                          fee_rate=trader_fee_rate(trader_row))
+                                          fee_rate=trader_fee_rate(trader_row),
+                                          daytrade_qty=_dtq(trader_row, tdate, qty, is_dt))
                 tax = tax if side == "SELL" else 0.0
             else:
                 # 既有列：採用表格內手動值，不自動重算（避免手動修正被洗掉）
@@ -467,7 +472,8 @@ def _save_tx_edits(sid: str, orig_by_id: dict, edited_df, trader: str, is_etf: b
                              and abs(tax - (float(t.tax or 0) if side == "SELL" else 0.0)) < 0.5)
             if amt_changed and fee_untouched:
                 fee, tax = fees_for_trade(side, price, qty, is_etf=is_etf, is_daytrade=is_dt,
-                                          fee_rate=trader_fee_rate(trader_row))
+                                          fee_rate=trader_fee_rate(trader_row),
+                                          daytrade_qty=_dtq(trader_row, tdate, qty, is_dt, exclude_id=rid))
                 tax = tax if side == "SELL" else 0.0
             t.user = trader_row
             t.trade_date = tdate
@@ -936,6 +942,27 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
     """
     sid = row["stock_id"]
     _fee_rate = trader_fee_rate(trader)   # 手續費依買賣人折數（這頁不提供每筆切換，要改請直接改明細表的手續費）
+
+    def _dtq(d, q, dt):
+        """當沖只有當天買進可對沖的股數減半（單列預覽：用已存的交易判斷）。"""
+        return min(int(q), daytrade_capacity(trades, trader, sid, d)) if dt else None
+
+    def _batch_fees(rows_):
+        """一批要送出的列逐筆算 (手續費, 證交稅)。當沖股數＝已存的當天買進＋這批的買進，扣掉已當沖用掉的。
+        送出前的估算與實際寫入共用，兩邊數字一定一樣。"""
+        buy_, used_ = defaultdict(int), defaultdict(int)
+        for (s_, d_, p_, q_, dt_, n_) in rows_:
+            if s_ == "BUY":
+                buy_[d_] += int(q_)
+        out_ = []
+        for (s_, d_, p_, q_, dt_, n_) in rows_:
+            dq_ = None
+            if s_ == "SELL" and dt_:
+                dq_ = min(int(q_), max(0, daytrade_capacity(trades, trader, sid, d_) + buy_[d_] - used_[d_]))
+                used_[d_] += dq_
+            out_.append(fees_for_trade(s_, p_, q_, is_etf=is_etf, is_daytrade=dt_, fee_rate=_fee_rate,
+                                       daytrade_qty=dq_))
+        return out_
     # ── 交易輸入（可多列）：每列一筆；賣出一律走設定的沖銷口徑（先進先出/接近均價等）自動計算 ──
     rowids_key = f"te_rowids_{sid}"
     seq_key = f"te_rowseq_{sid}"
@@ -990,7 +1017,8 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
             # 即時費稅：輸入當下就算好，不用等送出後到下面明細核對。
             # 用與其他欄同款的唯讀輸入框顯示，高度自動對齊（桌機/平板皆然）。
             if _p is not None and _q is not None and float(_p) > 0 and int(_q) > 0:
-                _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt, fee_rate=_fee_rate)
+                _rf, _rt = fees_for_trade(_s, float(_p), int(_q), is_etf=is_etf, is_daytrade=_dt, fee_rate=_fee_rate,
+                                          daytrade_qty=_dtq(_d, _q, _dt) if _s == "SELL" else None)
                 _fee_txt = f"{_rf:,.0f}"
                 _tax_txt = f"{_rt:,.0f}" if _s == "SELL" else "—"  # 買進不收證交稅
             else:
@@ -1114,7 +1142,8 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                 _apply_match_plan(sid, _match_key, [], _open)
                 _rerun_fragment()
             _submit_slot = st.container()
-            _fe, _te = fees_for_trade("SELL", _sp, _sq, is_etf=is_etf, is_daytrade=_sdt, fee_rate=_fee_rate)
+            _fe, _te = fees_for_trade("SELL", _sp, _sq, is_etf=is_etf, is_daytrade=_sdt, fee_rate=_fee_rate,
+                                      daytrade_qty=_dtq(_r0[1], _sq, _sdt))
             _shown = filter_and_sort_lots(
                 filter_lots_by_time(_open, st.session_state.get(_tkey, "all")),
                 st.session_state.get(_skey, "nearest_avg"), _sp)
@@ -1140,8 +1169,7 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
             submit_rows = valid
         _fee_sum = 0.0
         _tax_sum = 0.0
-        for (_s, _d, _p, _q, _dt, _n) in submit_rows:
-            _f, _t = fees_for_trade(_s, _p, _q, is_etf=is_etf, is_daytrade=_dt, fee_rate=_fee_rate)
+        for _f, _t in _batch_fees(submit_rows):
             _fee_sum += _f
             _tax_sum += _t
         if _sell_mode:
@@ -1197,8 +1225,8 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                         # 賣出以「接近均價」自動配對現有未沖銷買進批次；
                         # 多筆賣出依序扣減剩餘庫存，批次內的買進也納入可配對池
                         avail_lots = [dict(l) for l in get_open_buy_lots(trades, sid, trader, custom_rules, policy)]
-                        for (s, d, p, q, dt, n) in submit_rows:
-                            _f, _t = fees_for_trade(s, p, q, is_etf=is_etf, is_daytrade=dt, fee_rate=_fee_rate)
+                        _fees = _batch_fees(submit_rows)
+                        for (s, d, p, q, dt, n), (_f, _t) in zip(submit_rows, _fees):
                             _tr = Trade(
                                 user=trader, stock_id=sid, trade_date=d, side=s,
                                 price=p, quantity=q, is_daytrade=dt,

@@ -50,20 +50,24 @@ def estimate_sell_tax(
     is_etf: bool = False,
     tax_rate: Optional[float] = None,
     is_daytrade: bool = False,
+    daytrade_qty: Optional[int] = None,
 ) -> float:
     """賣出證交稅（無條件捨去至整數，國泰基準）。
 
     現股當沖：一般個股證交稅減半（0.3% → 0.15%）。ETF 本即 0.1%，不再另外減半。
+    daytrade_qty：這筆賣出裡「當天有買進可對沖」的股數（見 daytrade_capacity）；
+    只有這些股數減半，其餘是賣庫存、照一般稅率。沒給＝整筆都算當沖（舊行為）。
     """
     if quantity <= 0 or price <= 0:
         return 0.0
     if is_etf:
-        rate = DEFAULT_ETF_TAX_RATE
-    else:
-        rate = tax_rate if tax_rate is not None else get_fee_tax_rates()[1]
-        if is_daytrade:
-            rate = rate / 2.0  # 現股當沖證交稅減半
-    return float(math.floor(price * quantity * rate))
+        return float(math.floor(round(price * quantity * DEFAULT_ETF_TAX_RATE, 6)))
+    rate = tax_rate if tax_rate is not None else get_fee_tax_rates()[1]
+    if not is_daytrade:
+        return float(math.floor(round(price * quantity * rate, 6)))
+    dq = quantity if daytrade_qty is None else max(0, min(int(daytrade_qty), quantity))
+    amt = price * dq * rate / 2.0 + price * (quantity - dq) * rate   # 現股當沖證交稅減半
+    return float(math.floor(round(amt, 6)))
 
 
 def fees_for_trade(
@@ -73,6 +77,7 @@ def fees_for_trade(
     is_etf: bool = False,
     is_daytrade: bool = False,
     fee_rate: Optional[float] = None,
+    daytrade_qty: Optional[int] = None,
 ) -> Tuple[float, float]:
     """
     回傳 (fee, tax)。
@@ -82,7 +87,7 @@ def fees_for_trade(
     fee = estimate_broker_fee(price, quantity, fee_rate=fee_rate)
     side_u = (side or "").strip().upper()
     if side_u == "SELL":
-        tax = estimate_sell_tax(price, quantity, is_etf=is_etf, is_daytrade=is_daytrade)
+        tax = estimate_sell_tax(price, quantity, is_etf=is_etf, is_daytrade=is_daytrade, daytrade_qty=daytrade_qty)
         return fee, tax
     return fee, 0.0
 
@@ -192,3 +197,43 @@ def breakeven_breakdown(
         "prev_pnl": prev["pnl"] if prev else None,
     }
 
+
+
+def daytrade_sell_taxes(trades, is_etf=None, tax_rate: float = DEFAULT_TAX_RATE) -> dict:
+    """勾了「當沖」的賣出，依「當天同一人同一檔的買進股數」算應繳證交稅。
+
+    現股當沖減半只適用於當天買進可以對沖的股數；超過的部分是賣原本的庫存，照一般稅率。
+    例：當天買 3,000、賣 5,000（每筆 1,000，都勾當沖）→ 依 id 順序前 3 筆減半、後 2 筆全額。
+    ETF 一律 0.1%，不減半。回傳 {賣出 id: (應繳證交稅, 可當沖股數)}。
+    """
+    from collections import defaultdict
+    is_etf = is_etf or (lambda sid: False)
+    buy_qty = defaultdict(int)
+    for t in trades:
+        if (t.side or "").strip().upper() == "BUY":
+            buy_qty[(t.user, t.stock_id, t.trade_date)] += int(t.quantity or 0)
+    out = {}
+    for t in sorted(trades, key=lambda x: x.id):
+        if (t.side or "").strip().upper() != "SELL" or not getattr(t, "is_daytrade", False):
+            continue
+        key = (t.user, t.stock_id, t.trade_date)
+        q, price = int(t.quantity or 0), float(t.price or 0)
+        dt_qty = min(q, buy_qty[key])
+        buy_qty[key] -= dt_qty
+        out[t.id] = (estimate_sell_tax(price, q, is_etf=is_etf(t.stock_id), tax_rate=tax_rate,
+                                       is_daytrade=True, daytrade_qty=dt_qty), dt_qty)
+    return out
+
+
+def daytrade_capacity(trades, user, stock_id, trade_date, exclude_id=None) -> int:
+    """這個人、這檔、這天還能算「當沖」的股數＝當天買進股數 − 已被當天其他當沖賣出用掉的股數。
+
+    exclude_id：修改既有賣出時排除它自己。輸入新賣出時用 min(賣出股數, 這個值) 當 daytrade_qty。
+    """
+    u, sid = (user or "").strip(), str(stock_id).strip()
+    same = [t for t in trades
+            if (t.user or "").strip() == u and str(t.stock_id).strip() == sid
+            and t.trade_date == trade_date and t.id != exclude_id]
+    bought = sum(int(t.quantity or 0) for t in same if (t.side or "").strip().upper() == "BUY")
+    used = sum(q for _, q in daytrade_sell_taxes(same).values())
+    return max(0, bought - used)

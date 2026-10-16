@@ -17,7 +17,7 @@ except Exception:
     pass
 from db.database import get_session
 from db.models import StockMaster, Trade
-from services.trade_fees import estimate_sell_tax, estimate_broker_fee, get_fee_tax_rates, DEFAULT_DISCOUNT
+from services.trade_fees import estimate_broker_fee, daytrade_sell_taxes, DEFAULT_DISCOUNT
 from services.trader_service import (
     list_trader_names, load_fee_discounts, save_fee_discounts, trader_discounts, trader_fee_rate, discount_label,
 )
@@ -203,24 +203,26 @@ tax_rate = st.number_input("證交稅率（賣出）", value=0.003, format="%.4f
 st.caption("trades 有填 fee/tax 則以實際為準，否則用上述估算。手續費與證交稅皆無條件捨去至整數（國泰基準）。")
 st.session_state["tax_rate"] = tax_rate
 
-st.subheader("🔧 一次性維護：當沖證交稅重算（減半）")
+st.subheader("🔧 一次性維護：當沖證交稅重算")
 st.caption(
-    "把過去『當沖賣出』但證交稅仍以全額（0.3%）記錄的交易，重算為現股當沖減半（0.15%）。"
-    "ETF 維持 0.1% 不變、買進不受影響。會先預覽差異，確認後才寫回資料庫。"
+    "檢查勾了『當沖』的賣出，證交稅是否正確：只有**當天同一人、同一檔有買進可以對沖的股數**才減半（0.15%），"
+    "超過的部分是賣原本的庫存，照一般 0.3%（例：當天買 3,000 股、賣 5,000 股，只有 3,000 股減半）。"
+    "ETF 維持 0.1%、買進不受影響。會先預覽差異，確認後才寫回資料庫。"
 )
 with st.expander("展開檢查／重算當沖證交稅", expanded=False):
     _msess = get_session()
     try:
         _masters = {m.stock_id: m for m in _msess.query(StockMaster).all()}
-        _dt_sells = [
-            t for t in _msess.query(Trade).filter(Trade.is_daytrade.is_(True)).all()
-            if (getattr(t, "side", "") or "").upper() == "SELL"
-        ]
+        _all_trades = _msess.query(Trade).order_by(Trade.id).all()
+        _dt_sells = [t for t in _all_trades
+                     if (getattr(t, "side", "") or "").upper() == "SELL" and getattr(t, "is_daytrade", False)]
+        # 依當天買進股數分配減半額度（舊版一律整筆減半，會把賣庫存的部分也算成當沖）
+        _expected = daytrade_sell_taxes(
+            _all_trades, is_etf=lambda sid: bool(getattr(_masters.get(sid), "is_etf", False)))
         _rows = []
         _id_to_new = {}
         for t in _dt_sells:
-            _is_etf = bool(getattr(_masters.get(t.stock_id), "is_etf", False))
-            _new_tax = estimate_sell_tax(float(t.price or 0), int(t.quantity or 0), is_etf=_is_etf, is_daytrade=True)
+            _new_tax, _dt_qty = _expected[t.id]
             _old_tax = float(t.tax or 0)
             if abs(_old_tax - _new_tax) >= 0.5:  # 有差異才需重算
                 _m = _masters.get(t.stock_id)
@@ -232,14 +234,15 @@ with st.expander("展開檢查／重算當沖證交稅", expanded=False):
                     "日期": str(t.trade_date),
                     "價格": float(t.price or 0),
                     "股數": int(t.quantity or 0),
+                    "可當沖股數": int(_dt_qty),
                     "原證交稅": round(_old_tax),
-                    "減半後": round(_new_tax),
+                    "應為": round(_new_tax),
                     "差額": round(_new_tax - _old_tax),
                 })
         if not _dt_sells:
             st.info("目前沒有任何『當沖賣出』交易。")
         elif not _rows:
-            st.success(f"檢查了 {len(_dt_sells)} 筆當沖賣出，全部證交稅已是減半（或為 ETF），無需重算。")
+            st.success(f"檢查了 {len(_dt_sells)} 筆當沖賣出，證交稅全部正確，無需重算。")
         else:
             _prev = pd.DataFrame(_rows)
             st.dataframe(_prev, hide_index=True, use_container_width=True)
