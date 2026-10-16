@@ -248,7 +248,6 @@ def login_guard() -> None:
                 st.rerun()
 
     st.title("請先登入")
-    st.caption("預設管理者：`admin / admin1234`（首次登入後請立即修改密碼）")
     with st.form("login_form", clear_on_submit=False):
         username = st.text_input("帳號")
         password = st.text_input("密碼", type="password")
