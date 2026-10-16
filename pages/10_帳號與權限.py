@@ -5,6 +5,8 @@ from sqlalchemy import func
 
 from db.database import get_session, get_engine
 from db.models import UserAccount, UserTraderBinding
+from services.fresh import reload_stale_modules
+reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.trader_service import all_trader_names, ensure_traders_seeded
 from services.auth_service import (
     ROLE_ADMIN,

@@ -33,6 +33,8 @@ try:
 except Exception:
     pass
 
+from services.fresh import reload_stale_modules
+reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.auth_service import (
     ensure_bootstrap_admin, login_guard, render_auth_sidebar,
 )

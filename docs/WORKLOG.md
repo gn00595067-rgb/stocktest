@@ -514,3 +514,10 @@
 **為什麼**：10/15 我判斷 532、533「勾了當沖卻是全額稅＝錯」是誤判：當天只買 3,000、賣 5,000，多出的 2,000 股是賣庫存，全額稅才正確（Peggy 當時應是照券商單手改）。真正的問題是系統一律整筆減半。
 **驗證**：pytest 153 passed（新增 test_daytrade_tax 7 個，含 3189 9/21 正式資料案例）；正式資料唯讀檢查 34 筆當沖賣出，新算法與存的稅額 0 筆不符。
 **下一步**：532、533 不算當沖卻勾著當沖，會被算進已實現頁的「當沖損益」；要分類精準可請 Peggy 取消勾選（稅額不會變，因為明細表只在手續費／稅沒被手動改時才重算——注意：取消勾選會觸發重算，算出的全額稅與現值相同，所以不影響）。
+
+## 2026-10-17 部署後 ImportError（daytrade_capacity）→ 加自動重載防護
+
+**做了什麼**：`services/fresh.py::reload_stale_modules()`：每頁（含 app.py）最前面呼叫，偵測 services／reports 程式檔比記憶體裡的版本新（本行程記下的檔案時間變了，或 .pyc 記的原始檔時間／大小不符），就把 services／reports 全部重載兩輪。db.* 不重載。
+**為什麼**：f905e1e 部署後仿Yahoo 頁 `ImportError: daytrade_capacity`（Streamlit Cloud 只重跑頁面、沒重載 services）；10/15 也發生過同樣問題。我上一則說「不用 Reboot」是錯的。
+**驗證**：pytest 156 passed（新增 test_fresh 3 個：檔案變新會重載、模組在 fresh 之前載入靠 .pyc 判斷、正常情況不誤判）；本機真 Streamlit：開著 app 時把 trade_fees.py 時間改新，切頁後 log「已重新載入 15 個模組」、頁面正常。
+**下一步**：這次仍需 Jonathan 手動 Reboot 一次（舊版頁面還沒有 fresh 的呼叫）；之後改 services 應不需 Reboot（db/models 改欄位除外）。

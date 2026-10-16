@@ -8,6 +8,8 @@ import streamlit as st
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from services.fresh import reload_stale_modules
+reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
 from db.database import get_session

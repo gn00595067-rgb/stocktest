@@ -17,6 +17,8 @@ except Exception:
     pass
 from db.database import get_session
 from db.models import StockMaster, Trade
+from services.fresh import reload_stale_modules
+reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.trade_fees import estimate_broker_fee, daytrade_sell_taxes, DEFAULT_DISCOUNT
 from services.trader_service import (
     list_trader_names, load_fee_discounts, save_fee_discounts, trader_discounts, trader_fee_rate, discount_label,

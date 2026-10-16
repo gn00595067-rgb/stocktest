@@ -10,6 +10,8 @@ load_dotenv(os.path.join(_project_root, ".env"))
 
 import streamlit as st
 from sqlalchemy.exc import OperationalError
+from services.fresh import reload_stale_modules
+reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin
 
 # Streamlit Cloud 的 Secrets 不會自動變成 os.environ，報價與試算表後端讀 os.environ，所以要同步

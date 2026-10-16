@@ -19,6 +19,8 @@ try:
 except Exception:
     pass
 
+from services.fresh import reload_stale_modules
+reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.stock_list_loader import ensure_google_sheet_loaded
 from services.auth_service import (
     ensure_bootstrap_admin,
