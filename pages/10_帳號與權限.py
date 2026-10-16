@@ -17,13 +17,26 @@ from services.auth_service import (
 )
 
 
+def _sheet_mode() -> bool:
+    """試算表模式才需要（也才會）立即寫回試算表；資料庫模式（正式站）資料直接存在資料庫。"""
+    try:
+        from db.database import USE_GOOGLE_SHEET
+        from services.sheet_sync import is_google_sheet_enabled
+        return bool(USE_GOOGLE_SHEET and is_google_sheet_enabled())
+    except Exception:
+        return False
+
+
+# 成功訊息結尾：只有真的寫回試算表時才說「已同步到 Google Sheet」（之前寫死，資料庫模式也這樣說，會誤導）
+_SAVED_SUFFIX = "，且已同步到 Google Sheet。" if _sheet_mode() else "，已存入資料庫。"
+
+
 def _sync_to_sheet_after_auth_change() -> tuple[bool, str | None]:
     """帳號/權限變更後立即強制同步，避免重啟後遺失。"""
     try:
-        from db.database import USE_GOOGLE_SHEET
-        from services.sheet_sync import is_google_sheet_enabled, sync_db_to_sheet
+        from services.sheet_sync import sync_db_to_sheet
         # 只有試算表模式需要立即寫回；資料庫模式資料已存在資料庫，試算表由每日備份更新
-        if not (USE_GOOGLE_SHEET and is_google_sheet_enabled()):
+        if not _sheet_mode():
             return True, None
         return sync_db_to_sheet(get_engine())
     except Exception as e:
@@ -90,7 +103,7 @@ if create_submitted:
                 sess.commit()
                 ok, err = _sync_to_sheet_after_auth_change()
                 if ok:
-                    st.success("帳號建立成功，且已同步到 Google Sheet。")
+                    st.success(f"帳號建立成功{_SAVED_SUFFIX}")
                     st.rerun()
                 else:
                     st.error(f"帳號已建立，但同步到 Google Sheet 失敗：{err}")
@@ -154,7 +167,7 @@ for u in users:
                             sess2.commit()
                             ok, err = _sync_to_sheet_after_auth_change()
                             if ok:
-                                st.success(f"已更新 {uname}，且已同步到 Google Sheet。")
+                                st.success(f"已更新 {uname}{_SAVED_SUFFIX}")
                                 st.rerun()
                             else:
                                 st.error(f"已更新 {uname}，但同步到 Google Sheet 失敗：{err}")
@@ -184,7 +197,7 @@ for u in users:
                     sess3.commit()
                     ok, err = _sync_to_sheet_after_auth_change()
                     if ok:
-                        st.success(f"已更新 {u.username} 綁定買賣人，且已同步到 Google Sheet。")
+                        st.success(f"已更新 {u.username} 綁定買賣人{_SAVED_SUFFIX}")
                         st.rerun()
                     else:
                         st.error(f"已更新 {u.username} 綁定，但同步到 Google Sheet 失敗：{err}")

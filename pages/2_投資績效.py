@@ -50,7 +50,7 @@ try:
         pl_users = get_allowed_traders() or []
 except OperationalError:
     pl_users = []
-    st.warning("資料庫無法使用（雲端部署請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.warning("資料庫無法使用，請重新整理；仍無法使用請通知 Jonathan。")
     st.stop()
 except Exception:
     pl_users = []

@@ -1395,7 +1395,7 @@ try:
     trades, masters, custom_rules, stocks = _load_data()
     _mark("讀資料庫")
 except OperationalError:
-    st.warning("資料庫無法使用。雲端請設定 USE_GOOGLE_SHEET 與 Google Sheet Secrets。")
+    st.warning("資料庫無法使用，請重新整理；仍無法使用請通知 Jonathan。")
     st.stop()
 
 today = date.today()

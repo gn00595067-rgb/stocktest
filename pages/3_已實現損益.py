@@ -41,7 +41,7 @@ try:
     sess.close()
     all_trades = filter_trades_by_permission(all_trades)
 except OperationalError:
-    st.warning("資料庫無法使用（雲端請在 Secrets 設定 USE_GOOGLE_SHEET、GOOGLE_SHEET_ID、GOOGLE_SHEET_CREDENTIALS_B64）。")
+    st.warning("資料庫無法使用，請重新整理；仍無法使用請通知 Jonathan。")
     st.stop()
 except Exception:
     st.warning("無法載入交易資料。")

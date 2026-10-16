@@ -206,7 +206,7 @@ st.session_state["tax_rate"] = tax_rate
 st.subheader("🔧 一次性維護：當沖證交稅重算（減半）")
 st.caption(
     "把過去『當沖賣出』但證交稅仍以全額（0.3%）記錄的交易，重算為現股當沖減半（0.15%）。"
-    "ETF 維持 0.1% 不變、買進不受影響。會先預覽差異，確認後才寫回資料庫並同步 Google 試算表。"
+    "ETF 維持 0.1% 不變、買進不受影響。會先預覽差異，確認後才寫回資料庫。"
 )
 with st.expander("展開檢查／重算當沖證交稅", expanded=False):
     _msess = get_session()
@@ -252,7 +252,7 @@ with st.expander("展開檢查／重算當沖證交稅", expanded=False):
                         t.tax = float(_id_to_new[t.id])
                 try:
                     _msess.commit()
-                    st.success(f"已重算 {len(_id_to_new)} 筆當沖證交稅並同步。請至『庫存損益／當日交易明細』確認。")
+                    st.success(f"已重算 {len(_id_to_new)} 筆當沖證交稅（已存入資料庫）。請至『庫存損益／當日交易明細』確認。")
                     st.rerun()
                 except OperationalError as e:
                     _msess.rollback()
@@ -314,7 +314,7 @@ with st.expander("展開檢查／重算手續費", expanded=False):
                         t.fee = float(_fid_to_new[t.id])
                 try:
                     _fsess.commit()
-                    st.success(f"已重算 {len(_fid_to_new)} 筆手續費並同步。請至『個股明細／已實現損益』確認。")
+                    st.success(f"已重算 {len(_fid_to_new)} 筆手續費（已存入資料庫）。請至『個股明細／已實現損益』確認。")
                     st.rerun()
                 except OperationalError as e:
                     _fsess.rollback()

@@ -474,3 +474,10 @@
 **做了什麼**：刪除 `pages/5_操作手冊.py`（側欄不再有操作手冊）；手冊內容維持在 `docs/操作手冊.md`（拿掉「操作手冊｜就是這一頁」那列），新增 `scripts/manual_to_docx.py` 轉成 Word，產出「股票紀錄系統_操作手冊.docx」放在 Jonathan 桌面（7 頁，用 Word 轉 PDF 看過排版）。
 **為什麼**：Jonathan 要先從程式拿掉，改用檔案給 Peggy。
 **下一步**：Peggy 看過有要改的地方，改 md 再重跑腳本產生新版。
+
+## 2026-10-16 修正誤導訊息：「已同步到 Google Sheet」
+
+**做了什麼**：帳號與權限頁的成功訊息原本寫死「且已同步到 Google Sheet」，改成依模式顯示（資料庫模式顯示「已存入資料庫」）。主檔設定兩個重算工具的「並同步」、當沖稅工具說明的「同步 Google 試算表」一併改掉；7 個報表／輸入頁讀不到資料庫時的提示還寫著「請在 Secrets 設定 USE_GOOGLE_SHEET…」（試算表時期文字），改成「請重新整理；仍無法使用請通知 Jonathan」。
+**為什麼**：Jonathan 在改帳號設定時看到「已同步到 Google Sheet」，以為還在用試算表存資料；正式站是資料庫模式，那一步其實沒有寫試算表。
+**驗證**：pytest 138 passed。
+**下一步**：每日備份目前不含 portfolio_groups、manual_figures，要不要補進備份待 Jonathan 決定。
