@@ -127,11 +127,33 @@ def verify_password(password: str, hashed: str) -> bool:
     return hmac.compare_digest(old_digest, new_digest)
 
 
+def _stop_db_unavailable(exc: BaseException) -> None:
+    """資料庫連不上：顯示看得懂的原因後停止這一頁（不再丟紅框錯誤）。"""
+    from services.neon_usage import is_quota_error
+    print(f"[db] 連不上資料庫：{type(exc).__name__}: {exc}")
+    if is_quota_error(exc):
+        st.error(
+            "### 資料庫本月的免費額度已用完\n\n"
+            "資料都還在，不會遺失。請系統管理員到 Neon 後台（console.neon.tech）升級方案，"
+            "升級後重新整理就會恢復；或等下個計費週期自動恢復。"
+        )
+    else:
+        st.error("資料庫暫時連不上，請稍後重新整理。若持續無法使用，請通知系統管理員。")
+    st.stop()
+
+
 def ensure_bootstrap_admin() -> None:
-    """若尚無任何帳號，建立預設管理者 admin/admin1234。"""
+    """若尚無任何帳號，建立預設管理者 admin/admin1234。
+
+    也是每一頁第一個碰資料庫的地方：連不上（例如 Neon 額度用完）就在這裡顯示原因並停止。
+    """
+    from sqlalchemy.exc import DBAPIError
     sess = get_session()
     try:
-        has_user = sess.query(UserAccount.id).first() is not None
+        try:
+            has_user = sess.query(UserAccount.id).first() is not None
+        except DBAPIError as e:
+            _stop_db_unavailable(e)
         if has_user:
             return
         sess.add(
@@ -294,6 +316,34 @@ def login_guard() -> None:
     st.stop()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _db_usage_cached(api_key: str, project_id: str | None):
+    from services.neon_usage import fetch_usage
+    return fetch_usage(api_key, project_id or None)
+
+
+def _render_db_usage() -> None:
+    """管理者側欄：資料庫本月用量（有設 NEON_API_KEY 才顯示；查不到就安靜略過，不影響頁面）。"""
+    from services.neon_usage import FREE_CU_HOURS, get_secret, level
+    key = get_secret("NEON_API_KEY")
+    if not key:
+        return
+    try:
+        u = _db_usage_cached(key, get_secret("NEON_PROJECT_ID"))
+    except Exception as e:
+        print(f"[neon] 查用量失敗：{type(e).__name__}: {e}")
+        return
+    lv = level(u["cu_hours"])
+    reset = f"，{u['period_end']:%m/%d} 重置" if u.get("period_end") else ""
+    text = f"資料庫本月用量 {u['cu_hours']:.1f} / {FREE_CU_HOURS:.0f} CU 小時{reset}"
+    if lv == "ok":
+        st.sidebar.caption(f"🗄️ {text}")
+    elif lv == "warn":
+        st.sidebar.warning(f"🗄️ {text}，接近免費額度")
+    else:
+        st.sidebar.error(f"🗄️ {text}，快用完了：請到 Neon 後台升級或降低運算上限")
+
+
 def render_auth_sidebar() -> None:
     user = get_current_user()
     if not user:
@@ -323,6 +373,8 @@ def render_auth_sidebar() -> None:
     role_text = "管理者" if user.get("role") == ROLE_ADMIN else "一般"
     st.sidebar.markdown("---")
     st.sidebar.caption(f"👤 {user.get('username')}（{role_text}）")
+    if user.get("role") == ROLE_ADMIN:
+        _render_db_usage()
     if st.sidebar.button("登出"):
         # 標記清除 cookie 並略過本 session 的自動登入，交由下一輪 login_guard 刪除
         st.session_state["_pending_remember_clear"] = True

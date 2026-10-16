@@ -1,0 +1,26 @@
+# 每天檢查 Neon 資料庫本月運算用量；超過 80 CU 小時（免費上限 100）就讓這個 workflow 失敗，GitHub 會寄信通知。
+# 需要 repo secret：NEON_API_KEY（Neon 後台 Account settings → API keys 建立）；選填 NEON_PROJECT_ID。
+# 規格：docs/specs/資料庫額度監控.md
+name: 每日檢查資料庫額度
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # UTC 01:00 = 台灣 09:00（開盤前看到信）
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安裝套件
+        run: pip install "requests>=2.31.0,<3" "python-dotenv>=1.0.0,<2"
+      - name: 檢查用量
+        env:
+          NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+          NEON_PROJECT_ID: ${{ secrets.NEON_PROJECT_ID }}
+        run: python scripts/check_neon_usage.py

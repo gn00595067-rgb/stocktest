@@ -492,3 +492,14 @@
 **為什麼**：Jonathan 要圖文並茂、一目了然、不提人名、不用手動截圖；截圖時順便看到上述兩個畫面問題。
 **驗證**：pytest 138 passed；示範資料庫跑真 Streamlit 截圖確認合計列空白、「—」、成功訊息有出現；Word 轉 PDF 檢查 14 頁無空白頁、每節一頁、文字無人名。
 **下一步**：舊的「股票紀錄系統_操作手冊.docx」（含人名）還在桌面，請 Jonathan 自行刪除或保留；畫面改版後照 `scripts/manual/README.md` 重跑。
+
+## 2026-10-16 資料庫額度監控：超額時講清楚＋事前預警
+
+**做了什麼**：照 `docs/specs/資料庫額度監控.md`。
+1. `ensure_bootstrap_admin`（每頁第一個碰資料庫的地方）連不上時攔下：Neon 額度用完 → 「資料庫本月的免費額度已用完，資料都還在…請系統管理員升級」；其他連線錯誤 → 「暫時連不上，請稍後重新整理」。不再出現看不懂的紅框。
+2. `services/neon_usage.py`：用 Neon API 查本期 `compute_time_seconds`（CU 秒）與計費週期起訖。
+3. 管理者側欄顯示「資料庫本月用量 X / 100 CU 小時，M/D 重置」（≥70 黃、≥90 紅，1 小時快取）。
+4. `scripts/check_neon_usage.py`＋`.github/workflows/neon-usage.yml`：每天台灣 09:00 檢查，≥80 讓 workflow 失敗 → GitHub 寄信。
+**為什麼**：10/2～10/16 已用 71.52 CU 小時（上限設 2 CU），照速度 10/21～22 會用完、資料庫暫停到下個週期；Jonathan 要超額時看得出來、用完前先收到提醒。
+**驗證**：pytest 146 passed（新增 test_neon_usage 6 個、test_db_unavailable_page 2 個：AppTest 模擬額度錯誤與一般連線錯誤）。
+**下一步**：Jonathan 到 Neon 後台建 API key，放 Streamlit Secrets 與 GitHub secret `NEON_API_KEY`（側欄、每日檢查才會啟用）；到 Neon 把運算上限調成 0.25 CU；拿到 key 後比對 API 算出的 CU 小時是否等於後台數字、確認計費週期重置日。
