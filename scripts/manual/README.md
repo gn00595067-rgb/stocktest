@@ -7,7 +7,8 @@
    `DATABASE_URL=sqlite:///scripts/manual/demo.db USE_GOOGLE_SHEET=false python -m streamlit run app.py --server.headless true --server.port 8601`
 3. 在 `scripts/manual/` 目錄依序執行截圖（需要 Chrome、`websocket-client`）：
    `a_yahoo.py`、`a_entry.py`、`a_sell.py`、`a_reports.py`、`a_pwd.py` → 圖存在 `shots/`
-   （`a_pwd.py` 會把示範帳號密碼改掉，跑完要再跑一次步驟 1 重建）
+   （`a_pwd.py` 會把示範帳號密碼改掉，跑完執行 `python _reset_demo_pw.py` 改回 demo1234）
+   示範登入：只輸入密碼 `demo1234`（帳號「老闆」）。
 4. 產生 Word：`python build_manual.py 輸出.docx`
 
 - `cdp.py`：用 Chrome DevTools 協定控制無頭 Chrome；`ann.py`：在畫面上畫紅框與編號、裁切截圖。

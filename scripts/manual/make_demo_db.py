@@ -3,7 +3,7 @@
 
 用法（在專案根目錄）：
     python scripts/manual/make_demo_db.py scripts/manual/demo.db
-股票主檔從正式資料庫唯讀複製（需 .env 的 NEON_DATABASE_URL）；登入帳密 admin / demo1234。
+股票主檔從正式資料庫唯讀複製（需 .env 的 NEON_DATABASE_URL）；登入密碼 demo1234（帳號「老闆」）。
 價格參考值（Q）請依當時行情調整，畫面上的未實現損益才會合理。
 """
 import os
@@ -72,5 +72,5 @@ pd.DataFrame(rows).to_sql("trades", dst, if_exists="append", index=False)
 with dst.begin() as c:
     c.execute(text("insert into traders (name, created_at) values (:n, '2026-08-01 00:00:00')"), {"n": TRADER})
     c.execute(text("insert into user_accounts (username,password_hash,role,is_active,created_at) "
-                   "values ('admin',:h,'admin',1,'2026-08-01 00:00:00')"), {"h": hash_password("demo1234")})
+                   "values ('老闆',:h,'admin',1,'2026-08-01 00:00:00')"), {"h": hash_password("demo1234")})
 print(f"已建立 {OUT}：{len(rows)} 筆示範交易")

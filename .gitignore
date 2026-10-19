@@ -43,3 +43,5 @@ build/
 scripts/manual/demo.db
 scripts/manual/shots/
 scripts/manual/chprof*/
+scripts/manual/manual_illustrated.*
+scripts/manual/*.log

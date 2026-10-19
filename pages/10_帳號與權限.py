@@ -142,7 +142,7 @@ for u in users:
     with st.container(border=True):
         role_label = "管理者" if u.role == ROLE_ADMIN else "一般"
         st.markdown(f"**{u.username}**（{role_label}）")
-        new_name = st.text_input("帳號（可修改，大小寫皆可；登入時不分大小寫）", value=u.username, key=f"uname_{u.id}")
+        new_name = st.text_input("帳號名稱（只用來顯示，登入時不用打；可修改）", value=u.username, key=f"uname_{u.id}")
         c1, c2, c3, c4 = st.columns([1.4, 1.2, 1.8, 1.2])
         with c1:
             active = st.toggle("啟用", value=bool(u.is_active), key=f"active_{u.id}")

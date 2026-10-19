@@ -40,6 +40,7 @@ def rect(b, find_expr):
     return b.js(f"(()=>{{const r=({find_expr}).getBoundingClientRect(); return [r.left,r.top,r.right,r.bottom]}})()")
 def shot(b, name, x0, y0, x1, y1):
     d = b.cmd("Page.captureScreenshot", format="png", clip={"x": x0, "y": y0, "width": x1-x0, "height": y1-y0, "scale": 1})["data"]
+    os.makedirs("shots", exist_ok=True)
     open(os.path.join("shots", name), "wb").write(base64.b64decode(d)); print("  saved", name)
 # 找「同時包含所有文字」的最小元素
 def smallest(*txts, sel="div"):
