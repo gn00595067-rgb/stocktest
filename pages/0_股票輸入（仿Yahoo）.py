@@ -613,6 +613,12 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             finally:
                 sess.close()
             st.session_state[f"yh_form_n_{sid}"] = n + 1
+            # Peggy 2026-10-19：送出後自動收合，不用再手動按收合；結果訊息在整頁重跑後顯示
+            if st.session_state.get(f"yh_open_{group.trader}") == sid:
+                st.session_state[f"yh_open_{group.trader}"] = None
+            _nm = getattr(_MASTERS.get(sid), "name", "") or ""
+            st.session_state["yh_flash"] = (f"已新增 {len(entries)} 筆{'買入' if side == 'BUY' else '賣出'}"
+                                            f"（{sid} {_nm}，{e0['d']:%m/%d}）")
             st.rerun()   # 整頁：持股、均價、總覽一起更新
 
     st.markdown("**交易明細**")
@@ -757,6 +763,10 @@ for _i, (_c, _d) in enumerate(zip(_ed[1:4], gp.recent_trading_days(_today, 3))):
               type="primary" if st.session_state["yh_entry_date"] == _d else "secondary",
               use_container_width=True)
 entry_date = st.session_state["yh_entry_date"]
+_yh_flash = st.session_state.pop("yh_flash", None)
+if _yh_flash:
+    st.success(f"✅ {_yh_flash}")
+    st.toast(_yh_flash, icon="✅")
 if entry_date != _today:
     st.warning(f"目前輸入日期是 **{entry_date:%Y/%m/%d}**（不是今天），新增的交易都會記在這天。補登完記得按「今天」改回來。")
 

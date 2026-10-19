@@ -1260,10 +1260,12 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                                         _lot["remaining_qty"] = int(_lot["remaining_qty"]) - _c
                                 avail_lots = [l for l in avail_lots if int(l["remaining_qty"]) > 0]
                         sess.commit()
+                        _pending = False   # 還有沒送完的列（逐筆賣出時其他列）→ 保持展開
                         if _sell_mode:
                             # 逐筆：移除剛送出的這筆賣出列，其餘列（買進／其他賣出）保留；
                             # 若已無列則回到一列空白，等待輸入下一筆。
                             _rest = [r for r in st.session_state.get(rowids_key, [0]) if r != _active_rid]
+                            _pending = bool(_rest)
                             st.session_state.setdefault(f"te_rowdel_{sid}", []).append(_active_rid)
                             if not _rest:
                                 # 同上：補的空白列用新列號，避免瀏覽器帶回舊值
@@ -1275,7 +1277,14 @@ def _render_entry_area(row: dict, trades: list, custom_rules: list, policy: str,
                             st.session_state[f"te_rreset_{sid}"] = True
                         st.session_state[f"te_reset_match_{sid}"] = True
                         st.session_state["last_user"] = trader
-                        st.success(f"已新增 {len(submit_rows)} 筆交易（{sid} {row['name']}）。")
+                        # Peggy 2026-10-19：送出後自動收合（展開區連同明細很長，十幾檔要一檔檔手動收）；
+                        # 還有待送的列才保持展開。收合後捲回這檔，接著點下一檔「輸入」即可。
+                        if not _pending:
+                            st.session_state[f"te_open_{sid}"] = False
+                            st.session_state["te_scroll_to"] = sid
+                        st.session_state["te_flash"] = (
+                            f"已新增 {len(submit_rows)} 筆交易（{sid} {row['name']}）"
+                            + ("，還有未送出的列，請繼續送出。" if _pending else "。"))
                         st.rerun()  # 送出成功：整頁重跑，持股／KPI／明細才會更新
                     except Exception as e:
                         sess.rollback()
@@ -1325,11 +1334,11 @@ def _render_stock_trade_panel(
 
     _render_holding_row(row, sid, open_now, is_etf=is_etf, trader=trader)
 
-    if not open_now:
-        return
     if st.session_state.get("te_scroll_to") == sid:
         st.session_state.pop("te_scroll_to", None)
         _scroll_to_stock(sid)
+    if not open_now:
+        return
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("市值", f"{row['market_value']:,.0f}")
@@ -1412,6 +1421,10 @@ render_auth_sidebar()
 _mark("登入")
 
 st.title("交易輸入")
+_te_flash = st.session_state.pop("te_flash", None)
+if _te_flash:
+    st.success(_te_flash)
+    st.toast(_te_flash, icon="✅")
 _inject_trade_entry_css()
 st.caption(
     "仿奇摩持倉表：在持有股票列直接 Key in 買賣；含手續費/證交稅估算、"
