@@ -177,3 +177,11 @@ def test_validate_edit_trade():
     assert any("持股會變成" in x for x in e)
     e, _ = gp.validate_edit_trade("BUY", 1000, 0, 100.0, None, holding_qty=1000)
     assert any("請輸入股數" in x for x in e)
+
+
+def test_recent_trading_days_skips_weekend():
+    from datetime import date
+    from services.group_portfolio import recent_trading_days
+    assert recent_trading_days(date(2026, 10, 19)) == [date(2026, 10, 19), date(2026, 10, 16), date(2026, 10, 15)]  # 週一
+    assert recent_trading_days(date(2026, 10, 21)) == [date(2026, 10, 21), date(2026, 10, 20), date(2026, 10, 19)]  # 週三
+    assert recent_trading_days(date(2026, 10, 18))[1:] == [date(2026, 10, 16), date(2026, 10, 15)]                  # 週日

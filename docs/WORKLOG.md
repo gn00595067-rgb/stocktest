@@ -521,3 +521,12 @@
 **為什麼**：f905e1e 部署後仿Yahoo 頁 `ImportError: daytrade_capacity`（Streamlit Cloud 只重跑頁面、沒重載 services）；10/15 也發生過同樣問題。我上一則說「不用 Reboot」是錯的。
 **驗證**：pytest 156 passed（新增 test_fresh 3 個：檔案變新會重載、模組在 fresh 之前載入靠 .pyc 判斷、正常情況不誤判）；本機真 Streamlit：開著 app 時把 trade_fees.py 時間改新，切頁後 log「已重新載入 15 個模組」、頁面正常。
 **下一步**：這次仍需 Jonathan 手動 Reboot 一次（舊版頁面還沒有 fresh 的呼叫）；之後改 services 應不需 Reboot（db/models 改欄位除外）。
+
+## 2026-10-19 仿Yahoo「輸入日期」：補登時設一次日期全部沿用；新增測試管理者帳號
+
+**做了什麼**
+1. 仿Yahoo 分頁操作列下方加「輸入日期」＋快速鈕（今天／上個交易日／再前一個交易日，跳過週末）；新增交易預設用這天、整段輸入沿用；不是今天時黃色提醒；送出鈕寫日期；「今天」改用台灣日期。規格補在 `docs/specs/股票輸入_仿Yahoo.md`。
+2. 正式資料庫新增管理者帳號 `tester`（測試用，密碼已給 Jonathan）。順便查到目前帳號：admin、money（管理者）、peggy（一般），三個密碼都不是預設 admin1234。
+**為什麼**：Peggy 補登 10/15 約 30 筆，每筆都要改日期；Jonathan 忘了 admin 密碼、要一組測試用管理者。
+**驗證**：pytest 157 passed（新增 recent_trading_days 測試）；示範資料庫跑真 Streamlit：按「10/15（四）」後新增列帶 10/15、送出鈕顯示（10/15）、黃色提醒出現；1300／1000／800／420 寬截圖排版正常。
+**下一步**：請 Peggy 試用補登流程；圖解版說明書第 8 節「共用 admin 帳號」的說法已不準（帳號已分開），要不要改待 Jonathan 決定。

@@ -412,3 +412,21 @@ def validate_edit_trade(side: str, old_qty: int, qty, price, prev_close: Optiona
             errors.append(f"改成 {int(qty):,} 股後持股會變成 {after:,} 股（後面已有賣出用到這批），"
                           "請先改或刪後面的賣出。")
     return errors, warnings
+
+
+# ---------- 輸入日期（補登用；docs/specs/股票輸入_仿Yahoo.md 2026-10-19） ----------
+def tw_today() -> date:
+    """台灣今天的日期（雲端主機是 UTC，直接 date.today() 台灣早上 8 點前會變成昨天）。"""
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=8))).date()
+
+
+def recent_trading_days(base: date, n: int = 3) -> List[date]:
+    """[今天, 上個交易日, 再前一個交易日…]：往前跳過週六日（國定假日不知道，要用日曆選）。"""
+    from datetime import timedelta
+    out, d = [base], base
+    while len(out) < n:
+        d -= timedelta(days=1)
+        if d.weekday() < 5:
+            out.append(d)
+    return out

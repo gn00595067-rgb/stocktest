@@ -229,16 +229,16 @@ def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
     name = st.text_input("分頁名稱", value=g.name if g else "", max_chars=gp.NAME_MAX_LEN,
                          placeholder=(who or "例：小孩") if kind == _KIND_FULL else "例：1001起、10月短線")
     use_start = use_end = only = False
-    start = end = date.today()
+    start = end = gp.tw_today()
     cur = list(g.stock_ids) if g else []
     picked = cur
     if kind == _KIND_FILTER:
         c1, c2 = st.columns(2)
         use_start = c1.checkbox("限定起始日（這天起買進的）", value=bool(g and g.start_date))
-        start = c1.date_input("起始日", value=(g.start_date if g and g.start_date else date.today()),
+        start = c1.date_input("起始日", value=(g.start_date if g and g.start_date else gp.tw_today()),
                               disabled=not use_start, format="YYYY/MM/DD")
         use_end = c2.checkbox("限定結束日", value=bool(g and g.end_date))
-        end = c2.date_input("結束日", value=(g.end_date if g and g.end_date else date.today()),
+        end = c2.date_input("結束日", value=(g.end_date if g and g.end_date else gp.tw_today()),
                             disabled=not use_end, format="YYYY/MM/DD")
         opts = _stock_options()
         for s_ in cur:
@@ -413,7 +413,7 @@ def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
         price = f[2].number_input("股價", min_value=0.0, value=old_price, step=0.05, format="%.2f", key=f"{k}_p")
         errors, warns = gp.validate_edit_trade(
             side, old_qty, qty, price, (quote or {}).get("prev_close"), holding_qty,
-            is_today=(d == date.today() and (d != t.trade_date or float(price or 0) != old_price)),
+            is_today=(d == gp.tw_today() and (d != t.trade_date or float(price or 0) != old_price)),
         )
         is_etf = bool(getattr(_MASTERS.get(t.stock_id), "is_etf", False))
         disc, changed_disc = _discount_picker(t.user, f"{k}_disc", old_qty, old_price, float(t.fee or 0))
@@ -478,7 +478,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     # 新增交易（送出後換一組 key，輸入框自動清空）
     st.markdown("**新增交易**")
     n = st.session_state.get(f"yh_form_n_{sid}", 0)
-    k = f"yh_new_{sid}_{n}"
+    entry_date = st.session_state.get("yh_entry_date") or gp.tw_today()   # 上方「輸入日期」（fragment 重跑也讀得到）
+    k = f"yh_new_{sid}_{n}_{entry_date:%Y%m%d}"   # 日期也進 key：上方改了輸入日期，表單日期跟著換
     rows_key = f"{k}_rows"          # 買入可多列一次送出；賣出一次一筆（要配沖銷）
     if rows_key not in st.session_state:
         st.session_state[rows_key] = [0]
@@ -493,7 +494,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             break
         rk = f"{k}_{rid}"
         f = st.columns(_FORM_COLS)
-        d0 = st.session_state.get(f"{k}_{row_ids[i - 1]}_d", date.today()) if i else date.today()
+        d0 = st.session_state.get(f"{k}_{row_ids[i - 1]}_d", entry_date) if i else entry_date
         d = f[0].date_input("交易日期", value=d0, key=f"{rk}_d", format="YYYY/MM/DD", label_visibility="collapsed")
         if i == 0:
             side = f[1].selectbox("買/賣", ["BUY", "SELL"], key=f"{k}_s", label_visibility="collapsed",
@@ -512,7 +513,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             _rerun_fragment()
         if i > 0 and not qty and not price:
             continue   # 多出來的空白列：略過
-        errors, warns = gp.validate_new_trade(side, qty, price, prev_close, holding_qty, is_today=(d == date.today()))
+        errors, warns = gp.validate_new_trade(side, qty, price, prev_close, holding_qty, is_today=(d == gp.tw_today()))
         if not gp.trade_in_group(_NS(user=group.trader, trade_date=d, stock_id=sid), group):
             warns.append(f"日期或股票不在分頁「{group.name}」的條件內，送出後不會算進此分頁（其他分頁仍看得到）。")
         fee = tax = 0.0
@@ -559,10 +560,10 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         ok_warn = st.checkbox("我確認以上沒問題", key=f"{k}_ack")
     can_send = (not errors) and ok_warn and filled
     if can_send and multi:
-        label = f"✅ 確認新增 {len(entries)} 筆買入（共 {sum(int(e['qty']) for e in entries):,} 股）"
+        label = f"✅ 確認新增 {len(entries)} 筆買入（共 {sum(int(e['qty']) for e in entries):,} 股，{e0['d']:%m/%d}）"
     elif can_send:
         label = (f"✅ 確認新增：{'買入' if side == 'BUY' else '賣出'}{'（當沖）' if e0['is_dt'] else ''} "
-                 f"{int(e0['qty']):,} 股 @ {float(e0['price']):,.2f}")
+                 f"{int(e0['qty']):,} 股 @ {float(e0['price']):,.2f}（{e0['d']:%m/%d}）")
     else:
         label = "✅ 新增交易"
     if st.button(label, key=f"{k}_go", type="primary", disabled=not can_send):
@@ -716,6 +717,30 @@ if a[4].button("◀", key="yh_move_l", help="分頁往左移"):
 if a[5].button("▶", key="yh_move_r", help="分頁往右移"):
     s_ = get_session(); gp.move_group(s_, owner, group.id, +1); s_.close(); st.rerun()
 a[6].markdown(f'<div class="yh-desc" style="text-align:right" title="{group.describe()}">{group.describe()}</div>', unsafe_allow_html=True)
+
+# 輸入日期：設一次，之後展開任何一檔「新增交易」都預設這天（補登好幾天前的交易用）。
+# 存在 session：重新打開系統就回到今天；快速鈕用交易日（跳過週末）。
+_today = gp.tw_today()
+st.session_state.setdefault("yh_entry_date", _today)
+
+
+def _set_entry_date(d):
+    st.session_state["yh_entry_date"] = d
+
+
+_ed = st.columns([1.8, 1.2, 1.2, 1.2, 1.6], vertical_alignment="bottom")
+_ed[0].date_input("輸入日期", key="yh_entry_date", format="YYYY/MM/DD",
+                  help="新增交易的日期預設用這天；單筆仍可在那一列另外改。重新打開系統會回到今天。")
+_WD = "一二三四五六日"
+for _i, (_c, _d) in enumerate(zip(_ed[1:4], gp.recent_trading_days(_today, 3))):
+    _lab = f"今天 {_d:%m/%d}" if _i == 0 else f"{_d:%m/%d}（{_WD[_d.weekday()]}）"
+    _c.button(_lab, key=f"yh_ed_{_i}", on_click=_set_entry_date, args=(_d,),
+              help=None if _i == 0 else ("上個交易日" if _i == 1 else "再前一個交易日"),
+              type="primary" if st.session_state["yh_entry_date"] == _d else "secondary",
+              use_container_width=True)
+entry_date = st.session_state["yh_entry_date"]
+if entry_date != _today:
+    st.warning(f"目前輸入日期是 **{entry_date:%Y/%m/%d}**（不是今天），新增的交易都會記在這天。補登完記得按「今天」改回來。")
 
 # 計算
 g_trades = gp.filter_trades(trades, group)
