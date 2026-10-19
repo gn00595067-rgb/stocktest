@@ -8,7 +8,7 @@ def start(port=9556, w=1280, h=900):
             b.go("http://localhost:8601/")
             if b.wait("document.querySelectorAll('input[type=password]').length>0", 10): break
         except Exception: time.sleep(1)
-    b.type("input[type=text]", "admin"); b.type("input[type=password]", "demo1234")
+    b.type("input[type=password]", "demo1234")   # 只用密碼登入
     time.sleep(0.5); b.click_text("登入"); time.sleep(12)
     return b
 def goto(b, name, wait=12):

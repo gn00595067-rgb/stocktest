@@ -16,6 +16,7 @@ from services.auth_service import (
     render_auth_sidebar,
     is_admin,
     hash_password,
+    password_in_use,
 )
 
 
@@ -61,7 +62,8 @@ _flash = st.session_state.pop("_acct_flash", None)
 if _flash:
     st.success(_flash)
     st.toast(_flash, icon="✅")
-st.caption("角色分為管理者 / 一般。一般帳號可綁定多位買賣人，只能查看與操作綁定資料。")
+st.caption("登入時只輸入密碼，系統用密碼分辨是哪個帳號，所以**每個帳號的密碼都要不一樣**。"
+           "角色分為管理者 / 一般。一般帳號可綁定多位買賣人，只能查看與操作綁定資料。不用的帳號把「啟用」關掉即可。")
 
 # 買賣人可綁定名單＝主檔 ∪ 交易出現過（含剛新增、還沒任何交易的買賣人）。
 # 先用既有交易自動補回買賣人主檔（重開機/重載後主檔可能為空，交易卻還在）。
@@ -87,6 +89,11 @@ with st.form("create_user_form", clear_on_submit=True):
 if create_submitted:
     if not new_username.strip() or not new_password.strip():
         st.error("帳號與密碼不可空白。")
+    elif len(new_password) < 8:
+        st.error("密碼至少 8 碼。")
+    elif password_in_use(new_password):
+        # 登入只輸入密碼、用密碼分辨是誰，所以各帳號密碼不能一樣
+        st.error("這組密碼已經有其他帳號在用，請換一組（登入只輸入密碼，兩組一樣會分不出是誰）。")
     else:
         sess = get_session()
         try:
@@ -152,8 +159,13 @@ for u in users:
                         # 改帳號：不可空白；與其他帳號不分大小寫不可重複
                         uname = (new_name or "").strip()
                         name_error = None
+                        _pw = new_pwd.strip()
                         if not uname:
                             name_error = "帳號不可空白。"
+                        elif _pw and len(_pw) < 8:
+                            name_error = "密碼至少 8 碼。"
+                        elif _pw and password_in_use(_pw, exclude_user_id=u.id):
+                            name_error = "這組密碼已經有其他帳號在用，請換一組（登入只輸入密碼，兩組一樣會分不出是誰）。"
                         elif uname.lower() != (u.username or "").lower():
                             dup = (
                                 sess2.query(UserAccount)

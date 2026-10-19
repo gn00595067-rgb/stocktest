@@ -225,6 +225,42 @@ def filter_trades_by_permission(trades: Iterable) -> list:
     return [t for t in trades if getattr(t, "user", None) in allowed_set]
 
 
+# ---------- 只輸入密碼登入（docs/specs/只用密碼登入.md） ----------
+# 系統只有少數幾組帳號（老闆、開發者），登入時不必打帳號：用密碼比對是哪一組。
+# 所以各帳號密碼不能重複（存檔時擋）；沒有帳號這道關，加輸錯鎖定避免被一直猜。
+MAX_FAILS = 5          # 1 分鐘內輸錯幾次就暫停
+LOCK_SECONDS = 60
+_login_fails: list = []   # 全站（同一行程）最近輸錯的時間；不放 session，開新分頁也繞不過
+
+
+def _recent_fails(now: float) -> int:
+    _login_fails[:] = [t for t in _login_fails if now - t < LOCK_SECONDS]
+    return len(_login_fails)
+
+
+def find_user_by_password(password: str, exclude_user_id=None):
+    """密碼對得上的啟用帳號（只回第一個）；沒有回 None。exclude_user_id：檢查重複時排除自己。"""
+    if not password:
+        return None
+    sess = get_session()
+    try:
+        users = sess.query(UserAccount).filter(UserAccount.is_active.is_(True)).order_by(UserAccount.id).all()
+        for u in users:
+            if exclude_user_id is not None and int(u.id) == int(exclude_user_id):
+                continue
+            if verify_password(password, u.password_hash or ""):
+                return {"id": int(u.id), "username": u.username, "role": u.role,
+                        "password_hash": u.password_hash or ""}
+        return None
+    finally:
+        sess.close()
+
+
+def password_in_use(password: str, exclude_user_id=None) -> bool:
+    """這組密碼是否已被其他啟用帳號使用（只用密碼登入時，兩組一樣就分不出是誰）。"""
+    return find_user_by_password(password, exclude_user_id) is not None
+
+
 def login_guard() -> None:
     cm = _cookie_manager()
 
@@ -271,48 +307,37 @@ def login_guard() -> None:
 
     st.title("請先登入")
     with st.form("login_form", clear_on_submit=False):
-        username = st.text_input("帳號")
         password = st.text_input("密碼", type="password")
-        remember = st.checkbox("記住我（90 天內免登入）", value=True)
+        remember = st.checkbox("記住我（這台裝置 90 天內免登入）", value=True)
         submitted = st.form_submit_button("登入", type="primary")
     if submitted:
-        sess = get_session()
-        try:
-            # 帳號登入不分大小寫（ELSA / elsa 皆可登入）
-            user = (
-                sess.query(UserAccount)
-                .filter(func.lower(UserAccount.username) == username.strip().lower())
-                .first()
-            )
-            if (not user) or (not user.is_active):
-                st.error("帳號不存在或已停用。")
-                return
-            if not verify_password(password, user.password_hash or ""):
-                st.error("密碼錯誤。")
-                return
-            st.session_state["auth_logged_in"] = True
-            st.session_state["auth_user"] = {
-                "id": int(user.id),
-                "username": user.username,
-                "role": user.role,
-            }
-            if remember:
-                token = _make_remember_token(user.username, user.password_hash or "")
-                # cookie：於下一輪（已登入、乾淨畫面）寫入，確保確實落地
-                if cm is not None:
-                    st.session_state["_pending_remember"] = token
-                # 網址 token：iPad Safari 擋 cookie 時的後備，立即寫進網址
-                _set_url_token(token)
-                st.session_state["_remember_token"] = token
-                st.session_state.pop("_remember_disabled", None)
-            else:
-                st.session_state["_pending_remember_clear"] = True
-                st.session_state["_remember_disabled"] = True
-                st.session_state.pop("_remember_token", None)
-                _clear_url_token()
-            st.rerun()
-        finally:
-            sess.close()
+        now = time.time()
+        if _recent_fails(now) >= MAX_FAILS:
+            st.error(f"密碼輸錯太多次，請 {LOCK_SECONDS} 秒後再試。")
+            st.stop()   # 一定要停：只 return 的話頁面會繼續往下畫
+        found = find_user_by_password(password)
+        if not found:
+            _login_fails.append(now)
+            left = MAX_FAILS - _recent_fails(now)
+            st.error("密碼錯誤。" + (f"（再錯 {left} 次要等 1 分鐘）" if left <= 2 else ""))
+            st.stop()
+        st.session_state["auth_logged_in"] = True
+        st.session_state["auth_user"] = {"id": found["id"], "username": found["username"], "role": found["role"]}
+        if remember:
+            token = _make_remember_token(found["username"], found["password_hash"])
+            # cookie：於下一輪（已登入、乾淨畫面）寫入，確保確實落地
+            if cm is not None:
+                st.session_state["_pending_remember"] = token
+            # 網址 token：iPad Safari 擋 cookie 時的後備，立即寫進網址（從主畫面圖示打開就免登入）
+            _set_url_token(token)
+            st.session_state["_remember_token"] = token
+            st.session_state.pop("_remember_disabled", None)
+        else:
+            st.session_state["_pending_remember_clear"] = True
+            st.session_state["_remember_disabled"] = True
+            st.session_state.pop("_remember_token", None)
+            _clear_url_token()
+        st.rerun()
     st.stop()
 
 

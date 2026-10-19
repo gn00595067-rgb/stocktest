@@ -9,14 +9,13 @@ for _ in range(40):
         if b.wait("document.querySelectorAll('input[type=password]').length>0", 10): break
     except Exception: time.sleep(1)
 b.js(__import__('ann').JS)
-box(b, "document.querySelector('input[type=text]').closest('[data-testid=stTextInput]')", 1)
-box(b, "document.querySelector('input[type=password]').closest('[data-testid=stTextInput]')", 2)
-box(b, "document.querySelector('[data-testid=stCheckbox]')", 3)
-box(b, f"{F}('button','登入')", 4)
+box(b, "document.querySelector('input[type=password]').closest('[data-testid=stTextInput]')", 1)   # 只用密碼登入
+box(b, "document.querySelector('[data-testid=stCheckbox]')", 2)
+box(b, f"{F}('button','登入')", 3)
 t = rect(b, smallest("請先登入", sel="h1"))[1]; bt = rect(b, f"{F}('button','登入')")[3]
 shot(b, "p_login.png", 300, t - 10, 1240, bt + 25)
 b.js("window.__clear()")
-b.type("input[type=text]", "admin"); b.type("input[type=password]", "demo1234")
+b.type("input[type=password]", "demo1234")   # 只用密碼登入
 time.sleep(0.5); b.click_text("登入"); time.sleep(12)
 b.js(__import__('ann').JS)
 # 側欄：View more → 帳號與權限
