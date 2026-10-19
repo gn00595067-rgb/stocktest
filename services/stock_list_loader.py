@@ -175,3 +175,65 @@ def ensure_google_sheet_loaded() -> None:
         st.session_state["gs_auto_loaded_at"] = now
         st.session_state["gs_auto_loaded_ok"] = False
         st.session_state["gs_auto_loaded_err"] = f"{type(e).__name__}: {e}"
+
+
+# ---------- 股票搜尋（新增股票用；2026-10-19 Peggy 找不到「貿聯-KY」） ----------
+def _norm(s: str) -> str:
+    """比對用：全形轉半形、英文轉大寫、去掉空白與各種破折號（iPad 中文鍵盤常打出全形「－」或「—」）。"""
+    import unicodedata
+    s = unicodedata.normalize("NFKC", str(s or "")).upper()
+    for ch in " 　-‐‑‒–—―－_":
+        s = s.replace(ch, "")
+    return s
+
+
+def search_stocks(stock_list, keyword: str, limit: int = 60):
+    """依代號或名稱搜尋股票清單（[{stock_id, name, ...}]），回傳 (符合清單, 你是不是要找清單)。
+
+    同一代號只回一筆。找不到時用相近代號／名稱給建議（例：打成 3655 → 建議 3665 貿聯-KY）。
+    """
+    import difflib
+    k = _norm(keyword)
+    if not k:
+        return [], []
+    seen, uniq = set(), []
+    for s in stock_list or []:
+        sid = str(s.get("stock_id") or "").strip()
+        if sid and sid not in seen:
+            seen.add(sid)
+            uniq.append(s)
+    hits = [s for s in uniq if k in _norm(s.get("stock_id")) or k in _norm(s.get("name"))]
+    hits.sort(key=lambda s: (not _norm(s.get("stock_id")).startswith(k), str(s.get("stock_id"))))
+    if hits:
+        return hits[:limit], []
+    if k.isdigit():
+        # 代號：只差一碼（打錯、少打、多打、相鄰對調）的都列出，例：3655 → 3665
+        sug = [s for s in uniq if _code_distance(k, _norm(s.get("stock_id"))) <= 1]
+
+        def _same_prefix(s):
+            c = _norm(s.get("stock_id"))
+            return next((i for i, (x, y) in enumerate(zip(k, c)) if x != y), min(len(k), len(c)))
+        sug.sort(key=lambda s: (-_same_prefix(s), str(s.get("stock_id"))))   # 前面幾碼一樣的排前面
+        return [], sug[:40]
+    names = {}
+    for s in uniq:
+        names.setdefault(_norm(s.get("name")), s)
+    close = difflib.get_close_matches(k, list(names), n=5, cutoff=0.6)
+    return [], [names[c] for c in close][:5]
+
+
+def _code_distance(a: str, b: str) -> int:
+    """兩個代號差幾碼（含相鄰兩碼對調算 1）；差超過 1 就回 2（只需要知道是不是只差一碼）。"""
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > 1:
+        return 2
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        if len(diff) == 1:
+            return 1
+        if len(diff) == 2 and diff[1] == diff[0] + 1 and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]]:
+            return 1
+        return 2
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return 1 if any(long_[:i] + long_[i + 1:] == short for i in range(len(long_))) else 2

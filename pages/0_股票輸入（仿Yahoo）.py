@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.fresh import reload_stale_modules
 reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
-from services.stock_list_loader import ensure_google_sheet_loaded
+from services.stock_list_loader import ensure_google_sheet_loaded, search_stocks
 
 ensure_google_sheet_loaded()
 
@@ -296,9 +296,27 @@ def _dlg_delete_group(owner: str, g: gp.GroupSpec):
 @st.dialog("新增股票")
 def _dlg_add_stock(trader: str, g: gp.GroupSpec):
     _mark_dialog()
-    opts = _stock_options()
-    sid = st.selectbox("股票（可輸入代號或名稱搜尋）", options=[""] + list(opts.keys()),
-                       format_func=lambda k: opts.get(k, "請選擇…") if k else "請選擇…")
+    # 自己比對（全形「－」、空白、沒打破折號都找得到）；內建下拉搜尋遇到 iPad 全形破折號會查無結果
+    kw = st.text_input("搜尋股票", placeholder="輸入代號或名稱，例：3665 或 貿聯")
+    sid = None
+    if kw.strip():
+        try:
+            lst = fetch_stock_list_cached(ttl_seconds=3600) or []
+        except Exception:
+            lst = []
+        hits, sug = search_stocks(lst, kw, limit=10)   # 對話框只列前 10 筆，打越多字越準
+        if not hits and sug:
+            st.caption(f"找不到「{kw.strip()}」，你是不是要找：")
+        cand = hits or sug
+        if cand:
+            opts = {s["stock_id"]: f'{s["stock_id"]} {s.get("name") or ""}' for s in cand}
+            if len(opts) <= 8:
+                sid = st.radio("選擇股票", list(opts), format_func=lambda k: opts[k], label_visibility="collapsed")
+            else:   # 建議很多（例：只差一碼的代號）：用可再打字篩選的下拉
+                sid = st.selectbox("選擇股票", list(opts), format_func=lambda k: opts[k], index=None,
+                                   placeholder=f"有 {len(opts)} 檔可能，點開選擇或再打字篩選")
+        else:
+            st.caption("查無符合股票。可以只打代號，或打名稱前兩個字試試（例：貿聯）。")
     st.caption("加入後會在列表顯示一列（0 股），展開即可輸入第一筆交易。")
     if st.button("加入", type="primary", use_container_width=True, disabled=not sid):
         sess = get_session()

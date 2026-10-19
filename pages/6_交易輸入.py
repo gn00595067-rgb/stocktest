@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.fresh import reload_stale_modules
 reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
-from services.stock_list_loader import ensure_google_sheet_loaded
+from services.stock_list_loader import ensure_google_sheet_loaded, search_stocks
 
 ensure_google_sheet_loaded()
 
@@ -900,11 +900,11 @@ def _render_add_stock_expander(masters: dict, trader: str):
         if kw and len(kw.strip()) >= 1:
             try:
                 full_list = fetch_stock_list_cached(ttl_seconds=3600)
-                k = kw.strip().upper()
-                matches = [
-                    s for s in full_list
-                    if k in (s.get("stock_id") or "").upper() or k in (s.get("name") or "")
-                ][:60]
+                # 全形／破折號／空白都比對得到；找不到時給相近代號建議（例：3655 → 3665 貿聯-KY）
+                matches, _sug = search_stocks(full_list, kw)
+                if not matches and _sug:
+                    st.caption(f"找不到「{kw.strip()}」，你是不是要找：")
+                    matches = _sug
                 if matches:
                     opts = {s["stock_id"]: f"{s['stock_id']} {s.get('name', '')}" for s in matches}
                     picked = st.selectbox(
@@ -928,7 +928,7 @@ def _render_add_stock_expander(masters: dict, trader: str):
                         st.success(f"已加入 {picked}，請點開下方該股輸入第一筆買進")
                         st.rerun()
                 else:
-                    st.caption("查無符合股票")
+                    st.caption("查無符合股票。可以只打代號，或打名稱前兩個字試試（例：貿聯）。")
             except Exception as e:
                 st.caption(f"搜尋失敗：{e}")
 
