@@ -113,27 +113,38 @@ _SIDEBAR_AUTOCLOSE_JS = """
     function narrow(){ return win.innerWidth <= 1024; }
     function isOpen(){
       var sb = sidebar(); if (!sb) return false;
+      var ax = sb.getAttribute('aria-expanded');   // Streamlit 1.5x：側邊欄展開＝"true"（收合動畫中就已是 "false"）
+      if (ax !== null) return ax === 'true';
       var r = sb.getBoundingClientRect();
-      return r.width > 60 && r.right > 20;   // 在畫面上且有寬度＝展開
+      return r.width > 60 && r.right > 20;
     }
+    // 注意：Streamlit 的收合鈕是「切換」，側邊欄已收合時再按會重新打開。
+    // 平板連點時第二下若又按到它，側邊欄就會一直跳出來（Peggy 2026-10-22 回饋），
+    // 所以只在確定展開時才按，且只找側邊欄裡的收合鈕（不碰左上角的展開鈕）。
+    var cooldownUntil = 0;
     function collapse(){
-      var sels = ['[data-testid="stSidebarCollapseButton"] button',
-                  'button[data-testid="stSidebarCollapseButton"]',
-                  '[data-testid="stSidebarCollapseButton"]',
-                  '[data-testid="baseButton-headerNoPadding"]',
-                  '[data-testid="stBaseButton-headerNoPadding"]',
-                  'section[data-testid="stSidebar"] button[kind="headerNoPadding"]'];
-      for (var i=0;i<sels.length;i++){ var b = doc.querySelector(sels[i]); if (b){ b.click(); return; } }
+      if (!isOpen()) return;
+      var b = doc.querySelector('[data-testid="stSidebarCollapseButton"] button');
+      if (b) b.click();
     }
     var bd = doc.getElementById('__sb_bd');
     if (!bd) {
       bd = doc.createElement('div');
       bd.id = '__sb_bd';
       bd.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(0,0,0,0.4);display:none;';
-      bd.addEventListener('click', function(e){ e.preventDefault(); e.stopPropagation(); collapse(); setTimeout(sync, 120); }, true);
+      bd.addEventListener('click', function(e){
+        e.preventDefault(); e.stopPropagation();
+        bd.style.display = 'none';                 // 遮罩立刻消失，下一下就點得到底下的分頁
+        if (Date.now() < cooldownUntil) return;
+        cooldownUntil = Date.now() + 600;          // 收合動畫 300ms 內的連點不再切換
+        collapse();
+      }, true);
       doc.body.appendChild(bd);
     }
-    function sync(){ bd.style.display = (narrow() && isOpen()) ? 'block' : 'none'; }
+    function sync(){
+      if (Date.now() < cooldownUntil) { bd.style.display = 'none'; return; }
+      bd.style.display = (narrow() && isOpen()) ? 'block' : 'none';
+    }
     if (!doc.__sbBd){ doc.__sbBd = true; win.addEventListener('resize', sync); setInterval(sync, 500); }
     sync();
   } catch(_){}
