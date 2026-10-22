@@ -124,6 +124,11 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; t
 .yh-up { color: #e0262b; } .yh-down { color: #12a150; } .yh-flat { color: #666; }
 [class*="st-key-yh_row_"] { background: #f4f5f7; border-radius: 6px; padding: .15rem .4rem; margin-bottom: .35rem; }
 [class*="st-key-yh_row_"] button { border: none; background: transparent; }
+/* 列與列之間不要 Streamlit 預設的 1rem 空白；展開鈕不撐高列（整列都在 2.1rem 內，手指仍好點） */
+div[data-testid="stLayoutWrapper"]:has(> [class*="st-key-yh_row_"]) { margin-bottom: -.75rem; }
+[class*="st-key-yh_row_"] [data-testid="stMarkdownContainer"],
+.st-key-yh_thead [data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; }   /* 原生 -1rem 會讓兩行時溢出到下一列 */
+[class*="st-key-yh_tg_"] button { min-height: 2.1rem !important; height: 2.1rem; padding: 0 .3rem; }
 /* 交易明細的 ✏️🗑：小方鈕、不撐高列、不超出右框 */
 [class*="st-key-yh_tr_"] button { min-height: 0; height: 1.9rem; width: 1.9rem; padding: 0; }
 [class*="st-key-yh_tr_"] button p { font-size: .95rem; line-height: 1; }
@@ -135,6 +140,17 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; t
 /* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多 */
 .yh-grid { display: grid; grid-template-columns: 1.15fr 1.15fr .9fr 1.05fr 1.05fr 1.2fr 1.2fr 1.2fr 0.7fr;
            align-items: center; column-gap: .8rem; }
+/* 持股表一列一行（Peggy 2026-10-22：一畫面多看幾檔）：寬度夠時漲跌、％、代號接在同一行；
+   不夠寬才退回兩行。依持股表自身寬度判斷（側邊欄開關會改變寬度） */
+[data-testid="stMarkdownContainer"]:has(> .yh-grid) { container-type: inline-size; }
+.yh-td .l2 { display: block; }
+.yh-td .pct { font-size: .82rem; }
+@container (min-width: 880px) {
+  .yh-td .l2 { display: inline; margin-left: .3rem; }
+  .yh-td .unit.twd { display: none; }   /* 表頭已是金額欄，省下寬度給一行排版 */
+  .yh-grid { grid-template-columns: 1.25fr 1.75fr .8fr .95fr .95fr 1.15fr 1.6fr 1.75fr .5fr; column-gap: .6rem; }
+  .yh-td { padding: 0; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -158,7 +174,7 @@ def _pnl_html(amount, pct, show: bool = True) -> str:
         return '<div class="yh-td">-</div>'
     pct_s = f"({abs(pct):.2f}%)" if pct is not None else ""
     return (f'<div class="yh-td {_cls(amount)}">{_arrow(amount)} {abs(amount):,.2f}'
-            f'<br><span>{pct_s}</span></div>')
+            f'<span class="l2 pct">{pct_s}</span></div>')
 
 
 def _load():
@@ -931,8 +947,8 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
                 _rerun_fragment()   # 只重畫持股表，不重跑整頁（不重讀資料庫、不重抓報價）
             suffix = ".TWO" if str(r.get("exchange") or "").upper() in ("TPEX", "OTC") else ".TW"
             if r["price"] is not None:
-                price_html = (f'<div class="yh-td"><b class="{_cls(r["change"])}">{r["price"]:,.2f}</b><br>'
-                              f'<span class="{_cls(r["change"])}">{_arrow(r["change"])} {abs(r["change"]):,.2f} '
+                price_html = (f'<div class="yh-td"><b class="{_cls(r["change"])}">{r["price"]:,.2f}</b>'
+                              f'<span class="l2 pct {_cls(r["change"])}">{_arrow(r["change"])} {abs(r["change"]):,.2f} '
                               f'({abs(r["change_pct"]):.2f}%)</span></div>')
             else:
                 price_html = '<div class="yh-td">-</div>'
@@ -943,11 +959,11 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
                     if r["qty"] and r.get("breakeven") else "-")
             c1.markdown(
                 '<div class="yh-grid">'
-                f'<div class="yh-td l"><b>{r["name"]}</b><br><span class="sub">{sid}{suffix}</span></div>'
+                f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span></div>'
                 + price_html
                 + f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span></div>'
-                + f'<div class="yh-td">{avg_s}<span class="unit">TWD</span></div>'
-                + f'<div class="yh-td">{be_s}<span class="unit">TWD</span></div>'
+                + f'<div class="yh-td">{avg_s}<span class="unit twd">TWD</span></div>'
+                + f'<div class="yh-td">{be_s}<span class="unit twd">TWD</span></div>'
                 + f'<div class="yh-td">{mv_s}</div>'
                 + _pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"])
                 + _pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"]))
