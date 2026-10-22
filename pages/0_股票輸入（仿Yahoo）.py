@@ -790,6 +790,9 @@ if _goto is not None and _goto in ids:
     st.session_state[gkey] = _goto
 if st.session_state.get(gkey) not in ids:
     st.session_state[gkey] = ids[0]
+# Peggy 2026-10-22：新增股票／搜尋／分頁設定／輸入日期平常收起來（有需要再點開），分頁列緊貼總覽卡，
+# 讓下面持股表多露幾檔。收合區要用到下面選定的分頁，所以先佔位置、選完分頁再填內容。
+_tools = st.expander("⚙️ 新增股票・搜尋・編輯分頁・輸入日期", expanded=False)
 tc, nc = st.columns([6, 1.1], vertical_alignment="center")
 with tc:
     with st.container(key="yh_tabs"):
@@ -801,9 +804,9 @@ group = next(g for g in groups if g.id == gid)
 trader = group.trader                      # 這個分頁是誰的帳：輸入的交易記在這個人名下
 st.session_state["last_user"] = trader
 
-# 分頁操作列
+# 分頁操作列（在收合區裡）
 # 搜尋框放第二格，但選項要等算完分頁內股票才知道，所以先佔位、稍後才填
-a = st.columns([1.1, 2.1, 1.3, 1.3, 0.5, 0.5, 1.3], vertical_alignment="center")
+a = _tools.columns([1.1, 2.1, 1.3, 1.3, 0.5, 0.5, 1.3], vertical_alignment="center")
 if a[0].button("新增股票", key="yh_add_stock"):
     _dlg_add_stock(trader, group)
 if a[2].button("編輯此分頁", key="yh_edit_group", help="改名、改成誰的帳、改日期／股票條件"):
@@ -826,7 +829,7 @@ def _set_entry_date(d):
     st.session_state["yh_entry_date"] = d
 
 
-_ed = st.columns([1.8, 1.2, 1.2, 1.2, 1.6], vertical_alignment="bottom")
+_ed = _tools.columns([1.8, 1.2, 1.2, 1.2, 1.6], vertical_alignment="bottom")
 _ed[0].date_input("輸入日期", key="yh_entry_date", format="YYYY/MM/DD",
                   help="新增交易的日期預設用這天；單筆仍可在那一列另外改。重新打開系統會回到今天。")
 _WD = "一二三四五六日"
