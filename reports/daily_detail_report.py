@@ -81,15 +81,15 @@ def build_daily_detail_df(trades, masters, policy: str = "CUSTOM", filter_date=N
 STOCK_SUMMARY_COLUMNS = ["股票", "買進股數", "買進支出", "賣出股數", "賣出收入", "手續費", "證交稅", "損益"]
 
 
-def build_daily_stock_summary(detail: pd.DataFrame, blank_buy_total: bool = False) -> pd.DataFrame:
+def build_daily_stock_summary(detail: pd.DataFrame, blank_money_totals: bool = False) -> pd.DataFrame:
     """每股損益簡表（像 Peggy Excel 的每股「合計」列）：每檔一列，最後一列「合計」。
 
     detail 為「當日交易明細」頁的每筆明細（欄位：股票、買/賣、股數、手續費、證交稅、
     交割應收、交割應付，以及原始未湊整的 _pnl_raw）。
     - 買進支出＝成交金額＋手續費（＝交割應付）；賣出收入＝成交金額－手續費－證交稅（＝交割應收）
     - 損益＝該檔當日賣出的已實現損益（以原始值加總、最後才四捨五入，與已實現損益頁一致）
-    - blank_buy_total：合計列的「買進支出」留空（區間用：同一筆錢會買了賣、賣了再買，
-      整段期間的買進加總遠大於實際本金，看了會誤會；Peggy 2026-10-22 回饋）
+    - blank_money_totals：合計列的「買進支出」「賣出收入」留空（區間用：同一筆錢會買了賣、賣了再買，
+      整段期間的買賣金額加總遠大於實際本金，看了會誤會；Peggy 2026-10-22 回饋）
     """
     if detail is None or detail.empty:
         return pd.DataFrame(columns=STOCK_SUMMARY_COLUMNS)
@@ -114,8 +114,8 @@ def build_daily_stock_summary(detail: pd.DataFrame, blank_buy_total: bool = Fals
     # 不同股票的股數相加沒有意義（Peggy 2026-10-15 回饋 7-2），合計列留空
     total["買進股數"] = float("nan")
     total["賣出股數"] = float("nan")
-    if blank_buy_total:
-        total["買進支出"] = float("nan")
+    if blank_money_totals:
+        total["買進支出"] = total["賣出收入"] = float("nan")
     out = pd.concat([g, pd.DataFrame([total])], ignore_index=True)
     out["損益"] = out["損益"].round(0)
     return out[STOCK_SUMMARY_COLUMNS]
