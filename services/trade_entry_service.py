@@ -301,6 +301,28 @@ def combined_match_plan(
     return plan
 
 
+def sequential_match_plans(
+    sells: List[Tuple[int, Optional[float]]],
+    open_lots: List[dict],
+    time_key: str = "all",
+    sort_key: str = "nearest_avg",
+) -> List[List[Tuple[int, int]]]:
+    """多筆賣出用同一種沖銷方式依序自動配對（仿Yahoo 多筆賣出）。
+
+    sells：[(賣出股數, 賣出價)]，照輸入順序；前一筆配掉的股數，後一筆就不能再配。
+    回傳每筆的配對計畫；符合條件的批次不夠時，該筆合計會小於賣出股數（由呼叫端提示）。
+    """
+    left = {lot["trade_id"]: int(lot["remaining_qty"]) for lot in open_lots}
+    plans: List[List[Tuple[int, int]]] = []
+    for qty, price in sells:
+        lots = [dict(lot, remaining_qty=left[lot["trade_id"]]) for lot in open_lots if left[lot["trade_id"]] > 0]
+        plan = combined_match_plan(int(qty or 0), lots, time_key, sort_key, price)
+        for buy_id, q in plan:
+            left[buy_id] -= q
+        plans.append(plan)
+    return plans
+
+
 def preview_avg_cost_after_buy(
     current_qty: int,
     current_cost: float,

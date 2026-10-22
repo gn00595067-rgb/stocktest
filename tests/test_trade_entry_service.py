@@ -15,6 +15,7 @@ from services.trade_entry_service import (
     filter_lots_by_time,
     filter_and_sort_lots,
     combined_match_plan,
+    sequential_match_plans,
 )
 
 
@@ -164,3 +165,21 @@ def test_combined_match_plan_time_and_profit_axes_intersect():
     # 符合者不足時，計畫合計 < 賣出股數（不報錯）
     plan3 = combined_match_plan(5000, lots, time_key="3d", sort_key="profit_max", sell_price=363.0)
     assert sum(q for _, q in plan3) == 1000
+
+
+def test_sequential_match_plans_later_sells_skip_used_lots():
+    # 三筆賣出都用「賺多」：第一筆先吃最便宜的 279，第二筆接著吃 277，不會重複配到同一批
+    plans = sequential_match_plans([(1000, 370.0), (1000, 370.0), (500, 370.0)], _lots(), "all", "profit_max")
+    assert plans == [[(279, 1000)], [(277, 1000)], [(276, 500)]]
+
+
+def test_sequential_match_plans_partial_lot_carries_over():
+    plans = sequential_match_plans([(500, 370.0), (1000, 370.0)], _lots(), "all", "profit_max")
+    assert plans == [[(279, 500)], [(279, 500), (277, 500)]]
+
+
+def test_sequential_match_plans_not_enough_leaves_short():
+    # 只有賣價 361 以下買進的才算「賺」：279(360.0)、277(360.5) 共 2000 股
+    plans = sequential_match_plans([(1500, 361.0), (1500, 361.0)], _lots(), "all", "profit_max")
+    assert sum(q for _, q in plans[0]) == 1500
+    assert sum(q for _, q in plans[1]) == 500

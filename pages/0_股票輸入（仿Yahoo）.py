@@ -39,6 +39,7 @@ from services.trader_service import (
 from services.position_cost import compute_position_and_cost_by_stock
 from services.trade_entry_service import (
     get_open_buy_lots, combined_match_plan, sort_lots_by_strategy, estimate_match_row_net_pnl,
+    sequential_match_plans,
 )
 import pandas as pd
 from services.mobile_ui import inject_mobile_css
@@ -346,6 +347,54 @@ _MATCH_METHODS = {
 _MATCH_TIMES = {"all": "全部", "3d": "近3天", "5d": "近5天"}
 
 
+def _match_method_picker(k: str):
+    """沖銷方式＋時間範圍兩排選項。預設沿用這次登入上次選的（連續 key 賣出不用每次重選）。"""
+    m1, m2 = st.columns([3, 1.2])
+    mm, mt = st.session_state.get("yh_mm_pref", "nearest_avg"), st.session_state.get("yh_mt_pref", "all")
+    method = m1.radio("沖銷方式", list(_MATCH_METHODS), format_func=_MATCH_METHODS.get, horizontal=True,
+                      index=list(_MATCH_METHODS).index(mm), key=f"{k}_mm", label_visibility="collapsed")
+    tmode = m2.radio("時間範圍", list(_MATCH_TIMES), format_func=_MATCH_TIMES.get, horizontal=True,
+                     index=list(_MATCH_TIMES).index(mt), key=f"{k}_mt", label_visibility="collapsed")
+    st.session_state["yh_mm_pref"], st.session_state["yh_mt_pref"] = method, tmode
+    return method, tmode
+
+
+def _multi_sell_match_ui(sid: str, trader: str, entries: list, k: str):
+    """多筆賣出：選一種沖銷方式，每一筆照輸入順序自動配（前一筆配掉的批次，後一筆不會再配）。
+
+    回傳 (每筆的 plan 清單, 錯誤訊息清單)。要逐批手動改請一次賣一筆。
+    """
+    lots = get_open_buy_lots(trades, sid, trader, rules, POLICY)
+    st.markdown(f"**沖銷配對**：{len(entries)} 筆賣出用同一種方式自動配對（照上面的順序一筆接一筆配）")
+    if not lots:
+        return [], ["這一檔目前沒有可沖銷的買進庫存。"]
+    method, tmode = _match_method_picker(k)
+    plans = sequential_match_plans([(int(e["qty"]), float(e["price"])) for e in entries], lots, tmode, method)
+    by_id, lot_px = {t.id: t for t in trades}, {l["trade_id"]: float(l["price"]) for l in lots}
+    rows, errs, est_total = [], [], 0.0
+    for j, (e, plan) in enumerate(zip(entries, plans)):
+        qty, price, got = int(e["qty"]), float(e["price"]), sum(q for _, q in plan)
+        est = sum(estimate_match_row_net_pnl(price, lot_px[b], q, by_id.get(b), e["fee"], e["tax"], qty)[1]
+                  for b, q in plan)
+        est_total += est
+        if got != qty:
+            errs.append(f"第 {j + 1} 筆：符合「{_MATCH_METHODS[method]}／{_MATCH_TIMES[tmode]}」的買進只夠配 "
+                        f"{got:,} / {qty:,} 股，請換沖銷方式或時間範圍。")
+        rows.append({
+            "筆": j + 1, "賣出": f"{qty:,} 股 @ {price:,.2f}",
+            "沖掉的買進": "、".join(f"#{b}（{lot_px[b]:,.2f}）{q:,} 股" for b, q in plan) or "—",
+            "預估淨損益": round(est),
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                 column_config={"筆": st.column_config.NumberColumn(width="small"),
+                                "預估淨損益": st.column_config.NumberColumn(format="%d 元")})
+    if not errs:
+        st.success(f"{len(entries)} 筆都已配好　預估合計已實現淨損益："
+                   f"{'▲' if est_total > 0 else ('▼' if est_total < 0 else '')}{abs(est_total):,.0f} 元")
+    st.caption("要逐批手動改沖銷股數，請一次賣一筆（只剩一筆時會出現可修改的配對表）。")
+    return plans, errs
+
+
 def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, tax: float, k: str):
     """賣出沖銷配對（同舊「交易輸入」頁的口徑：預設接近均價，可換方式、可逐批改）。
 
@@ -355,11 +404,7 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
     st.markdown("**沖銷配對**：這筆賣出要沖掉哪幾批買進（預設接近均價，可換方式或直接改「本次沖銷」）")
     if not lots:
         return [], "這一檔目前沒有可沖銷的買進庫存。"
-    m1, m2 = st.columns([3, 1.2])
-    method = m1.radio("沖銷方式", list(_MATCH_METHODS), format_func=_MATCH_METHODS.get, horizontal=True,
-                      key=f"{k}_mm", label_visibility="collapsed")
-    tmode = m2.radio("時間範圍", list(_MATCH_TIMES), format_func=_MATCH_TIMES.get, horizontal=True,
-                     key=f"{k}_mt", label_visibility="collapsed")
+    method, tmode = _match_method_picker(k)
     plan = dict(combined_match_plan(qty, lots, tmode, method, price))
     shown = sort_lots_by_strategy(lots, method)  # 表格順序跟著沖銷方式走，配到的批次排在前面
     df = pd.DataFrame([{
@@ -498,7 +543,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     n = st.session_state.get(f"yh_form_n_{sid}", 0)
     entry_date = st.session_state.get("yh_entry_date") or gp.tw_today()   # 上方「輸入日期」（fragment 重跑也讀得到）
     k = f"yh_new_{sid}_{n}_{entry_date:%Y%m%d}"   # 日期也進 key：上方改了輸入日期，表單日期跟著換
-    rows_key = f"{k}_rows"          # 買入可多列一次送出；賣出一次一筆（要配沖銷）
+    rows_key = f"{k}_rows"          # 買入、賣出都可多列一次送出（多筆賣出用同一種沖銷方式自動配）
     if rows_key not in st.session_state:
         st.session_state[rows_key] = [0]
     row_ids = st.session_state[rows_key]
@@ -507,9 +552,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
     disc, _ = _discount_picker(group.trader, f"{k}_disc")
     fee_rate = trader_fee_rate(group.trader, disc)
     side, entries = "BUY", []
+    sold_before, dt_before = 0, {}   # 多筆賣出：前面幾列已賣的股數、各日已用掉的當沖額度
     for i, rid in enumerate(row_ids):
-        if i > 0 and side == "SELL":
-            break
         rk = f"{k}_{rid}"
         f = st.columns(_FORM_COLS)
         d0 = st.session_state.get(f"{k}_{row_ids[i - 1]}_d", entry_date) if i else entry_date
@@ -517,8 +561,14 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         if i == 0:
             side = f[1].selectbox("買/賣", ["BUY", "SELL"], key=f"{k}_s", label_visibility="collapsed",
                                   format_func=lambda x: "買入" if x == "BUY" else "賣出")
-        else:
+        elif side == "BUY":
             f[1].markdown('<div class="yh-td l">買入</div>', unsafe_allow_html=True)
+        else:   # 賣出的 ✕ 放在「賣出」旁邊（最後一欄是當沖）
+            s1, s2 = f[1].columns([2, 1], vertical_alignment="center")
+            s1.markdown('<div class="yh-td l">賣出</div>', unsafe_allow_html=True)
+            if s2.button("✕", key=f"{rk}_x", help="移除這一列"):
+                row_ids.remove(rid)
+                _rerun_fragment()
         qty = f[2].number_input("股數", min_value=0, value=None, step=1000, key=f"{rk}_q",
                                 placeholder="股數", label_visibility="collapsed")
         price = f[3].number_input("股價", min_value=0.0, value=None, step=0.05, format="%.2f", key=f"{rk}_p",
@@ -531,13 +581,17 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             _rerun_fragment()
         if i > 0 and not qty and not price:
             continue   # 多出來的空白列：略過
-        errors, warns = gp.validate_new_trade(side, qty, price, prev_close, holding_qty, is_today=(d == gp.tw_today()))
+        errors, warns = gp.validate_new_trade(side, qty, price, prev_close, holding_qty - sold_before,
+                                              is_today=(d == gp.tw_today()))
         if not gp.trade_in_group(_NS(user=group.trader, trade_date=d, stock_id=sid), group):
             warns.append(f"日期或股票不在分頁「{group.name}」的條件內，送出後不會算進此分頁（其他分頁仍看得到）。")
         fee = tax = 0.0
         if qty and price and not [e for e in errors if "請輸入" in e]:
             # 當沖只有「當天買進可對沖」的股數減半，其餘是賣庫存、照一般稅率
-            dt_qty = min(int(qty), daytrade_capacity(trades, group.trader, sid, d)) if is_dt else None
+            dt_qty = (min(int(qty), max(0, daytrade_capacity(trades, group.trader, sid, d) - dt_before.get(d, 0)))
+                      if is_dt else None)
+            if is_dt:
+                dt_before[d] = dt_before.get(d, 0) + dt_qty
             fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=is_dt,
                                       fee_rate=fee_rate, daytrade_qty=dt_qty)
             tax = tax if side == "SELL" else 0.0
@@ -547,27 +601,31 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             f[4].markdown(f'<div class="yh-td sm c">{fee:,.0f}</div>', unsafe_allow_html=True)
             f[5].markdown(f'<div class="yh-td sm c">{tax:,.0f}</div>', unsafe_allow_html=True)
             f[6].markdown(f'<div class="yh-td c">{int(qty) * float(price):,.0f}</div>', unsafe_allow_html=True)
+        if side == "SELL" and qty:
+            sold_before += int(qty)
         entries.append(dict(d=d, qty=qty, price=price, is_dt=is_dt, fee=fee, tax=tax, errors=errors, warns=warns))
-    if side == "BUY":
-        if st.button("＋ 再加一筆買入", key=f"{k}_addrow", help="一次輸入多筆買入，最後一起送出"):
-            row_ids.append(max(row_ids) + 1)
-            _rerun_fragment()
-    elif len(row_ids) > 1:
-        st.caption("賣出一次一筆（要配沖銷）；其他買入列先藏起來，切回「買入」就會出現。")
+    side_lb = "買入" if side == "BUY" else "賣出"
+    if st.button(f"＋ 再加一筆{side_lb}", key=f"{k}_addrow", help=f"一次輸入多筆{side_lb}，最後一起送出"):
+        row_ids.append(max(row_ids) + 1)
+        _rerun_fragment()
 
     multi = len(entries) > 1
     e0 = entries[0]
-    match_plan, errors, warns = [], [], []
+    errors, warns = [], []
     for j, e in enumerate(entries):
         pre = f"第 {j + 1} 筆：" if multi else ""
         errors += [pre + x for x in e["errors"] if not ("請輸入" in x and not (e["qty"] or e["price"]))]
         warns += [pre + x for x in e["warns"]]
     filled = all(e["qty"] and e["price"] for e in entries)
-    if side == "SELL" and e0["qty"] and e0["price"] and not e0["errors"]:
-        match_plan, match_err = _sell_match_ui(sid, group.trader, int(e0["qty"]), float(e0["price"]),
-                                               e0["fee"], e0["tax"], k)
+    plans = [[] for _ in entries]   # 每筆賣出各自的沖銷配對 [(買進ID, 股數)]
+    if side == "SELL" and not multi and e0["qty"] and e0["price"] and not e0["errors"]:
+        plans[0], match_err = _sell_match_ui(sid, group.trader, int(e0["qty"]), float(e0["price"]),
+                                             e0["fee"], e0["tax"], k)
         if match_err:
             errors.append(match_err)
+    elif side == "SELL" and multi and filled and not any(e["errors"] for e in entries):
+        plans, match_errs = _multi_sell_match_ui(sid, group.trader, entries, k)
+        errors += match_errs
     for e in errors:
         if not e.endswith("這一檔目前沒有可沖銷的買進庫存。") and not e.startswith(("沖銷股數合計", "買進 ID")):
             st.error(e)
@@ -578,7 +636,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         ok_warn = st.checkbox("我確認以上沒問題", key=f"{k}_ack")
     can_send = (not errors) and ok_warn and filled
     if can_send and multi:
-        label = f"✅ 確認新增 {len(entries)} 筆買入（共 {sum(int(e['qty']) for e in entries):,} 股，{e0['d']:%m/%d}）"
+        label = f"✅ 確認新增 {len(entries)} 筆{side_lb}（共 {sum(int(e['qty']) for e in entries):,} 股，{e0['d']:%m/%d}）"
     elif can_send:
         label = (f"✅ 確認新增：{'買入' if side == 'BUY' else '賣出'}{'（當沖）' if e0['is_dt'] else ''} "
                  f"{int(e0['qty']):,} 股 @ {float(e0['price']):,.2f}（{e0['d']:%m/%d}）")
@@ -595,14 +653,14 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             st.session_state["yh_last_submit"] = (sig, time.monotonic())
             sess = get_session()
             try:
-                for e in entries:   # 多筆買入同一次存檔：要嘛全成功、要嘛全不存
+                for e, plan in zip(entries, plans):   # 多筆同一次存檔：要嘛全成功、要嘛全不存
                     new_t = Trade(user=group.trader, stock_id=sid, trade_date=e["d"], side=side,
                                   price=float(e["price"]), quantity=int(e["qty"]), is_daytrade=e["is_dt"],
                                   fee=e["fee"], tax=e["tax"])
                     sess.add(new_t)
                     sess.flush()
                     if side == "SELL":   # 賣出：照上面配好的批次寫自定沖銷規則（與交易同一筆存檔）
-                        for buy_id, mq in match_plan:
+                        for buy_id, mq in plan:
                             sess.add(CustomMatchRule(sell_trade_id=new_t.id, buy_trade_id=int(buy_id),
                                                      matched_qty=int(mq)))
                 sess.commit()
@@ -758,7 +816,7 @@ _ed[0].date_input("輸入日期", key="yh_entry_date", format="YYYY/MM/DD",
 _WD = "一二三四五六日"
 for _i, (_c, _d) in enumerate(zip(_ed[1:4], gp.recent_trading_days(_today, 3))):
     _lab = f"今天 {_d:%m/%d}" if _i == 0 else f"{_d:%m/%d}（{_WD[_d.weekday()]}）"
-    _c.button(_lab, key=f"yh_ed_{_i}", on_click=_set_entry_date, args=(_d,),
+    _c.button(_lab, key=f"yh_edq_{_i}", on_click=_set_entry_date, args=(_d,),
               help=None if _i == 0 else ("上個交易日" if _i == 1 else "再前一個交易日"),
               type="primary" if st.session_state["yh_entry_date"] == _d else "secondary",
               use_container_width=True)
