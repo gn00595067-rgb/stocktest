@@ -36,6 +36,18 @@ def test_summary_groups_by_stock_and_adds_total():
     assert pd.isna(total["買進股數"]) and pd.isna(total["賣出股數"])
 
 
+def test_summary_range_blanks_buy_total():
+    detail = pd.DataFrame([
+        _row("1301 台塑", "BUY", 1000, 81300, 28, 0),
+        _row("2408 南亞科", "SELL", 1000, 527000, 187, 1581, pnl=5047.4),
+    ])
+    out = build_daily_stock_summary(detail, blank_buy_total=True)
+    total = out.iloc[-1]
+    assert pd.isna(total["買進支出"])
+    assert out.iloc[0]["買進支出"] == 81328          # 每檔各自的買進支出照常顯示
+    assert total["賣出收入"] == 527000 - 187 - 1581
+
+
 def test_summary_empty():
     out = build_daily_stock_summary(pd.DataFrame())
     assert out.empty and list(out.columns) == STOCK_SUMMARY_COLUMNS
