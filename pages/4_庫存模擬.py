@@ -27,7 +27,7 @@ login_guard()
 render_auth_sidebar()
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、仿Yahoo 同口徑
 
-st.title("庫存模擬（代操扣除）")
+st.title("庫存模擬")
 st.caption("純模擬，不會改到任何交易資料。")
 
 all_trades, rules, masters = load_trades_rules_masters()
