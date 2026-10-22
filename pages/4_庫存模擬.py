@@ -28,7 +28,7 @@ render_auth_sidebar()
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、仿Yahoo 同口徑
 
 st.title("庫存模擬（代操扣除）")
-st.caption("純模擬，不會改到任何交易資料。在第一張表填模擬對象的張數、價格，第二張表會算出扣除後的張數與均價。")
+st.caption("純模擬，不會改到任何交易資料。")
 
 all_trades, rules, masters = load_trades_rules_masters()
 trades = filter_trades_by_permission(all_trades)
@@ -65,35 +65,20 @@ def _name(sid):
     return f"{sid} {getattr(masters.get(sid), 'name', '') or ''}".strip()
 
 
-# ── 輸入：每檔模擬張數／價格（換人、換口徑都保留本次登入期間填的值）──
+# ── 單一表格：一邊填一邊算（Peggy 2026-10-22：輸入表、結果表合成一張）──
+# 填的值存在 sim_inputs（換人、換口徑都保留本次登入期間填的值）。表格內容含計算欄，
+# 每次改值後內容不同、表格會重建，所以先讀表格上一輪的修改（edited_rows）更新 sim_inputs，再算、再畫。
 inputs = st.session_state.setdefault("sim_inputs", {})
-st.subheader(f"填寫{who}的張數與價格")
-base = pd.DataFrame([{
-    "股票": _name(s),
-    "連動張數": sum(q for q, _ in pos[s].values()) / 1000,
-    "連動均價": sum(c for _, c in pos[s].values()) / sum(q for q, _ in pos[s].values()),
-    "模擬張數": inputs.get(s, (None, None))[0],
-    "模擬價格": inputs.get(s, (None, None))[1],
-} for s in sids])
-edited = st.data_editor(
-    base, key=f"sim_ed_{'|'.join(people)}", hide_index=True, use_container_width=True, num_rows="fixed",
-    height=36 * (len(base) + 1) + 8,
-    column_config={
-        "股票": st.column_config.TextColumn(disabled=True),
-        "連動張數": st.column_config.NumberColumn(disabled=True),
-        "連動均價": st.column_config.NumberColumn("連動均價（含手續費）", disabled=True, format="%.2f"),
-        "模擬張數": st.column_config.NumberColumn(f"{who}張數", min_value=0.0, step=1.0,
-                                              help="可填零股，例如 0.5＝500 股；空白＝不扣"),
-        "模擬價格": st.column_config.NumberColumn(f"{who}價格（不含手續費）", min_value=0.0, step=0.05, format="%.2f"),
-    },
-)
-for s, (_, r) in zip(sids, edited.iterrows()):
-    q = None if pd.isna(r["模擬張數"]) else float(r["模擬張數"])
-    p = None if pd.isna(r["模擬價格"]) else float(r["模擬價格"])
-    inputs[s] = (q, p)
+ed_key = f"sim_ed_{'|'.join(people)}"
+COL_Q, COL_P = f"{who}張數", f"{who}價格"
+for i, ch in (st.session_state.get(ed_key) or {}).get("edited_rows", {}).items():
+    if int(i) < len(sids):
+        s = sids[int(i)]
+        q, p = inputs.get(s, (None, None))
+        q = ch.get(COL_Q, q) if COL_Q in ch else q
+        p = ch.get(COL_P, p) if COL_P in ch else p
+        inputs[s] = (None if q is None or pd.isna(q) else float(q), None if p is None or pd.isna(p) else float(p))
 
-# ── 結果表（像 Excel 面板）──
-st.subheader("模擬結果")
 rows, warns = [], []
 for s in sids:
     per = pos[s]
@@ -109,29 +94,42 @@ for s in sids:
     for p in people:
         row[p] = per.get(p, (0, 0.0))[0] / 1000
     row.update({
+        COL_Q: sq, COL_P: sp,
         f"扣除{who}張數": None if r["over"] else r["left_qty"] / 1000,
         f"扣除{who}均價": r["left_avg"],
-        f"{who}張數": sim_shares / 1000 if sim_shares else None,
-        f"{who}價格": sp,
         f"{who}均價（含手續費）": r["sim_cost_avg"] if sim_shares else None,
     })
     rows.append(row)
-for w in warns:
-    st.warning(w)
 res = pd.DataFrame(rows)
 
-
-def _lots(v):   # 張數：整張不帶小數，零股最多 3 位（0.5、0.356）
-    return f"{v:,.3f}".rstrip("0").rstrip(".")
-
-
-_fmt = {c: _lots for c in res.columns if c.endswith("張數") or c in people}
-_fmt.update({c: "{:,.2f}".format for c in ["連動均價", f"扣除{who}均價", f"{who}價格", f"{who}均價（含手續費）"]})
+st.caption(f"✏️ 在「{COL_Q}」「{COL_P}」兩欄直接填，按 Enter 或點別格，黃色的扣除後張數／均價就會更新。")
+_num = lambda label=None, fmt="localized": st.column_config.NumberColumn(label, disabled=True, format=fmt)
 _hi = [f"扣除{who}張數", f"扣除{who}均價"]
-st.dataframe(
-    res.style.format(_fmt, na_rep="").set_properties(subset=_hi, **{"background-color": "#ffc000", "font-weight": "700"}),
-    use_container_width=True, hide_index=True, height=36 * (len(res) + 1) + 8,
+
+
+# 表格的文字格式只吃 column_config（Styler 只用來上底色）；空值會顯示「None」，所以補 0（0＝不扣）
+_disp = res.copy()
+_numcols = [c for c in res.columns if c != "股票"]
+_disp[_numcols] = _disp[_numcols].astype(float).fillna(0)
+_sty = _disp.style
+st.data_editor(
+    _sty.set_properties(subset=_hi, **{"background-color": "#ffc000", "font-weight": "700"}),
+    key=ed_key, hide_index=True, use_container_width=True, num_rows="fixed",
+    height=36 * (len(res) + 1) + 8,
+    column_config={
+        "股票": st.column_config.TextColumn(disabled=True),
+        "連動張數": _num(), "連動均價": _num("連動均價", "accounting"),
+        **{p: _num() for p in people},
+        COL_Q: st.column_config.NumberColumn(COL_Q, min_value=0.0, step=1.0, format="localized",
+                                           help="可填零股，例如 0.5＝500 股；0＝不扣"),
+        COL_P: st.column_config.NumberColumn(COL_P, min_value=0.0, step=0.05, format="accounting",
+                                           help="不含手續費"),
+        f"扣除{who}張數": _num(), f"扣除{who}均價": _num(None, "accounting"),
+        f"{who}均價（含手續費）": _num(None, "accounting"),
+    },
 )
+for w in warns:
+    st.warning(w)
 
 render_page_notes(
     "**連動張數／均價**：所選的人各自的庫存（自定沖銷＋其餘先進先出）加總；均價含買進手續費，與庫存損益頁同口徑。",
