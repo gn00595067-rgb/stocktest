@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """庫存模擬（代操扣除）：多人連動庫存合計，模擬把幾張以自訂價格劃給系統外的人後，剩下的張數與均價。
-純模擬，不寫回任何資料。規格：docs/specs/庫存模擬.md
+純模擬，不寫回交易或沖銷；只把這頁的最後狀態（連動的人、手填值）存到 sim_states。規格：docs/specs/庫存模擬.md
 """
 import os
 import sys
@@ -13,11 +13,13 @@ from services.fresh import reload_stale_modules
 reload_stale_modules()   # 部署後自動重新載入過期的 services／reports（免 Reboot）
 from services.stock_list_loader import ensure_google_sheet_loaded
 ensure_google_sheet_loaded()
-from services.auth_service import ensure_bootstrap_admin, login_guard, render_auth_sidebar, filter_trades_by_permission
+from services.auth_service import (ensure_bootstrap_admin, login_guard, render_auth_sidebar,
+                                   filter_trades_by_permission, get_current_user)
 from services.carveout_sim import positions_by_person, simulate
 from services.data_cache import load_trades_rules_masters
 from services.mobile_ui import inject_mobile_css
 from services.report_ui import render_page_notes
+from services.sim_state import inputs_from_json, inputs_to_json, load_sim_state, save_sim_state
 from services.trade_fees import BASE_FEE_RATE, DEFAULT_DISCOUNT
 
 st.set_page_config(page_title="庫存模擬", layout="wide")
@@ -39,6 +41,33 @@ if not with_stock:
     st.info("目前沒有任何人有庫存。")
     st.stop()
 
+# ── 上次離開時的狀態（Peggy 2026-10-27：連動的人、手填值要存著，下次進來還在）──
+_owner = (get_current_user() or {}).get("username") or ""
+
+
+def _engine():
+    from db.database import get_engine
+    return get_engine()
+
+
+if not st.session_state.get("sim_state_loaded"):
+    st.session_state["sim_state_loaded"] = True
+    saved = None
+    try:
+        saved = load_sim_state(_engine(), _owner) if _owner else None
+    except Exception as e:
+        st.warning(f"讀不到上次存的模擬狀態（{e}），先用預設值。")
+    if saved:
+        st.session_state["sim_people"] = saved.get("people") or with_stock
+        st.session_state["sim_who"] = saved.get("who") or "王小姐"
+        st.session_state["sim_disc"] = float(saved.get("disc", DEFAULT_DISCOUNT))
+        if saved.get("mode") in ("不含手續費", "含手續費"):
+            st.session_state["sim_mode"] = saved["mode"]
+        st.session_state["sim_inputs"] = inputs_from_json(saved.get("inputs"))
+        st.session_state["sim_saved"] = saved
+st.session_state.setdefault("sim_who", "王小姐")
+st.session_state.setdefault("sim_disc", float(DEFAULT_DISCOUNT))
+
 # ── 設定 ──
 s1, s2, s3, s4 = st.columns([3, 1.2, 1, 1.6])
 if "sim_people" not in st.session_state:
@@ -46,8 +75,8 @@ if "sim_people" not in st.session_state:
 st.session_state["sim_people"] = [p for p in st.session_state["sim_people"] if p in with_stock]
 people = s1.multiselect("連動庫存的人", with_stock, key="sim_people",
                         help="勾選要合計庫存的人（預設＝所有目前有庫存的人）")
-who = s2.text_input("模擬對象", value="王小姐", key="sim_who", help="只是畫面上的名稱")
-disc = s3.number_input("手續費折數", min_value=0.0, max_value=1.0, value=DEFAULT_DISCOUNT, step=0.01,
+who = s2.text_input("模擬對象", key="sim_who", help="只是畫面上的名稱")
+disc = s3.number_input("手續費折數", min_value=0.0, max_value=1.0, step=0.01,
                        format="%.2f", key="sim_disc", help="0.28＝2.8 折；模擬對象均價＝價格×(1＋0.1425%×折數)")
 fee_rate = BASE_FEE_RATE * disc
 deduct_mode = s4.radio("扣除口徑", ["不含手續費", "含手續費"], key="sim_mode", horizontal=True,
@@ -131,9 +160,19 @@ st.data_editor(
 for w in warns:
     st.warning(w)
 
+# 跟上次存的不一樣才寫（每次改值都會重跑，一樣的就不打資料庫）
+_state = {"people": list(people), "who": who, "disc": float(disc), "mode": deduct_mode,
+          "inputs": inputs_to_json(inputs)}
+if _owner and _state != st.session_state.get("sim_saved"):
+    try:
+        save_sim_state(_engine(), _owner, _state)
+        st.session_state["sim_saved"] = _state
+    except Exception as e:
+        st.warning(f"模擬狀態沒存到（{e}），下次進來可能要重填。")
+
 render_page_notes(
     "**連動張數／均價**：所選的人各自的庫存（自定沖銷＋其餘先進先出）加總；均價含買進手續費，與庫存損益頁同口徑。",
     f"**{who}均價（含手續費）**：價格 ×（1＋0.1425% × 折數），不計最低 1 元。",
     "**扣除口徑**：不含手續費＝連動總成本 − 張數×價格（同原本 Excel）；含手續費＝連動總成本 − 張數×價格×(1＋費率)。",
-    "這頁只是試算，不會新增交易或改沖銷；重新登入後填的張數、價格會清空。",
+    "這頁只是試算，不會新增交易或改沖銷。連動的人、模擬對象、折數、口徑、填的張數與價格會自動存起來（每個登入帳號各一份），下次進來還在；不要的填 0 即可。",
 )
