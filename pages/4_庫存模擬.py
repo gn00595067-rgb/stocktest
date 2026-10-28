@@ -58,20 +58,20 @@ if not st.session_state.get("sim_state_loaded"):
     except Exception as e:
         st.warning(f"讀不到上次存的模擬狀態（{e}），先用預設值。")
     if saved:
-        st.session_state["sim_people"] = saved.get("people") or with_stock
-        st.session_state["sim_who"] = saved.get("who") or "王小姐"
-        st.session_state["sim_disc"] = float(saved.get("disc", DEFAULT_DISCOUNT))
-        if saved.get("mode") in ("不含手續費", "含手續費"):
-            st.session_state["sim_mode"] = saved["mode"]
         st.session_state["sim_inputs"] = inputs_from_json(saved.get("inputs"))
-        st.session_state["sim_saved"] = saved
-st.session_state.setdefault("sim_who", "王小姐")
-st.session_state.setdefault("sim_disc", float(DEFAULT_DISCOUNT))
+        st.session_state["sim_saved"] = st.session_state["sim_last"] = saved
+# 換到別頁再回來，Streamlit 會清掉元件的 key（sim_people 等），但 sim_state_loaded 還在、不會重讀
+# → 從最後狀態 sim_last（非元件 key，不會被清）補回；否則會變回預設四人，還把預設存回資料庫。
+_last = st.session_state.get("sim_last") or {}
+if "sim_people" not in st.session_state:
+    st.session_state["sim_people"] = _last.get("people") or with_stock
+st.session_state.setdefault("sim_who", _last.get("who") or "王小姐")
+st.session_state.setdefault("sim_disc", float(_last.get("disc", DEFAULT_DISCOUNT)))
+if "sim_mode" not in st.session_state and _last.get("mode") in ("不含手續費", "含手續費"):
+    st.session_state["sim_mode"] = _last["mode"]
 
 # ── 設定 ──
 s1, s2, s3, s4 = st.columns([3, 1.2, 1, 1.6])
-if "sim_people" not in st.session_state:
-    st.session_state["sim_people"] = with_stock
 st.session_state["sim_people"] = [p for p in st.session_state["sim_people"] if p in with_stock]
 people = s1.multiselect("連動庫存的人", with_stock, key="sim_people",
                         help="勾選要合計庫存的人（預設＝所有目前有庫存的人）")
@@ -163,6 +163,7 @@ for w in warns:
 # 跟上次存的不一樣才寫（每次改值都會重跑，一樣的就不打資料庫）
 _state = {"people": list(people), "who": who, "disc": float(disc), "mode": deduct_mode,
           "inputs": inputs_to_json(inputs)}
+st.session_state["sim_last"] = _state
 if _owner and _state != st.session_state.get("sim_saved"):
     try:
         save_sim_state(_engine(), _owner, _state)
