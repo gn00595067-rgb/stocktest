@@ -458,21 +458,30 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
 def _discount_picker(trader: str, key: str, qty: int = 0, price: float = 0.0, stored_fee: float = None):
     """手續費折數：一般人直接用設定的折數（不出現選項）；有設「另一個折數」的人（如王小姐）多一排讓這筆自己選。
 
-    修改既有交易時，預設選「能算出原本手續費」的那個折數。回傳 (折數, 是否改過原本的折數)。
+    修改既有交易時，預設選「能算出原本手續費」的那個折數；新增交易時，預設用這個人上一次選的折數
+    （同一次登入內，連續 key 2.5 折不用每筆重點）。回傳 (折數, 是否改過原本的折數)。
     """
     main, alt = trader_discounts(trader)
     if not alt:
         return main, False
     opts = [main, alt]
     idx = 0
-    if stored_fee is not None and qty and price:
+    is_edit = stored_fee is not None
+    last_key = f"yh_last_disc_{trader}"
+    if is_edit and qty and price:
         from services.trade_fees import estimate_broker_fee
         hit = [i for i, d in enumerate(opts)
                if abs(estimate_broker_fee(price, qty, fee_rate=trader_fee_rate(trader, d)) - stored_fee) < 0.5]
         idx = hit[0] if hit else 0
+    elif not is_edit and st.session_state.get(last_key) in opts:
+        idx = opts.index(st.session_state[last_key])
     disc = st.radio("手續費折數", opts, index=idx, key=key, horizontal=True, format_func=discount_label,
                     help=f"{trader} 有兩種折數，這筆用哪個就選哪個")
-    return disc, stored_fee is not None and disc != opts[idx]
+    if is_edit:
+        st.caption("只改折數也可以：點另一個折數，手續費會自動重算，再按「儲存修改」。")
+    else:
+        st.session_state[last_key] = disc
+    return disc, is_edit and disc != opts[idx]
 
 
 def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
