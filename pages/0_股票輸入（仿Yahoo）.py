@@ -487,7 +487,7 @@ def _discount_picker(trader: str, key: str, qty: int = 0, price: float = 0.0, st
 def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
     """交易明細的「✏️ 修改」：改日期／股數／股價。買賣方向不給改（要改請刪掉重 key）。
 
-    股數或股價有改 → 手續費／稅依費率重算；股數有改 → 這筆的自定沖銷配對清掉，改回預設沖銷（同舊頁口徑）。
+    股數或股價有改 → 手續費／稅依費率重算（勾「手動輸入」則以手填為準）；股數有改 → 這筆的自定沖銷配對清掉，改回預設沖銷（同舊頁口徑）。
     """
     is_buy = str(t.side).upper() == "BUY"
     side = "BUY" if is_buy else "SELL"
@@ -513,11 +513,23 @@ def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
             fee, tax = fees_for_trade(side, float(price), int(qty), is_etf=is_etf, is_daytrade=bool(t.is_daytrade),
                                       fee_rate=trader_fee_rate(t.user, disc), daytrade_qty=dt_qty)
             tax = tax if side == "SELL" else 0.0
-            f[3].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
-                          f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}（重算）</span></div>',
-                          unsafe_allow_html=True)
         else:
             fee, tax = float(t.fee or 0), float(t.tax or 0)
+        # 手動輸入（雅雲 10-29：模擬時一筆混 2.5／2.8 折，不想拆筆）：勾了以手填為準，預設帶目前算出的值
+        manual = st.checkbox("手動輸入手續費／稅", key=f"{k}_man",
+                       help="一筆裡混不同折數等特殊情況才用；平常不用勾，系統自動算")
+        if manual:
+            st.session_state.setdefault(f"{k}_mfee", float(fee))
+            st.session_state.setdefault(f"{k}_mtax", float(tax))
+            m = st.columns([1, 1, 3])
+            fee = float(m[0].number_input("手續費", min_value=0.0, step=1.0, format="%.0f", key=f"{k}_mfee"))
+            if side == "SELL":
+                tax = float(m[1].number_input("證交稅", min_value=0.0, step=1.0, format="%.0f", key=f"{k}_mtax"))
+            changed_amt = changed_amt or abs(fee - float(t.fee or 0)) > 1e-9 or abs(tax - float(t.tax or 0)) > 1e-9
+        if changed_amt and not errors:
+            f[3].markdown(f'<div class="yh-td">{int(qty) * float(price):,.0f}<br>'
+                          f'<span class="sub">手續費 {fee:,.0f}・稅 {tax:,.0f}（{"手填" if manual else "重算"}）</span></div>',
+                          unsafe_allow_html=True)
         n_rules = sum(1 for s_id, b_id, _ in rules if s_id == t.id or b_id == t.id)
         if changed_core and n_rules:
             warns.append(f"股數有改，這筆原本的 {n_rules} 筆沖銷配對會清除，改用預設沖銷（自定沖銷＋其餘先進先出）。"
