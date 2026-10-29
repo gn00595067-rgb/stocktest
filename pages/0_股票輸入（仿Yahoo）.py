@@ -37,6 +37,7 @@ from services.trader_service import (
     list_trader_names, ensure_traders_seeded, add_trader, trader_discounts, trader_fee_rate, discount_label,
 )
 from services.position_cost import compute_position_and_cost_by_stock
+from services.pledge_service import load_pledges, save_pledge, pledge_sell_warning, pledge_label
 from services.trade_entry_service import (
     get_open_buy_lots, combined_match_plan, sort_lots_by_strategy, estimate_match_row_net_pnl,
     sequential_match_plans,
@@ -114,6 +115,8 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; t
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
 .yh-td.l { text-align: left; }
 .yh-td .sub { color: #999; font-size: .85rem; }
+.yh-td .l2.pledge { display: block; margin-left: 0; color: #e65100; font-size: .78rem; font-weight: 600; }   /* 質借：永遠獨立一行 */
+[class*="st-key-yh_pledge_save_"] button p { white-space: nowrap; }
 .yh-td.sm { color: #888; }
 .yh-td.c, .yh-th.c { text-align: center; }
 [class*="st-key-yh_exp_"] input { text-align: center; }
@@ -572,9 +575,27 @@ def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
             _rerun_fragment()
 
 
-def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict):
+def _pledge_editor(trader: str, sid: str, holding_qty: int, pledged: int):
+    """質押中股數（docs/specs/質借.md）：只是標記，不動交易與損益。"""
+    p = st.columns([1.6, 0.8, 3.6], vertical_alignment="bottom")
+    new_val = p[0].number_input("🏦 質押中股數", min_value=0, value=int(pledged), step=1000, key=f"yh_pledge_{trader}_{sid}",
+                                help="拿去銀行質借、目前不能賣的股數；0＝沒有質押。只用來顯示可動用股數，不影響均價與損益。")
+    if p[1].button("儲存", key=f"yh_pledge_save_{trader}_{sid}", disabled=int(new_val) == int(pledged)):
+        if not can_access_trader(trader):
+            st.error("無此買賣人權限。")
+            return
+        from db.database import get_engine
+        save_pledge(get_engine(), trader, sid, int(new_val))
+        st.session_state["yh_flash"] = f"已更新 {sid} 質押股數：{int(new_val):,} 股"
+        st.rerun()   # 整頁：持股表的「可動用」小字一起更新
+    if pledged:
+        p[2].caption(f"持股 {holding_qty:,} 股，質押 {pledged:,} 股 → **可動用 {max(0, holding_qty - pledged):,} 股**")
+
+
+def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict, pledged: int = 0):
     sid = row["stock_id"]
     price_now = row["price"] or 0.0
+    _pledge_editor(group.trader, sid, holding_qty, pledged)
     # 新增交易（送出後換一組 key，輸入框自動清空）
     st.markdown("**新增交易**")
     n = st.session_state.get(f"yh_form_n_{sid}", 0)
@@ -653,6 +674,10 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         pre = f"第 {j + 1} 筆：" if multi else ""
         errors += [pre + x for x in e["errors"] if not ("請輸入" in x and not (e["qty"] or e["price"]))]
         warns += [pre + x for x in e["warns"]]
+    if side == "SELL":   # 質借：賣超過可動用只提醒、不擋（可能已還款忘了改）
+        _pw = pledge_sell_warning(sum(int(e["qty"] or 0) for e in entries), holding_qty, pledged)
+        if _pw:
+            warns.append(_pw)
     filled = all(e["qty"] and e["price"] for e in entries)
     plans = [[] for _ in entries]   # 每筆賣出各自的沖銷配對 [(買進ID, 股數)]
     if side == "SELL" and not multi and e0["qty"] and e0["price"] and not e0["errors"]:
@@ -937,7 +962,7 @@ if _live:
 
 # 持股表（fragment）：展開／收合、在展開區輸入都只重畫這張表；送出或刪除成功才整頁更新
 @st.fragment
-def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search_sid=None):
+def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search_sid=None, pledges=None):
     rows = summary["rows"]
     if search_sid:
         rows = [r for r in rows if r["stock_id"] == search_sid]
@@ -981,11 +1006,15 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
             # 底價藍字（同舊版），提醒「賣到這個價才打平」
             be_s = (f'<span style="color:#1565c0;font-weight:700">{r["breakeven"]:,.2f}</span>'
                     if r["qty"] and r.get("breakeven") else "-")
+            # 質借：股數下加一行「質押 X・可動用 Y」（可動用以這個人全部持股計，不受分頁日期影響）
+            _pq = int((pledges or {}).get(sid, 0))
+            _pl = "".join(f'<span class="l2 pledge">{x}</span>'
+                          for x in pledge_label(int(trader_pos.get(sid, {}).get("qty", 0)), _pq))
             c1.markdown(
                 '<div class="yh-grid">'
                 f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span></div>'
                 + price_html
-                + f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span></div>'
+                + f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span>{_pl}</div>'
                 + f'<div class="yh-td">{avg_s}<span class="unit twd">TWD</span></div>'
                 + f'<div class="yh-td">{be_s}<span class="unit twd">TWD</span></div>'
                 + f'<div class="yh-td">{mv_s}</div>'
@@ -995,9 +1024,16 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
                 '</div>', unsafe_allow_html=True)
         if is_open:
             with st.container(border=True, key=f"yh_exp_{sid}"):
-                _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {})
+                _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {},
+                          pledged=int((pledges or {}).get(sid, 0)))
 
 
-_holdings_table(summary, trader, group, g_trades, trader_pos, quotes, st.session_state.get(search_key))
+try:
+    from db.database import get_engine
+    _pledges = load_pledges(get_engine(), trader)
+except Exception as _e:   # 質押只是顯示用，讀不到不影響記帳
+    print(f"[page] 讀取質押失敗：{_e}", flush=True)
+    _pledges = {}
+_holdings_table(summary, trader, group, g_trades, trader_pos, quotes, st.session_state.get(search_key), pledges=_pledges)
 
 print(f"[page] 股票輸入（仿Yahoo） 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)
