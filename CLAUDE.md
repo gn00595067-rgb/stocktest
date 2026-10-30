@@ -32,3 +32,6 @@
 - 交易輸入頁的輸入區是 `@st.fragment`（`_render_entry_area`）：區內的重跑用 `_rerun_fragment()`，只有「送出成功」要 `st.rerun()` 整頁（持股／KPI 才會更新）；新增按鈕時照這個原則選。
 - 交易輸入頁（`pages/6_交易輸入.py`）大量用 `session_state` 管理多列輸入與沖銷配對；改動送出／重置流程（`te_rreset_*`、`te_reset_match_*`、逐筆賣出 `_sell_mode`）要小心 widget 建立前後的時序。
 - Streamlit Cloud 拉新版後常只重跑頁面、不重載 `services/` 模組（新函式 ImportError、改簽名 TypeError）。每頁最前面已呼叫 `services/fresh.py::reload_stale_modules()` 自動重載過期的 services／reports；**新頁面也要加這兩行**。`db/models.py` 改欄位不能熱重載，仍要 Reboot。
+- 股號是**文字**：ETF 有前導 0（0056、00878、006208）。讀 CSV／試算表一律 `dtype=str`、gspread 讀用 `numericise_ignore`、寫用 `USER_ENTERED` 時 0 開頭要加 `'`。主檔同步會用 `services/stock_id_fix.py` 把掉了 0 的 ETF 補回並搬移舊資料。
+- 在 session 寫到一半時，不要對 engine 另開連線（`inspect(engine)`、`create_all(engine)`）：試算表模式是記憶體 SQLite＋單一共用連線，另開的連線歸還時會 rollback 掉 session 還沒 commit 的改動。改用 `session.connection()`。
+- 券商對帳單匯入：判斷邏輯在 `services/broker_statement.py`（純函式＋測試），畫面在 `services/broker_import_ui.py`，委託書號在 `trade_refs` 表（`services/trade_ref_service.py`）。規格 `docs/specs/對帳單匯入.md`。

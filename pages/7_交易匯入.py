@@ -37,7 +37,12 @@ if not is_admin():
     st.error("此頁僅管理者可使用。")
     st.stop()
 st.title("交易匯入")
-st.caption("本頁提供兩種匯入方式：**一、券商 CSV/Excel 交易紀錄**；**二、Excel 沖銷庫存資料**（已出售＋庫存，每分頁一家公司）。")
+st.caption("本頁提供三種匯入方式：**〇、券商對帳單（證券 App 匯出，自動略過已 key／已匯入的）**；**一、券商 CSV/Excel 交易紀錄**；**二、Excel 沖銷庫存資料**（已出售＋庫存，每分頁一家公司）。")
+
+# ---------- 〇、券商對帳單（證券 App 匯出；docs/specs/對帳單匯入.md） ----------
+from services.broker_import_ui import render_broker_statement_section
+render_broker_statement_section()
+st.markdown("---")
 
 # ---------- 清空所有資料（交易＋自定沖銷規則，主檔股票列表保留） ----------
 with st.expander("⚠️ 清空所有資料", expanded=False):
