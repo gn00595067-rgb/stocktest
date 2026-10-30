@@ -136,7 +136,7 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]]) -> Tupl
             "row_no": row_no, "stock_id": ids[0], "stock_name": name, "trade_date": d, "side": side,
             "price": float(price), "quantity": int(round(qty)),
             "fee": float(_num(rec.get("手續費")) or 0), "tax": float(_num(rec.get("交易稅")) or 0),
-            "order_no": order_no, "note": _cell(rec, "備註") or None,
+            "order_no": order_no, "note": _cell(rec, "備註") or None, "status": None, "dup_user": None,
         }
         key = (d, order_no, row["stock_id"], side, row["price"], row["quantity"], row["fee"], row["tax"])
         if key in seen:   # 同一個檔裡一模一樣的列（重複下載拼檔）只算一次
@@ -182,7 +182,8 @@ def classify_rows(rows: List[dict], trades: List, refs: List[Tuple[date, str, in
     trade_ids = {int(t.id) for t in trades}
     live_refs = {(d, o) for d, o, tid in refs if tid in trade_ids}         # 交易被刪掉的書號不算
     ref_trade_ids = {tid for _d0, _o, tid in refs if tid in trade_ids}     # 已有書號的交易不再被認領
-    out = [dict(r, status=None, claim_trade_id=None, fee_update=None, review_with=None) for r in rows]
+    # 已有狀態的列（mark_cross_user_dups 標過的）保留不動
+    out = [dict(r, status=r.get("status"), claim_trade_id=None, fee_update=None, review_with=None) for r in rows]
 
     for r in out:
         if (r["trade_date"], r["order_no"]) in live_refs:
@@ -230,6 +231,23 @@ def classify_rows(rows: List[dict], trades: List, refs: List[Tuple[date, str, in
         for r in rest:
             r.update(status=REVIEW, review_with=desc)
     return out
+
+
+def mark_cross_user_dups(rows: List[dict], live_refs: List[Tuple[date, str, str, str, str]]) -> List[dict]:
+    """跨買賣人防重複（規格 §5.1）：同一份對帳單是同一個證券帳戶，書號同一天不會重複，跟匯給誰無關。
+
+    live_refs：[(成交日, 書號, 買賣人, 股號, BUY/SELL)]（只含交易還在的）。同日同書號、股票和買賣也一樣 → 已匯入過，
+    記下匯給誰（dup_user）。多比股票和買賣，是因為不同證券帳戶的書號可能剛好相同。
+    """
+    by_key: Dict[tuple, List[tuple]] = defaultdict(list)
+    for d, o, u, sid, side in live_refs:
+        by_key[(d, o)].append((u, sid, side))
+    for r in rows:
+        hit = next((u for u, sid, side in by_key.get((r["trade_date"], r["order_no"]), [])
+                    if sid == r["stock_id"] and side == r["side"]), None)
+        if hit is not None:
+            r["status"], r["dup_user"] = DUP_IMPORT, hit
+    return rows
 
 
 # ---------------------------------------------------------------- 當沖與賣出沖銷

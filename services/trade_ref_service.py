@@ -69,3 +69,17 @@ def refs_by_trade(session, trade_ids: Iterable[int]) -> Dict[int, List[str]]:
             select(trade_refs.c.trade_id, trade_refs.c.order_no).where(trade_refs.c.trade_id.in_(ids))).all():
         out.setdefault(int(tid), []).append(str(o))
     return out
+
+
+def load_live_refs_all_users(session) -> List[Tuple[date, str, str, str, str]]:
+    """所有買賣人、交易還在的書號 [(成交日, 書號, 買賣人, 股號, BUY/SELL)]，給跨人防重複用。"""
+    from db.models import Trade
+    ensure_table(session)
+    t = Trade.__table__
+    rows = session.execute(
+        select(trade_refs.c.trade_date, trade_refs.c.order_no, trade_refs.c.user, t.c.stock_id, t.c.side)
+        .select_from(trade_refs.join(t, t.c.id == trade_refs.c.trade_id))
+        .order_by(trade_refs.c.trade_date, trade_refs.c.order_no)
+    ).all()
+    return [(d if isinstance(d, date) else datetime.strptime(str(d)[:10], "%Y-%m-%d").date(),
+             str(o), str(u), str(sid).strip(), str(sd or "").strip().upper()) for d, o, u, sid, sd in rows]

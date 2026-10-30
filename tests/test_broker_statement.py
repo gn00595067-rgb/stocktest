@@ -177,3 +177,16 @@ def test_sell_after_daytrade_rules():
     assert dt_rules == [(s, b, 1000)]
     rules, short = plan_sell_matches(rows, trades, dt_rules, "FIFO")
     assert rules == [(s, 1, 1000)] and short == {}
+
+
+def test_cross_user_dup():
+    from services.broker_statement import mark_cross_user_dups
+    rows = _rows(("2303", D29, "BUY", 115.5, 1000, "A1"), ("2303", D29, "BUY", 115.5, 1000, "A2"),
+                 ("2313", D29, "BUY", 215, 1000, "A3"))
+    live = [(D29, "A1", "雅雲", "2303", "BUY"),      # 上次分給雅雲 → 這次不論選誰都算已匯入過
+            (D29, "A3", "別人", "2330", "BUY")]      # 別的證券帳戶剛好同書號、股票不同 → 不算
+    rows = mark_cross_user_dups(rows, live)
+    assert [r.get("status") for r in rows] == [DUP_IMPORT, None, None]
+    assert rows[0]["dup_user"] == "雅雲"
+    out = classify_rows(rows, [], [])                # 已標過的保留
+    assert _status(out) == [DUP_IMPORT, NEW, NEW]
