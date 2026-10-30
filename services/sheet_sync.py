@@ -306,7 +306,8 @@ def sync_from_sheet_to_db(engine) -> Tuple[bool, Optional[str]]:
         # --- 讀取 trades ---
         try:
             ws_trades = spread.worksheet(SHEET_TRADES)
-            rows_trades = ws_trades.get_all_records()
+            # 第 3 欄 stock_id 不轉數字（0056 才不會變 56）
+            rows_trades = ws_trades.get_all_records(numericise_ignore=[3])
         except gspread.WorksheetNotFound:
             rows_trades = []
 
@@ -580,8 +581,10 @@ def _read_db_payload(engine):
         return str(v).strip()[:19]
 
     def row_trade(r):
+        # 0 開頭的代號（0056）前面加 '：寫入用 USER_ENTERED，不加會被試算表當數字存成 56
+        sid = str(r[2] or "")
         return [
-            r[0], r[1], r[2], _date_str(r[3]),
+            r[0], r[1], ("'" + sid) if sid.startswith("0") else sid, _date_str(r[3]),
             r[4], r[5], r[6], bool(r[7]) if r[7] is not None else False,
             r[8] if r[8] is not None else "", r[9] if r[9] is not None else "",
             r[10] or "",

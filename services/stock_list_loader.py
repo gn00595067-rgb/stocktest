@@ -8,6 +8,8 @@ import pandas as pd
 import requests
 from sqlalchemy.exc import OperationalError, IntegrityError
 
+from services.stock_id_fix import migrate_stock_ids, normalize_stock_id, short_etf_id_map
+
 # Google Sheet 股票清單：請將試算表設為「知道連結的任何人可檢視」，第一張工作表欄位為 stock_id, name, industry_name, market, exchange, is_etf
 STOCK_LIST_GOOGLE_SHEET_ID = "1MwFZ1W_CJ-U1a7YEmu4dDgddTywbOuJQKwFamAbVd-8"
 
@@ -21,8 +23,10 @@ def _parse_is_etf(v) -> bool:
 
 
 def _parse_row_to_item(row) -> Optional[dict]:
-    sid = str(row["stock_id"]).strip()
-    if not sid:
+    is_etf = _parse_is_etf(row.get("is_etf", False))
+    # 試算表把 0056 存成 56：ETF 補回前導 0（services/stock_id_fix.py）
+    sid = normalize_stock_id(row["stock_id"], is_etf)
+    if not sid or sid.lower() == "nan":
         return None
     return {
         "stock_id": sid,
@@ -30,7 +34,7 @@ def _parse_row_to_item(row) -> Optional[dict]:
         "industry_name": (str(row.get("industry_name", "")) or "")[:100],
         "market": str(row.get("market", "TW")),
         "exchange": str(row.get("exchange", "TWSE")),
-        "is_etf": _parse_is_etf(row.get("is_etf", False)),
+        "is_etf": is_etf,
     }
 
 
@@ -51,7 +55,8 @@ def load_from_google_sheet() -> Tuple[List[dict], Optional[str]]:
         r = session.get(url, timeout=15)
         r.raise_for_status()
         text = r.content.decode("utf-8-sig")
-        df = pd.read_csv(io.StringIO(text))
+        # stock_id 一定要當文字讀，否則 0050 會被讀成 50
+        df = pd.read_csv(io.StringIO(text), dtype={"stock_id": str})
         df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
         if df.empty or "stock_id" not in df.columns:
             return [], "試算表無 stock_id 欄位或為空"
@@ -80,8 +85,16 @@ def write_to_stock_master(items: List[dict]) -> Tuple[bool, Optional[str]]:
         # 一次撈出全部既有主檔再比對：逐筆查詢在記憶體 SQLite 不花錢，
         # 換成雲端資料庫每筆都是一次網路來回，3000 多檔股票會卡上好幾分鐘。
         # 值沒變的欄位 SQLAlchemy 不會發 UPDATE，所以沒變動時這裡只有 1 次查詢。
+        # 主檔還留著掉了 0 的舊 ETF 代號（56）→ 交易、配息、分頁、質押、模擬一起改成 0056
         existing_by_id = {m.stock_id: m for m in sess.query(StockMaster).all()}
-        changed = 0
+        id_map = short_etf_id_map(existing_by_id.values(), (x["stock_id"] for x in items))
+        if id_map:
+            migrated = migrate_stock_ids(sess, id_map)
+            for old in id_map:
+                sess.delete(existing_by_id.pop(old))
+            sess.flush()   # 先刪舊列：6208（富邦台50 舊代號）要讓位給日揚科技 6208
+            print(f"[stock_id_fix] ETF 代號補 0：{len(id_map)} 檔，{migrated}", flush=True)
+        changed = len(id_map)
         for item in items:
             existing = existing_by_id.get(item["stock_id"])
             if existing:
