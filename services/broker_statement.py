@@ -158,6 +158,7 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
             "price": float(price), "quantity": int(round(qty)),
             "fee": float(_num(rec.get("手續費")) or 0), "tax": float(_num(rec.get("交易稅")) or 0),
             "order_no": order_no, "note": _cell(rec, "備註") or None, "status": None, "dup_user": None,
+            "net": float(net),   # 淨收付（負＝付、正＝收），加總就是券商的交割款
         }
         key = (d, order_no, row["stock_id"], side, row["price"], row["quantity"], row["fee"], row["tax"])
         if key in seen:   # 同一個檔裡一模一樣的列（重複下載拼檔）只算一次
@@ -170,6 +171,18 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
     for k, r in enumerate(rows):
         r["seq"] = k
     return rows, errors
+
+
+def settlement_by_user_date(rows: List[dict]) -> Dict[Tuple[str, date], float]:
+    """每人每天的交割款（淨收付加總；負＝要付、正＝會收）。
+
+    不分狀態：已匯入過／已手 key 的也算，才能跟券商 App 上當天的交割金額直接比。
+    """
+    out: Dict[Tuple[str, date], float] = {}
+    for r in rows:
+        k = (r.get("user"), r["trade_date"])
+        out[k] = out.get(k, 0.0) + float(r.get("net") or 0)
+    return out
 
 
 # ---------------------------------------------------------------- 判斷哪些已在系統裡

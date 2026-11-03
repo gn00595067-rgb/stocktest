@@ -19,7 +19,7 @@ from services import trade_ref_service as trs
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW, SELL_STRATEGIES, STATUS_LABEL,
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
-    plan_daytrade, plan_sell_matches, table_from_lines,
+    plan_daytrade, plan_sell_matches, settlement_by_user_date, table_from_lines,
 )
 from services.pnl_engine import net_pnl_for_match
 from services.prefs import resolve_default_trader
@@ -307,7 +307,15 @@ def render_broker_statement_section():
                  else f"確認匯入 {len(to_import)} 筆到「{to_import[0]['user']}」")
     else:
         label = "沒有要新增的（只補上書號）" if keyed else "沒有要匯入的"
-    if not st.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed)):
+    # 按鈕旁列出每人每天的交割款（整份對帳單、不分狀態），上傳時順便跟券商 App 對一下
+    settle = settlement_by_user_date(rows)
+    b1, b2 = st.columns([1, 2], vertical_alignment="center")
+    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed))
+    b2.markdown("　".join(
+        f"💰 {f'{u} ' if len({k[0] for k in settle}) > 1 else ''}{d:%m/%d} 交割款："
+        + (f"**應付 {-v:,.0f}**" if v < 0 else f"**應收 {v:,.0f}**")
+        for (u, d), v in sorted(settle.items(), key=lambda kv: (kv[0][1], str(kv[0][0])))))
+    if not clicked:
         return
 
     sess = get_session()

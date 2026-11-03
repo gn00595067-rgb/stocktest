@@ -238,3 +238,18 @@ def test_cross_user_dup():
     assert rows[0]["dup_user"] == "雅雲"
     out = classify_rows(rows, [], [])                # 已標過的保留
     assert _status(out) == [DUP_IMPORT, NEW, NEW]
+
+
+def test_settlement_by_user_date_sums_net_regardless_of_status():
+    from services.broker_statement import settlement_by_user_date
+    rows, _ = parse_statement([
+        rec("聯電", "2026/10/30", "1000", "-109038", "109", "38", "0", "A1"),
+        rec("華通", "2026/10/30", "1000", "49800", "50", "20", "150", "A2"),
+        rec("聯電", "2026/10/29", "1000", "-108038", "108", "38", "0", "A3"),
+    ], NAMES)
+    for r in rows:
+        r["user"] = "P"
+    rows[0]["status"] = DUP_IMPORT   # 已匯入過的也要算進當天交割款
+    s = settlement_by_user_date(rows)
+    assert s[("P", D30)] == -109038 + 49800
+    assert s[("P", D29)] == -108038
