@@ -208,11 +208,19 @@ def render_broker_statement_section():
     by_id = {int(t.id): t for u in users for t in ctx[u].trades}
     for r in to_import:
         by_id[r["tmp_id"]] = SimpleNamespace(id=r["tmp_id"], quantity=r["quantity"], price=r["price"],
-                                             fee=r["fee"], tax=r["tax"], trade_date=r["trade_date"])
+                                             fee=r["fee"], tax=r["tax"], trade_date=r["trade_date"],
+                                             stock_id=r["stock_id"])
     pnl, match_text = 0.0, {}
+    pnl_by_sell = {}                  # 每筆賣出的預估損益（預覽表一欄）
+    by_stock = {}                     # 股號 → [沖銷股數, 損益]：總數對不起來時看是哪檔
     for (s_id, b_id), q in all_rules.items():
         b, s = by_id[b_id], by_id[s_id]
-        pnl += net_pnl_for_match((b_id, s_id, q, b.price, s.price, (s.price - b.price) * q), by_id)
+        p = net_pnl_for_match((b_id, s_id, q, b.price, s.price, (s.price - b.price) * q), by_id)
+        pnl += p
+        pnl_by_sell[s_id] = pnl_by_sell.get(s_id, 0.0) + p
+        acc = by_stock.setdefault(str(s.stock_id).strip(), [0, 0.0])
+        acc[0] += q
+        acc[1] += p
         match_text.setdefault(s_id, []).append(f"{b.trade_date:%m/%d} {b.price:g}×{q:,}")
 
     keyed = [r for r in rows if r["status"] in (KEYED_EXACT, KEYED_MERGED)]
@@ -235,6 +243,19 @@ def render_broker_statement_section():
             f"{sid_of[s][0]} {by_id[s].trade_date:%m/%d} {sid_of[s][1]} 少 {q:,} 股" for s, q in shortage.items())
             + "（可能還有更早的買進沒 key；仍可匯入，沖不到的部分之後再補）")
 
+    if by_stock:
+        with st.expander(f"📊 預估損益分股看（{len(by_stock)} 檔；跟自己的帳對不起來時看這裡）", expanded=len(by_stock) > 1):
+            st.dataframe(pd.DataFrame([
+                {"股票": f"{sid} {name_by_id.get(sid, '')}", "沖銷股數": q, "預估已實現損益": v}
+                for sid, (q, v) in sorted(by_stock.items())]).style.format(
+                    {"沖銷股數": "{:,.0f}", "預估已實現損益": "{:+,.0f}"}),
+                use_container_width=True, hide_index=True)
+            st.caption(
+                "對不起來通常是賣出沖到的買進不一樣（看下面預覽表「沖銷到」）。"
+                "匯入前：換上面的沖銷方式重算；匯入後：到「自定沖銷設定」頁改那筆賣出要沖哪幾筆買進。"
+                "如果是之前 key 的買進價格／手續費打錯：到「股票輸入（仿Yahoo）」或「交易輸入」改那筆買進。"
+            )
+
     import_seqs = {r["seq"] for r in to_import}
 
     def view(r):
@@ -253,10 +274,12 @@ def render_broker_statement_section():
             "手續費": r["fee"], "稅": r["tax"], "委託書號": r["order_no"],
             "當沖": "✓" if tid is not None and tid in dt_flag else "",
             "沖銷到": "、".join(match_text.get(tid, [])) if tid is not None else "",
+            "預估損益": pnl_by_sell.get(tid) if tid is not None else None,
         })
         return v
 
-    fmt = {"股數": "{:,.0f}", "價格": "{:,.2f}", "手續費": "{:,.0f}", "稅": "{:,.0f}"}
+    fmt = {"股數": "{:,.0f}", "價格": "{:,.2f}", "手續費": "{:,.0f}", "稅": "{:,.0f}",
+           "預估損益": lambda v: "" if pd.isna(v) else f"{v:+,.0f}"}
     main = [r for r in rows if r["status"] in (NEW, REVIEW)]
     other = [r for r in rows if r["status"] not in (NEW, REVIEW)]
     if main:
