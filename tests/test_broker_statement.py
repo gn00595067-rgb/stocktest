@@ -7,6 +7,7 @@ from typing import Optional
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW,
     assign_tmp_ids, build_name_map, classify_rows, parse_statement, plan_daytrade, plan_sell_matches,
+    table_from_lines,
 )
 
 NAMES = build_name_map([("2303", "聯電"), ("2313", "華通"), ("3037", "欣興"), ("4958", "臻鼎-KY"),
@@ -60,6 +61,31 @@ def test_parse_errors():
     assert len(rows) == 1
     assert [e[0] for e in errors] == [2, 3, 5]
     assert parse_statement([{"股名": "聯電"}], NAMES)[1][0][1].startswith("不是證券 App")
+
+
+def test_header_after_note_line_and_aliases():
+    """國泰：第 1 列是說明、欄名是「淨收付金額」「成交價」、股名帶 *、檔尾空白列。"""
+    import csv, io
+    text = (
+        ",根據您篩選後的結果，總計有33筆資料，當前資料為1-33筆，看更多請至國泰證券app查詢。,,,,\n"
+        "帳戶,股名,日期,成交股數,淨收付金額,買賣別,成交價,成本,手續費,交易稅,委託書號\n"
+        '豪哥,聯電,2026/10/29,"1,000","-116,046",現買,116,"116,000",46,0,A8859\n'
+        '豪哥,國巨*,2026/10/29,200,"-108,043",現買,540,"108,000",43,0,k02hI\n'
+        ",,,,,,,,,,\n"
+    )
+    recs, first = table_from_lines(list(csv.reader(io.StringIO(text))))
+    assert first == 3 and len(recs) == 2
+    names = build_name_map([("2303", "聯電"), ("2327", "國巨")])
+    rows, errors = parse_statement(recs, names, first)
+    assert errors == []
+    assert [(r["stock_id"], r["price"], r["quantity"], r["side"], r["row_no"]) for r in rows] == [
+        ("2303", 116.0, 1000, "BUY", 3), ("2327", 540.0, 200, "BUY", 4)]
+
+
+def test_header_on_first_line_unchanged():
+    recs, first = table_from_lines([["股名", "日期", "成交股數", "淨收付", "成交單價", "委託書號"],
+                                    ["聯電", "2026/10/29", "1,000", "-115,546", "115.5", "A1"]])
+    assert first == 2 and recs[0]["成交單價"] == "115.5"
 
 
 def _rows(*specs):

@@ -42,12 +42,16 @@ SELL_STRATEGIES = {
 MERGE_PRICE_TOL = 0.005   # 合併 key 的均價容許誤差
 
 REQUIRED_COLUMNS = ["股名", "日期", "成交股數", "淨收付", "成交單價", "委託書號"]
+# 各家證券 App 欄名不同（國泰：淨收付金額、成交價），讀進來先統一成上面的名稱
+COLUMN_ALIASES = {"淨收付金額": "淨收付", "成交價": "成交單價"}
+HEADER_KEYS = {"股名", "日期", "委託書號"}   # 有這三欄的那一列才是表頭
+HEADER_SCAN_LINES = 20
 
 
 # ---------------------------------------------------------------- 解析
 def _norm_name(s) -> str:
     """股名比對用：全形轉半形、去空白、各種破折號統一（臻鼎－KY ＝ 臻鼎-KY）。"""
-    s = unicodedata.normalize("NFKC", str(s or "")).upper()
+    s = unicodedata.normalize("NFKC", str(s or "")).upper().rstrip("*")   # 國泰會標「國巨*」
     for ch in " 　‐‑‒–—―－":
         s = s.replace(ch, "-" if ch not in " 　" else "")
     return s
@@ -60,6 +64,22 @@ def build_name_map(masters: Iterable[Tuple[str, str]]) -> Dict[str, List[str]]:
         if name and sid and str(sid) not in out[_norm_name(name)]:
             out[_norm_name(name)].append(str(sid))
     return dict(out)
+
+
+def table_from_lines(lines: List[List[str]]) -> Tuple[List[dict], int]:
+    """CSV 每列的格子 → (records, 第一筆資料在檔案的列號)。
+
+    表頭不一定在第 1 列（國泰會先放一行「根據您篩選後的結果…」），往下找含「股名」「日期」「委託書號」的那列；
+    找不到就用第 1 列，交給 parse_statement 回報缺哪些欄。整列空白的略過。
+    """
+    lines = [[str(c or "").strip() for c in ln] for ln in lines]
+    hi = next((i for i, ln in enumerate(lines[:HEADER_SCAN_LINES]) if HEADER_KEYS <= set(ln)), 0)
+    if not lines:
+        return [], 2
+    header = lines[hi]
+    header = [COLUMN_ALIASES[h] if h in COLUMN_ALIASES and COLUMN_ALIASES[h] not in header else h for h in header]
+    records = [dict(zip(header, ln)) for ln in lines[hi + 1:] if any(ln)]
+    return records, hi + 2
 
 
 def _num(v) -> Optional[float]:
@@ -94,8 +114,9 @@ def _cell(rec: dict, col: str) -> str:
     return "" if s.lower() == "nan" else s
 
 
-def parse_statement(records: List[dict], name_map: Dict[str, List[str]]) -> Tuple[List[dict], List[Tuple[int, str]]]:
-    """records：CSV 每列一個 dict（欄名→文字，建議 pandas dtype=str 讀）。
+def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
+                    first_line: int = 2) -> Tuple[List[dict], List[Tuple[int, str]]]:
+    """records：CSV 每列一個 dict（欄名→文字，用 table_from_lines 讀）；first_line：第一筆在檔案的列號。
 
     檔案數字一律照收（證券 App 匯出，不檢核、不重算手續費）。回傳 (rows 依處理順序排好, errors[(列號, 原因)])。
     """
@@ -106,7 +127,7 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]]) -> Tupl
         return [], [(0, f"不是證券 App 的成交明細格式：缺少欄位「{'」「'.join(missing)}」")]
     rows, errors, seen = [], [], set()
     for i, rec in enumerate(records):
-        row_no = i + 2
+        row_no = i + first_line
         name = _cell(rec, "股名")
         cur = _cell(rec, "幣別")
         if cur and cur != "台幣":

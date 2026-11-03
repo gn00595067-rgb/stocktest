@@ -4,6 +4,8 @@
 判斷邏輯都在 services/broker_statement.py（純函式、有測試）；這裡只負責讀資料庫、顯示預覽、寫入。
 平常整份給一個買賣人；勾「有幾筆要算在別人帳上」才逐筆改人（規格 §5.1），之後每個人各自判斷、各自配對。
 """
+import csv
+import io
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -17,7 +19,7 @@ from services import trade_ref_service as trs
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW, SELL_STRATEGIES, STATUS_LABEL,
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
-    plan_daytrade, plan_sell_matches,
+    plan_daytrade, plan_sell_matches, table_from_lines,
 )
 from services.pnl_engine import net_pnl_for_match
 from services.prefs import resolve_default_trader
@@ -25,10 +27,12 @@ from services.trader_service import all_trader_names
 
 
 def _read_records(f):
+    """→ (records, 第一筆的檔案列號)；讀不到回 None。表頭前的說明列由 table_from_lines 略過。"""
+    f.seek(0)
+    raw = f.read()
     for enc in ("utf-8-sig", "big5"):
         try:
-            f.seek(0)
-            return pd.read_csv(f, dtype=str, keep_default_na=False, encoding=enc).to_dict("records")
+            return table_from_lines(list(csv.reader(io.StringIO(raw.decode(enc)))))
         except Exception:
             continue
     return None
@@ -117,14 +121,15 @@ def render_broker_statement_section():
     f = st.file_uploader("上傳對帳單 CSV", type=["csv"], key="bs_file")
     if f is None or not main_user:
         return
-    recs = _read_records(f)
-    if recs is None:
+    read = _read_records(f)
+    if read is None:
         st.error("讀不到這個檔案，請確認是證券 App 匯出的 CSV。")
         return
+    recs, first_line = read
 
     masters, live_refs = _load_base()
     name_by_id = dict(masters)
-    rows, errors = parse_statement(recs, build_name_map(masters))
+    rows, errors = parse_statement(recs, build_name_map(masters), first_line)
     mark_cross_user_dups(rows, live_refs)
     if errors:
         st.warning(f"有 {len(errors)} 列不會匯入：")
