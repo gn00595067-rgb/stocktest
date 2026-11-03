@@ -290,8 +290,31 @@ def _rule_used(rules: List[Tuple[int, int, int]]) -> Tuple[Dict[int, int], Dict[
     return by_sell, by_buy
 
 
+TAX_NORMAL, TAX_DAYTRADE = 0.003, 0.0015   # 股票賣出證交稅：一般 0.3%、現股當沖減半
+
+
+def daytrade_cap(row: dict) -> Optional[int]:
+    """這筆新匯入的賣出最多能算當沖幾股；看不出來回 None（照舊：同日有買就配）。
+
+    券商扣的證交稅就是它認定的結果（稅無條件捨去，容許差 1 元）：
+    稅＝0.3% → 0（賣的是原本庫存，例：先賣掉 420 股庫存、再買 60 股，不是當沖）；稅＝0.15% → 全部。
+    ETF（00 開頭，稅率 0.1% 沒有當沖減半）、稅是 0、介於中間（部分當沖）都看不出來。
+    """
+    if row.get("side") != "SELL" or str(row.get("stock_id", "")).startswith("00"):
+        return None
+    tax, amt = float(row.get("tax") or 0), float(row["price"]) * int(row["quantity"])
+    if tax <= 0:
+        return None
+    if abs(tax - int(amt * TAX_NORMAL)) <= 1:
+        return 0
+    if abs(tax - int(amt * TAX_DAYTRADE)) <= 1:
+        return int(row["quantity"])
+    return None
+
+
 def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]]) -> Tuple[List[Tuple[int, int, int]], set]:
-    """同日同股有買有賣 → 當沖互沖。new_rows 要先有 tmp_id（負數）；trades 是這個人的既有交易（含當天手 key 的）。
+    """同日同股有買有賣 → 當沖互沖（新匯入的賣出先用 daytrade_cap 看稅率，一般賣出不配）。
+    new_rows 要先有 tmp_id（負數）；trades 是這個人的既有交易（含當天手 key 的）。
 
     至少一邊是這次新匯入的才配（既有交易之間不動）。既有交易扣掉已寫好的沖銷規則才算剩餘。
     回傳 (規則 [(賣 id, 買 id, 股數)]（id 可能是 tmp_id）, 要標當沖的 id 集合)。
@@ -306,7 +329,10 @@ def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int
         if rem > 0:
             by_day[(_d(t.trade_date), str(t.stock_id).strip())][sd].append([int(t.id), rem, False])
     for r in sorted(new_rows, key=lambda x: x["seq"]):
-        by_day[(r["trade_date"], r["stock_id"])][r["side"]].append([r["tmp_id"], r["quantity"], True])
+        cap = daytrade_cap(r)   # 稅率顯示是一般賣出 → 不拿來配當沖
+        qty = r["quantity"] if cap is None else min(cap, r["quantity"])
+        if qty > 0:
+            by_day[(r["trade_date"], r["stock_id"])][r["side"]].append([r["tmp_id"], qty, True])
 
     out, flagged = [], set()
     for _key, sides in by_day.items():

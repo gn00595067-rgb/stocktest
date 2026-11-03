@@ -7,7 +7,7 @@ from typing import Optional
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW,
     assign_tmp_ids, build_name_map, classify_rows, parse_statement, plan_daytrade, plan_sell_matches,
-    table_from_lines,
+    daytrade_cap, table_from_lines,
 )
 
 NAMES = build_name_map([("2303", "聯電"), ("2313", "華通"), ("3037", "欣興"), ("4958", "臻鼎-KY"),
@@ -167,6 +167,28 @@ def test_daytrade_with_existing_manual_buy():
     assert flagged == {3, rows[0]["tmp_id"]}
     # 已手 key 的當天買賣（都是既有的）不動
     assert plan_daytrade([], [T(1, "2303", D29, "BUY", 1, 1), T(2, "2303", D29, "SELL", 1, 1)], []) == ([], set())
+
+
+def test_sell_with_normal_tax_is_not_daytrade():
+    """緯穎：先賣掉 420 股庫存（稅 0.3%）、再買 6×10 股 → 不是當沖，賣出照先進先出沖舊庫存。"""
+    specs = [("6669", D29, "SELL", 1920, 420, "k00xT", 287, 2419)]
+    specs += [("6669", D29, "BUY", p, 10, f"k01{i}", 6, 0) for i, p in enumerate([1875, 1880, 1885, 1890, 1875, 1880])]
+    rows = assign_tmp_ids(_rows(*specs))
+    trades = [T(1, "6669", D28, "BUY", 1800, 420)]
+    rules, flagged = plan_daytrade(rows, trades, [])
+    assert rules == [] and flagged == set()
+    sell, _ = plan_sell_matches(rows, trades, rules, "FIFO")
+    assert sell == [(rows[0]["tmp_id"], 1, 420)]
+
+
+def test_daytrade_cap_by_tax():
+    def sell(sid, price, qty, tax):
+        return {"side": "SELL", "stock_id": sid, "price": price, "quantity": qty, "tax": tax}
+    assert daytrade_cap(sell("6669", 1920, 420, 2419)) == 0          # 0.3% 一般賣出
+    assert daytrade_cap(sell("6669", 1920, 420, 1209)) == 420        # 0.15% 當沖
+    assert daytrade_cap(sell("2303", 117, 1000, 0)) is None          # 沒稅看不出來
+    assert daytrade_cap(sell("0056", 36, 1000, 36)) is None          # ETF 不減半
+    assert daytrade_cap(sell("2303", 117, 1000, 260)) is None        # 部分當沖：照舊
 
 
 def _hwa_tong():
