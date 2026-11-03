@@ -274,21 +274,26 @@ def render_broker_statement_section():
             "手續費": r["fee"], "稅": r["tax"], "委託書號": r["order_no"],
             "當沖": "✓" if tid is not None and tid in dt_flag else "",
             "沖銷到": "、".join(match_text.get(tid, [])) if tid is not None else "",
-            "預估損益": pnl_by_sell.get(tid) if tid is not None else None,
+            # 直接給字串：整欄都是 None 時 Styler 的格式不會套用，畫面會出現「None」
+            "預估損益": f"{pnl_by_sell[tid]:+,.0f}" if tid in pnl_by_sell else "",
         })
         return v
 
-    fmt = {"股數": "{:,.0f}", "價格": "{:,.2f}", "手續費": "{:,.0f}", "稅": "{:,.0f}",
-           "預估損益": lambda v: "" if pd.isna(v) else f"{v:+,.0f}"}
+    fmt = {"股數": "{:,.0f}", "價格": "{:,.2f}", "手續費": "{:,.0f}", "稅": "{:,.0f}"}
+
+    def show(rs):
+        df = pd.DataFrame([view(r) for r in rs])
+        # 只有買進時「當沖／沖銷到／預估損益」整欄空白，拿掉讓表比較好讀
+        df = df.drop(columns=[c for c in ("當沖", "沖銷到", "預估損益") if (df[c] == "").all()])
+        st.dataframe(df.style.format(fmt), use_container_width=True, hide_index=True)
+
     main = [r for r in rows if r["status"] in (NEW, REVIEW)]
     other = [r for r in rows if r["status"] not in (NEW, REVIEW)]
     if main:
-        st.dataframe(pd.DataFrame([view(r) for r in main]).style.format(fmt),
-                     use_container_width=True, hide_index=True)
+        show(main)
     if other:
         with st.expander(f"已在系統裡、這次不匯的 {len(other)} 筆"):
-            st.dataframe(pd.DataFrame([view(r) for r in other]).style.format(fmt),
-                         use_container_width=True, hide_index=True)
+            show(other)
 
     do_fee = False
     if fee_updates:
