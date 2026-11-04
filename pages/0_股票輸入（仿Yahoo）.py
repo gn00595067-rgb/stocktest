@@ -34,7 +34,7 @@ from services.price_service import get_quotes_cached, fetch_stock_list_cached, c
 from services.trade_fees import fees_for_trade, daytrade_capacity
 from services.prefs import resolve_default_trader
 from services.trader_service import (
-    list_trader_names, ensure_traders_seeded, add_trader, trader_discounts, trader_fee_rate, discount_label,
+    list_trader_names, all_trader_names, ensure_traders_seeded, add_trader, trader_discounts, trader_fee_rate, discount_label,
 )
 from services.position_cost import compute_position_and_cost_by_stock
 from services.pledge_service import load_pledges, save_pledge, pledge_sell_warning, pledge_label
@@ -812,7 +812,9 @@ ensure_traders_seeded()
 trades, rules, _MASTERS = _load()
 
 if is_admin():
+    # 主檔順序在前，再補交易裡出現過、主檔沒有的人（同其他頁；Elsa 2026-11-04：新增分頁只能選 Peggy姐）
     trader_opts = list_trader_names()
+    trader_opts += [n for n in all_trader_names() if n not in trader_opts]
 else:
     trader_opts = get_allowed_traders() or []
 if not trader_opts:
