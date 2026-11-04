@@ -943,6 +943,11 @@ if rc2.button("🔄 更新股價", key="yh_refresh"):
     clear_quote_cache()
     st.rerun()
 
+# 放在持股表上方自己一列：跟說明文字擠同一列時，窄畫面標籤會被折成好幾行
+st.toggle("均價不含手續費", key="yh_avg_ex_fee",
+          help="打開：「持股成本均價」只算買進價格（不含買進手續費），方便跟券商 App 的成交均價對。"
+               "底價、未實現損益仍含手續費，不受影響。")
+
 if _live:
     st.session_state["yh_page_ts"] = time.time()
 
@@ -971,11 +976,13 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
     thead = st.container(key="yh_thead")
     h0, h1 = thead.columns(_ROW_COLS)
     # 底價：與舊版交易輸入頁同名同說明（滑鼠停留看已含賣出費稅）
+    _ex_fee = bool(st.session_state.get("yh_avg_ex_fee"))
+    _avg_lab = "持股均價(不含費)" if _ex_fee else "持股成本均價"
     _be_tip = "全部股數賣在此價，扣掉賣出手續費＋證交稅後剛好不虧（不是均價進位；賣出費稅約 0.34%，所以底價約＝持股成本均價×1.0034 再依升降單位進位）"
     h1.markdown('<div class="yh-grid">' + "".join(
         (f'<div class="yh-th" title="{_be_tip}">{lab} ⓘ</div>' if lab == "底價"
          else f'<div class="yh-th{" l" if left else ""}">{lab}</div>')
-        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", "持股成本均價", "底價", "市值", "已實現損益", "未實現損益", "交易筆數"],
+        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", _avg_lab, "底價", "市值", "已實現損益", "未實現損益", "交易筆數"],
                              [1, 0, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
 
     open_key = f"yh_open_{trader}"
@@ -1001,7 +1008,7 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
                               f'({abs(r["change_pct"]):.2f}%)</span></div>')
             else:
                 price_html = '<div class="yh-td">-</div>'
-            avg_s = f"{r['avg_cost']:,.2f}" if r["qty"] else "-"
+            avg_s = f"{r['avg_cost_ex_fee' if _ex_fee else 'avg_cost']:,.2f}" if r["qty"] else "-"
             mv_s = f"{r['market_value']:,.2f}" if r["qty"] else "-"
             # 底價藍字（同舊版），提醒「賣到這個價才打平」
             be_s = (f'<span style="color:#1565c0;font-weight:700">{r["breakeven"]:,.2f}</span>'

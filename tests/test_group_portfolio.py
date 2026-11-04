@@ -47,6 +47,17 @@ def test_all_group_matches_full_engine():
     assert "2327" in r and r["2327"]["qty"] == 2000   # 別的買賣人（Peggy姐 那 500 股）不算進來
 
 
+def test_avg_cost_ex_fee():
+    """頁面切換「均價不含手續費」：只算剩餘股數的買價，不攤手續費。"""
+    trades = [t(1, "2303", date(2026, 10, 1), "BUY", 1000, 100, fee=142),
+              t(2, "2303", date(2026, 10, 2), "BUY", 1000, 110, fee=156),
+              t(3, "2303", date(2026, 10, 3), "SELL", 1000, 120)]
+    s = gp.summarize_group(trades, gp.builtin_all_group("雅雲姐"), [], "CUSTOM_PLUS_FIFO", {}, {})
+    r = s["rows"][0]
+    assert r["avg_cost_ex_fee"] == pytest.approx(110)
+    assert r["avg_cost"] == pytest.approx(110.156)
+
+
 def test_start_date_group_counts_by_buy_lot():
     """以買進歸屬：10/01 起的分頁只算 10/01 起買進的批次。
 

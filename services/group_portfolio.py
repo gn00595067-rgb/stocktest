@@ -283,7 +283,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             qty_m = int(m[2])
             fee_share = float(getattr(bt, "fee", 0) or 0) * (qty_m / bt.quantity) if bt and bt.quantity else 0.0
             realized_cost += float(m[3]) * qty_m + fee_share
-        qty, cost = 0, 0.0
+        qty, cost, cost_ex_fee = 0, 0.0, 0.0
         for b in buys:
             if b.trade_id not in group_ids:
                 continue
@@ -294,6 +294,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             fee = float(getattr(bt, "fee", 0) or 0)
             qty += rem
             cost += rem * float(b.price) + (fee * rem / b.qty if b.qty else 0.0)
+            cost_ex_fee += rem * float(b.price)
 
         q = quotes.get(sid) or {}
         avg = cost / qty if qty else 0.0
@@ -311,6 +312,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             "change_pct": float(q.get("change_pct", 0) or 0),
             "qty": qty,
             "avg_cost": avg,
+            "avg_cost_ex_fee": cost_ex_fee / qty if qty else 0.0,   # 純買價均價（頁面切換「不含手續費」用）
             "cost": cost,
             "breakeven": breakeven_sell_price(cost, qty, is_etf=is_etf, fee_rate=fee_rate) if qty else None,
             "market_value": mv,
