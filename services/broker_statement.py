@@ -325,9 +325,24 @@ def daytrade_cap(row: dict) -> Optional[int]:
     return None
 
 
-def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]]) -> Tuple[List[Tuple[int, int, int]], set]:
+def _order_day_buys(buys: List[list], strategy: str) -> List[list]:
+    """同一天的買進（[id, 剩餘股數, 是否新匯入, 價格]）照沖銷方式排先後；FIFO／NONE 照成交順序。"""
+    if strategy == "CONSERVATIVE":
+        return sorted(buys, key=lambda b: -b[3])
+    if strategy == "OPTIMISTIC":
+        return sorted(buys, key=lambda b: b[3])
+    if strategy == "MEAN":
+        tot = sum(b[1] for b in buys)
+        avg = sum(b[1] * b[3] for b in buys) / tot if tot else 0.0
+        return sorted(buys, key=lambda b: abs(b[3] - avg))
+    return buys
+
+
+def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]],
+                  strategy: str = "FIFO") -> Tuple[List[Tuple[int, int, int]], set]:
     """同日同股有買有賣 → 當沖互沖（新匯入的賣出先用 daytrade_cap 看稅率，一般賣出不配）。
     new_rows 要先有 tmp_id（負數）；trades 是這個人的既有交易（含當天手 key 的）。
+    當天買進比當沖賣出多時（例：買 83 張、當沖賣 50 張），沖哪幾筆照 strategy（同統一沖銷方式）。
 
     至少一邊是這次新匯入的才配（既有交易之間不動）。既有交易扣掉已寫好的沖銷規則才算剩餘。
     回傳 (規則 [(賣 id, 買 id, 股數)]（id 可能是 tmp_id）, 要標當沖的 id 集合)。
@@ -340,16 +355,16 @@ def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int
             continue
         rem = int(t.quantity or 0) - (used_buy if sd == "BUY" else used_sell).get(int(t.id), 0)
         if rem > 0:
-            by_day[(_d(t.trade_date), str(t.stock_id).strip())][sd].append([int(t.id), rem, False])
+            by_day[(_d(t.trade_date), str(t.stock_id).strip())][sd].append([int(t.id), rem, False, float(t.price or 0)])
     for r in sorted(new_rows, key=lambda x: x["seq"]):
         cap = daytrade_cap(r)   # 稅率顯示是一般賣出 → 不拿來配當沖
         qty = r["quantity"] if cap is None else min(cap, r["quantity"])
         if qty > 0:
-            by_day[(r["trade_date"], r["stock_id"])][r["side"]].append([r["tmp_id"], qty, True])
+            by_day[(r["trade_date"], r["stock_id"])][r["side"]].append([r["tmp_id"], qty, True, float(r["price"])])
 
     out, flagged = [], set()
     for _key, sides in by_day.items():
-        buys, sells = sides["BUY"], sides["SELL"]
+        buys, sells = _order_day_buys(sides["BUY"], strategy), sides["SELL"]
         if not buys or not sells or not any(x[2] for x in buys + sells):
             continue
         for s in sells:

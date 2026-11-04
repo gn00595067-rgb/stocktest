@@ -159,6 +159,18 @@ def test_daytrade_partial():
     assert flagged == {a1, a3}
 
 
+def test_daytrade_picks_day_buys_by_strategy():
+    """Elsa 11/04：當天買比當沖賣多（買 83 張、賣 50 張），沖哪幾筆照選的方式，不是固定照順序。"""
+    rows = assign_tmp_ids(_rows(("2303", D29, "BUY", 102, 1000, "A1"), ("2303", D29, "BUY", 104, 1000, "A2"),
+                                ("2303", D29, "BUY", 100, 1000, "A3"), ("2303", D29, "SELL", 105, 1000, "A4")))
+    a1, a2, a3, a4 = (r["tmp_id"] for r in rows)
+    assert plan_daytrade(rows, [], [], "FIFO")[0] == [(a4, a1, 1000)]
+    assert plan_daytrade(rows, [], [], "CONSERVATIVE")[0] == [(a4, a2, 1000)]
+    assert plan_daytrade(rows, [], [], "OPTIMISTIC")[0] == [(a4, a3, 1000)]
+    assert plan_daytrade(rows, [], [], "MEAN")[0] == [(a4, a1, 1000)]
+    assert plan_daytrade(rows, [], [], "NONE")[0] == [(a4, a1, 1000)]
+
+
 def test_daytrade_with_existing_manual_buy():
     rows = assign_tmp_ids(_rows(("2303", D29, "SELL", 117, 1000, "A3")))
     trades = [T(3, "2303", D29, "BUY", 115, 1000), T(4, "2303", D28, "BUY", 100, 1000)]

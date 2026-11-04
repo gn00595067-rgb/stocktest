@@ -177,21 +177,25 @@ def render_broker_statement_section():
     assign_tmp_ids(to_import)   # seq 全檔唯一，所以暫時 id 跨人也不會撞
     new_by_user = {u: [r for r in to_import if r["user"] == u] for u in users}
 
+    # 有新賣出 → 選沖銷方式（所有人共用一種）：當沖沖今天哪幾筆買進、當沖以外從庫存沖哪幾筆，都照這個
+    strategy = "NONE"
+    if any(r["side"] == "SELL" for r in to_import):
+        strategy = st.radio(
+            "賣出要沖哪幾筆買進（這次統一用同一種方式；之後可到「自定沖銷設定」個別改）",
+            list(SELL_STRATEGIES), format_func=lambda k: SELL_STRATEGIES[k], key="bs_strategy",
+            help="當沖的賣出：只在「當天的買進」裡挑；當沖以外的賣出：從原本庫存＋這次的買進裡挑。",
+        )
     dt_rules, dt_flag = [], set()
     for u in users:
-        rr, ff = plan_daytrade(new_by_user[u], ctx[u].trades, ctx[u].rules)
+        rr, ff = plan_daytrade(new_by_user[u], ctx[u].trades, ctx[u].rules, strategy)
         dt_rules += rr
         dt_flag |= ff
-
-    # 當沖以外還有新賣出 → 選統一沖銷方式（所有人共用一種）
-    dt_sold = {}
-    for s_id, _b, q in dt_rules:
-        dt_sold[s_id] = dt_sold.get(s_id, 0) + q
-    strategy = "NONE"
-    if any(r["side"] == "SELL" and r["quantity"] > dt_sold.get(r["tmp_id"], 0) for r in to_import):
-        strategy = st.radio(
-            "賣出要沖哪幾筆買進（當沖以外的賣出，這次統一用同一種方式；之後可到「自定沖銷設定」個別改）",
-            list(SELL_STRATEGIES), format_func=lambda k: SELL_STRATEGIES[k], key="bs_strategy",
+    if dt_rules:
+        st.caption(
+            "ℹ️ **怎麼判斷當沖**：看券商扣的證交稅——稅是成交金額 0.15%（當沖減半）＝券商認定是當沖，"
+            "就沖**當天的買進**，不動原本的庫存；稅是 0.3%＝一般賣出，從庫存沖。"
+            "當天買的比當沖賣的多時，沖哪幾筆照上面選的方式（先進先出＝照成交順序）；"
+            "沒沖到的當天買進留在庫存。"
         )
     sell_rules, shortage = [], {}
     for u in users:
