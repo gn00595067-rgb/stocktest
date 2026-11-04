@@ -66,7 +66,7 @@ POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
 # 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
 _DETAIL_COLS = [1.1, 0.95, 0.95, 0.95, 0.8, 0.8, 1.2, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
 _FORM_COLS = [1.1, 0.95, 0.95, 0.95, 0.8, 0.8, 1.2, 0.7]           # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
-_ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 9 欄合成一個 HTML grid（.yh-grid）
+_ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 8 欄合成一個 HTML grid（.yh-grid）
 
 st.markdown("""
 <style>
@@ -140,8 +140,8 @@ div[data-testid="stLayoutWrapper"]:has(> [class*="st-key-yh_row_"]) { margin-bot
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepDown"],
 [class*="st-key-yh_exp_"] [data-testid="stNumberInputStepUp"] { display: none; }
 .yh-desc { color: #888; font-size: .9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多 */
-.yh-grid { display: grid; grid-template-columns: 1.15fr 1.15fr .9fr 1.05fr 1.05fr 1.2fr 1.2fr 1.2fr 0.7fr;
+/* 持股表每列只用一個 HTML 區塊（原本 9 個元件），重畫快很多；「交易筆數」欄已拿掉（老闆 2026-11-04：不需要、佔版面） */
+.yh-grid { display: grid; grid-template-columns: 1.15fr 1.15fr .9fr 1.05fr 1.05fr 1.2fr 1.2fr 1.2fr;
            align-items: center; column-gap: .8rem; }
 /* 持股表一列一行（Peggy 2026-10-22：一畫面多看幾檔）：寬度夠時漲跌、％、代號接在同一行；
    不夠寬才退回兩行。依持股表自身寬度判斷（側邊欄開關會改變寬度） */
@@ -151,7 +151,7 @@ div[data-testid="stLayoutWrapper"]:has(> [class*="st-key-yh_row_"]) { margin-bot
 @container (min-width: 880px) {
   .yh-td .l2 { display: inline; margin-left: .3rem; }
   .yh-td .unit.twd { display: none; }   /* 表頭已是金額欄，省下寬度給一行排版 */
-  .yh-grid { grid-template-columns: 1.25fr 1.75fr .8fr .95fr .95fr 1.15fr 1.6fr 1.75fr .5fr; column-gap: .6rem; }
+  .yh-grid { grid-template-columns: 1.25fr 1.75fr .8fr .95fr .95fr 1.15fr 1.6fr 1.75fr; column-gap: .6rem; }
   .yh-td { padding: 0; }
 }
 </style>
@@ -982,8 +982,8 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
     h1.markdown('<div class="yh-grid">' + "".join(
         (f'<div class="yh-th" title="{_be_tip}">{lab} ⓘ</div>' if lab == "底價"
          else f'<div class="yh-th{" l" if left else ""}">{lab}</div>')
-        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", _avg_lab, "底價", "市值", "已實現損益", "未實現損益", "交易筆數"],
-                             [1, 0, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
+        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", _avg_lab, "底價", "市值", "已實現損益", "未實現損益"],
+                             [1, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
 
     open_key = f"yh_open_{trader}"
     trades_by_sid = {}
@@ -1027,8 +1027,7 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
                 + f'<div class="yh-td">{mv_s}</div>'
                 + _pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"])
                 + _pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"]))
-                + f'<div class="yh-td">{r["n_trades"]}筆</div>'
-                '</div>', unsafe_allow_html=True)
+                + '</div>', unsafe_allow_html=True)
         if is_open:
             with st.container(border=True, key=f"yh_exp_{sid}"):
                 _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {},
