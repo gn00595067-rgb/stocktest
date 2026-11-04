@@ -183,7 +183,7 @@ def render_broker_statement_section():
         strategy = st.radio(
             "賣出要沖哪幾筆買進（這次統一用同一種方式；之後可到「自定沖銷設定」個別改）",
             list(SELL_STRATEGIES), format_func=lambda k: SELL_STRATEGIES[k], key="bs_strategy",
-            help="當沖的賣出：只在「當天的買進」裡挑；當沖以外的賣出：從原本庫存＋這次的買進裡挑。",
+            help="從原本庫存＋這次的買進裡挑；當沖的賣出若選「只沖當天的買進」，就只在當天的買進裡挑。",
         )
     dt_rules, dt_flag = [], set()
     for u in users:
@@ -191,12 +191,23 @@ def render_broker_statement_section():
         dt_rules += rr
         dt_flag |= ff
     if dt_rules:
-        st.caption(
-            "ℹ️ **怎麼判斷當沖**：看券商扣的證交稅——稅是成交金額 0.15%（當沖減半）＝券商認定是當沖，"
-            "就沖**當天的買進**，不動原本的庫存；稅是 0.3%＝一般賣出，從庫存沖。"
-            "當天買的比當沖賣的多時，沖哪幾筆照上面選的方式（先進先出＝照成交順序）；"
-            "沒沖到的當天買進留在庫存。"
+        dt_any = st.radio(
+            "當沖的賣出要沖哪裡的買進",
+            [True, False], key="bs_dt_any", horizontal=True,
+            format_func=lambda v: "以前的庫存＋當天的買進都可以（照上面方式挑）" if v else "只沖當天的買進",
         )
+        st.caption(
+            "ℹ️ **怎麼判斷當沖**：看券商扣的證交稅——稅是成交金額 0.15%（當沖減半）＝當沖，0.3%＝一般賣出。"
+            "當沖的賣出可以選要不要也沖以前幾天買的庫存；選「只沖當天的買進」時不動原本庫存，"
+            "當天買的比賣的多，沖哪幾筆照上面選的方式（先進先出＝照成交順序）。"
+        )
+        if dt_any:
+            # 新匯入的當沖賣出改走統一沖銷（從全部庫存挑）；稅是當沖稅，賣出仍標當沖。
+            # 手 key 的既有賣出配上這次的買進，維持當沖互沖（統一沖銷只處理新賣出）
+            keep = [x for x in dt_rules if x[0] > 0]
+            new_dt_sells = {x[0] for x in dt_rules if x[0] < 0}
+            dt_flag = new_dt_sells | {i for x in keep for i in x[:2]}
+            dt_rules = keep
     sell_rules, shortage = [], {}
     for u in users:
         rr, sh = plan_sell_matches(new_by_user[u], ctx[u].trades, ctx[u].rules + dt_rules, strategy)
@@ -227,6 +238,7 @@ def render_broker_statement_section():
         acc[1] += p
         match_text.setdefault(s_id, []).append(f"{b.trade_date:%m/%d} {b.price:g}×{q:,}")
 
+    n_dt_sell = sum(1 for r in to_import if r["side"] == "SELL" and r["tmp_id"] in dt_flag)
     keyed = [r for r in rows if r["status"] in (KEYED_EXACT, KEYED_MERGED)]
     fee_updates = [r["fee_update"] for r in keyed if r["fee_update"]]
     cnt = {k: sum(1 for r in rows if r["status"] == k) for k in STATUS_LABEL}
@@ -238,7 +250,7 @@ def render_broker_statement_section():
         + (f"（{per_user_txt}）" if multi else
            f"（買 {sum(r['side'] == 'BUY' for r in to_import)}／賣 {sum(r['side'] == 'SELL' for r in to_import)}）")
         + f"、✋ 已手 key {len(keyed)}、⏭️ 已匯入過 {cnt[DUP_IMPORT]}、⚠️ 要確認 {cnt[REVIEW]}"
-        + (f"；當沖 {len(dt_rules)} 組" if dt_rules else "")
+        + (f"；當沖賣出 {n_dt_sell} 筆" if n_dt_sell else "")
         + (f"；預估這次多出已實現損益 **{pnl:+,.0f}**" if all_rules else "")
     )
     if shortage:

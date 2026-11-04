@@ -171,6 +171,14 @@ def test_daytrade_picks_day_buys_by_strategy():
     assert plan_daytrade(rows, [], [], "NONE")[0] == [(a4, a1, 1000)]
 
 
+def test_daytrade_sell_can_match_old_inventory():
+    """當沖賣出改走統一沖銷時（畫面選「以前的庫存也可以」），先進先出會先沖以前幾天的買進。"""
+    rows = assign_tmp_ids(_rows(("2303", D29, "BUY", 104, 1000, "A1"), ("2303", D29, "SELL", 105, 1500, "A2")))
+    trades = [T(1, "2303", D28, "BUY", 100, 1000)]
+    sell, short = plan_sell_matches(rows, trades, [], "FIFO")
+    assert sell == [(rows[1]["tmp_id"], 1, 1000), (rows[1]["tmp_id"], rows[0]["tmp_id"], 500)] and short == {}
+
+
 def test_daytrade_with_existing_manual_buy():
     rows = assign_tmp_ids(_rows(("2303", D29, "SELL", 117, 1000, "A3")))
     trades = [T(3, "2303", D29, "BUY", 115, 1000), T(4, "2303", D28, "BUY", 100, 1000)]
