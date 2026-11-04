@@ -238,7 +238,7 @@ def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
         people.append(_NEW_PERSON)
     cur_person = g.trader if g else default_trader
     person = st.selectbox("這是誰的帳", people, index=people.index(cur_person) if cur_person in people else 0,
-                          help="在這個分頁輸入的交易，會記在這個人名下。")
+                          help="在這個分頁輸入的交易，預設記在這個人名下。")
     new_person = ""
     if person == _NEW_PERSON:
         new_person = st.text_input("新的人名", placeholder="例：小孩、王小姐", max_chars=50).strip()
@@ -254,6 +254,15 @@ def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
                     st.session_state["last_user"] = rn
                     st.rerun()   # 整頁：分頁、持股、下拉選項都換成新名字
                 st.error(msg)
+    # 多人分頁（Elsa 2026-11-05：11月短線＝Peggy姐＋豪哥）：同一檔合併一列，輸入時再選給誰
+    extra_opts = [p for p in people if p not in (person, _NEW_PERSON)]
+    for p in (g.extra_traders if g else []):
+        if p not in extra_opts and p != person:
+            extra_opts.append(p)
+    extra = st.multiselect("也一起看的人（可多選）", extra_opts,
+                           default=[p for p in (g.extra_traders if g else []) if p in extra_opts],
+                           placeholder="不選＝只看上面這個人",
+                           help="選了的人，交易會一起算進這個分頁；同一檔股票合併成一列（各人各自沖銷）。")
     kind = st.radio("分頁類型", [_KIND_FULL, _KIND_FILTER], horizontal=True,
                     index=0 if (g is None or g.is_full) else 1,
                     format_func={_KIND_FULL: "這個人的全部帳", _KIND_FILTER: "只看某段日期／某些股票"}.get)
@@ -295,10 +304,12 @@ def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
         s2 = get_session()
         try:
             if g:
-                err = gp.update_group(s2, g.id, final_name, s_from, s_to, picked, only, trader=who)
+                err = gp.update_group(s2, g.id, final_name, s_from, s_to, picked, only, trader=who,
+                                      extra_traders=extra)
                 new_id = g.id
             else:
-                new_id, err = gp.create_group(s2, owner, who, final_name, s_from, s_to, picked, only)
+                new_id, err = gp.create_group(s2, owner, who, final_name, s_from, s_to, picked, only,
+                                              extra_traders=extra)
         finally:
             s2.close()
         if err:
@@ -604,8 +615,16 @@ def _pledge_editor(trader: str, sid: str, holding_qty: int, pledged: int):
         p[2].caption(f"持股 {holding_qty:,} 股，質押 {pledged:,} 股 → **可動用 {max(0, holding_qty - pledged):,} 股**")
 
 
-def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: int, quote: dict, pledged: int = 0):
+def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: dict, quote: dict, pledged_by: dict):
+    """holding_by／pledged_by：{人: 這檔全部持股／質押股數}（多人分頁每人各一）。"""
     sid = row["stock_id"]
+    open_key = f"yh_open_{group.trader}"   # 展開狀態跟著分頁的主要的人（同持股表）
+    multi_person = group.is_multi
+    if multi_person:   # 多人分頁：輸入、沖銷、折數、質押都是單人的事，先選這次給誰
+        who = st.radio("這次輸入給誰", group.traders, horizontal=True, key=f"yh_who_{group.id}_{sid}")
+        group = group.for_person(who)
+    holding_qty = int(holding_by.get(group.trader, 0))
+    pledged = int(pledged_by.get(group.trader, 0))
     price_now = row["price"] or 0.0
     _pledge_editor(group.trader, sid, holding_qty, pledged)
     # 新增交易（送出後換一組 key，輸入框自動清空）
@@ -746,8 +765,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
                 sess.close()
             st.session_state[f"yh_form_n_{sid}"] = n + 1
             # Peggy 2026-10-19：送出後自動收合，不用再手動按收合；結果訊息在整頁重跑後顯示
-            if st.session_state.get(f"yh_open_{group.trader}") == sid:
-                st.session_state[f"yh_open_{group.trader}"] = None
+            if st.session_state.get(open_key) == sid:
+                st.session_state[open_key] = None
             _nm = getattr(_MASTERS.get(sid), "name", "") or ""
             st.session_state["yh_flash"] = (f"已新增 {len(entries)} 筆{'買入' if side == 'BUY' else '賣出'}"
                                             f"（{sid} {_nm}，{e0['d']:%m/%d}）")
@@ -770,6 +789,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
         is_buy = str(t.side).upper() == "BUY"
         c[0].markdown(f'<div class="yh-td c">{t.trade_date:%Y/%m/%d}</div>', unsafe_allow_html=True)
         side_s = "買入" if is_buy else ("賣出（當沖）" if t.is_daytrade else "賣出")
+        if multi_person:
+            side_s += f'<span class="sub">・{t.user}</span>'
         c[1].markdown(f'<div class="yh-td c">{side_s}</div>', unsafe_allow_html=True)
         c[2].markdown(f'<div class="yh-td c">{int(t.quantity):,}</div>', unsafe_allow_html=True)
         c[3].markdown(f'<div class="yh-td c">{float(t.price):,.2f}</div>', unsafe_allow_html=True)
@@ -785,7 +806,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_qty: i
             st.session_state.pop(edit_key, None)
             _rerun_fragment()
         if st.session_state.get(edit_key) == t.id:
-            _edit_trade_form(t, holding_qty, quote, edit_key)
+            _edit_trade_form(t, int(holding_by.get(t.user, 0)), quote, edit_key)
         if st.session_state.get(pend_key) == t.id:
             st.warning(f"確定刪除 {t.trade_date:%Y/%m/%d} {'買入' if is_buy else '賣出'} "
                        f"{int(t.quantity):,} 股 @ {float(t.price):,.2f}？相關沖銷配對也會一起刪除。")
@@ -929,8 +950,10 @@ def _on_search(_sk=search_key, _ok=f"yh_open_{trader}"):
 a[1].selectbox("搜尋股票", list(_row_names), key=search_key, index=None,
                placeholder="🔍 股名／股號", label_visibility="collapsed",
                format_func=lambda sid: f"{sid} {_row_names.get(sid, '')}", on_change=_on_search)
-trader_trades = [t for t in trades if (t.user or "").strip() == trader]
-trader_pos = compute_position_and_cost_by_stock(trader_trades, custom_rules=rules, policy=POLICY)
+# 每個人各自的全部持股（質押可動用、賣出防呆用；多人分頁每人一份）
+pos_by_person = {p: compute_position_and_cost_by_stock([t for t in trades if (t.user or "").strip() == p],
+                                                       custom_rules=rules, policy=POLICY)
+                 for p in group.traders}
 
 # 總覽卡
 rp, up = summary["realized_pct"], summary["unrealized_pct"]
@@ -981,7 +1004,7 @@ if _live:
 
 # 持股表（fragment）：展開／收合、在展開區輸入都只重畫這張表；送出或刪除成功才整頁更新
 @st.fragment
-def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search_sid=None, pledges=None):
+def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, search_sid=None, pledges_by=None):
     rows = summary["rows"]
     if search_sid:
         rows = [r for r in rows if r["stock_id"] == search_sid]
@@ -1028,9 +1051,10 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
             be_s = (f'<span style="color:#1565c0;font-weight:700">{r["breakeven"]:,.2f}</span>'
                     if r["qty"] and r.get("breakeven") else "-")
             # 質借：股數下加一行「質押 X・可動用 Y」（可動用以這個人全部持股計，不受分頁日期影響）
-            _pq = int((pledges or {}).get(sid, 0))
+            _hold = {p: int(pos.get(sid, {}).get("qty", 0)) for p, pos in pos_by_person.items()}
+            _pled = {p: int((pledges_by or {}).get(p, {}).get(sid, 0)) for p in pos_by_person}
             _pl = "".join(f'<span class="l2 pledge">{x}</span>'
-                          for x in pledge_label(int(trader_pos.get(sid, {}).get("qty", 0)), _pq))
+                          for x in pledge_label(sum(_hold.values()), sum(_pled.values())))
             c1.markdown(
                 '<div class="yh-grid">'
                 f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span></div>'
@@ -1044,16 +1068,15 @@ def _holdings_table(summary, trader, group, g_trades, trader_pos, quotes, search
                 + '</div>', unsafe_allow_html=True)
         if is_open:
             with st.container(border=True, key=f"yh_exp_{sid}"):
-                _expanded(r, group, trades_by_sid.get(sid, []), int(trader_pos.get(sid, {}).get("qty", 0)), quotes.get(sid) or {},
-                          pledged=int((pledges or {}).get(sid, 0)))
+                _expanded(r, group, trades_by_sid.get(sid, []), _hold, quotes.get(sid) or {}, _pled)
 
 
 try:
     from db.database import get_engine
-    _pledges = load_pledges(get_engine(), trader)
+    _pledges = {p: load_pledges(get_engine(), p) for p in group.traders}
 except Exception as _e:   # 質押只是顯示用，讀不到不影響記帳
     print(f"[page] 讀取質押失敗：{_e}", flush=True)
     _pledges = {}
-_holdings_table(summary, trader, group, g_trades, trader_pos, quotes, st.session_state.get(search_key), pledges=_pledges)
+_holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, st.session_state.get(search_key), pledges_by=_pledges)
 
 print(f"[page] 股票輸入（仿Yahoo） 整頁執行 {time.monotonic() - _PAGE_T0:.1f} 秒", flush=True)

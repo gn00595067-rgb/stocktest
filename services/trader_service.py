@@ -212,6 +212,15 @@ def rename_trader(old: str, new: str, session=None) -> Tuple[bool, str]:
                                     {"new": new, "old": old}).rowcount
         conn.execute(text("UPDATE portfolio_groups SET name = :new WHERE trader = :new AND name = :old"),
                      {"new": new, "old": old})
+        # 多人分頁「也一起看的人」是逗號清單，逐列換掉名字
+        if "extra_traders" in {c["name"] for c in insp.get_columns("portfolio_groups")}:
+            for gid, extra in conn.execute(text("SELECT id, extra_traders FROM portfolio_groups "
+                                                "WHERE extra_traders IS NOT NULL AND extra_traders <> ''")).all():
+                names = [x.strip() for x in str(extra).split(",") if x.strip()]
+                if old in names:
+                    names = [new if x == old else x for x in names]
+                    conn.execute(text("UPDATE portfolio_groups SET extra_traders = :e WHERE id = :i"),
+                                 {"e": ",".join(names), "i": gid})
         sess.commit()
         clear_fee_discount_cache()
         return True, f"已把「{old}」改成「{new}」（交易 {n.get('trades', 0)} 筆、分頁 {n.get('portfolio_groups', 0)} 個一起改）"

@@ -27,6 +27,21 @@ class GroupSpec:
     only_listed: bool = False
     sort_order: int = 0
     owner: Optional[str] = None
+    extra_traders: List[str] = field(default_factory=list)   # 也一起看的其他人（多人分頁）
+
+    @property
+    def traders(self) -> List[str]:
+        """這個分頁的所有人：主要的人在前。"""
+        return [self.trader] + [p for p in self.extra_traders if p != self.trader]
+
+    @property
+    def is_multi(self) -> bool:
+        return len(self.traders) > 1
+
+    def for_person(self, person: str) -> "GroupSpec":
+        """多人分頁裡只看其中一個人（輸入交易、沖銷、質押都是單人的事）。"""
+        from dataclasses import replace
+        return replace(self, trader=person, extra_traders=[])
 
     @property
     def is_full(self) -> bool:
@@ -36,8 +51,8 @@ class GroupSpec:
     def describe(self) -> str:
         """一行說明分頁條件，顯示在分頁下方。"""
         if self.is_full:
-            return f"{self.trader} 的全部交易"
-        parts = [self.trader]
+            return f"{'、'.join(self.traders)} 的全部交易"
+        parts = ["、".join(self.traders)]
         if self.start_date and self.end_date:
             parts.append(f"{self.start_date:%Y/%m/%d}～{self.end_date:%Y/%m/%d} 買進")
         elif self.start_date:
@@ -65,6 +80,7 @@ def _to_spec(row) -> GroupSpec:
         start_date=row.start_date, end_date=row.end_date,
         stock_ids=parse_stock_ids(row.stock_ids), only_listed=bool(row.only_listed),
         sort_order=int(row.sort_order or 0), owner=getattr(row, "owner", None),
+        extra_traders=[p for p in parse_stock_ids(getattr(row, "extra_traders", None)) if p != row.trader],
     )
 
 
@@ -84,7 +100,7 @@ def _owner_rows(sess, owner: str):
 def list_groups(sess, owner: str, can_access: Optional[Callable[[str], bool]] = None) -> List[GroupSpec]:
     """這個登入帳號的分頁（依排序）；沒有權限的買賣人的分頁不列出。"""
     out = [_to_spec(r) for r in _owner_rows(sess, owner)]
-    return [g for g in out if can_access is None or can_access(g.trader)]
+    return [g for g in out if can_access is None or all(can_access(p) for p in g.traders)]
 
 
 def ensure_owner_groups(sess, owner: str, default_trader: str,
@@ -138,8 +154,13 @@ def validate_group(sess, owner: str, name: str, start_date, end_date,
     return None
 
 
+def _join_extra(trader: str, extra: Optional[List[str]]) -> str:
+    return ",".join(p for p in parse_stock_ids(",".join(extra or [])) if p != (trader or "").strip())
+
+
 def create_group(sess, owner: str, trader: str, name: str, start_date=None, end_date=None,
-                 stock_ids: Optional[List[str]] = None, only_listed: bool = False) -> Tuple[Optional[int], Optional[str]]:
+                 stock_ids: Optional[List[str]] = None, only_listed: bool = False,
+                 extra_traders: Optional[List[str]] = None) -> Tuple[Optional[int], Optional[str]]:
     from db.models import PortfolioGroup
     err = validate_group(sess, owner, name, start_date, end_date, trader=trader)
     if err:
@@ -151,6 +172,7 @@ def create_group(sess, owner: str, trader: str, name: str, start_date=None, end_
         stock_ids=",".join(parse_stock_ids(",".join(stock_ids or []))),
         only_listed=bool(only_listed) and bool(stock_ids),
         sort_order=(int(last.sort_order) + 1) if last else 1,
+        extra_traders=_join_extra(trader, extra_traders),
     )
     sess.add(row)
     sess.commit()
@@ -158,7 +180,8 @@ def create_group(sess, owner: str, trader: str, name: str, start_date=None, end_
 
 
 def update_group(sess, group_id: int, name: str, start_date, end_date,
-                 stock_ids: List[str], only_listed: bool, trader: Optional[str] = None) -> Optional[str]:
+                 stock_ids: List[str], only_listed: bool, trader: Optional[str] = None,
+                 extra_traders: Optional[List[str]] = None) -> Optional[str]:
     from db.models import PortfolioGroup
     row = sess.get(PortfolioGroup, int(group_id))
     if row is None:
@@ -170,6 +193,8 @@ def update_group(sess, group_id: int, name: str, start_date, end_date,
     row.name = name.strip()
     if trader:
         row.trader = trader.strip()
+    if extra_traders is not None:
+        row.extra_traders = _join_extra(row.trader, extra_traders)
     row.start_date = start_date
     row.end_date = end_date
     row.stock_ids = ",".join(ids)
@@ -218,7 +243,7 @@ def add_stock_to_group(sess, group_id: int, stock_id: str) -> None:
 # ─── 篩選與計算 ───────────────────────────────────────────────────────────
 
 def trade_in_group(t, group: GroupSpec) -> bool:
-    if (getattr(t, "user", "") or "").strip() != (group.trader or "").strip():
+    if (getattr(t, "user", "") or "").strip() not in group.traders:
         return False
     d = t.trade_date
     if group.start_date and d < group.start_date:
@@ -238,24 +263,10 @@ def _is_buy(t) -> bool:
     return (getattr(t, "side", None) or "").strip().upper() in ("BUY", "配股")
 
 
-def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes: Dict[str, dict],
-                    masters: dict, extra_stock_ids: Optional[List[str]] = None) -> dict:
-    """分頁內每檔的持股、均價、底價、市值、已實現、未實現。
-
-    口徑「以買進歸屬」（2026-10-07 Peggy 確認）：沖銷用該買賣人「全部」交易照全站引擎配對
-    （自定沖銷＋其餘先進先出），分頁只算「買進符合條件」的那幾批——
-      - 持股／均價＝這些買進批次剩下的股數與成本；
-      - 已實現＝賣出沖到這些批次的部分（不管賣出日期）；沖到分頁以外舊批次的賣出不算。
-    所以「全部」分頁與庫存損益頁同數字；「10/06 起」只看 10/06 起買進的那幾批。
-
-    trades：該買賣人的全部交易（不需先篩分頁；這裡會依 group 篩）。
-    """
-    from services.trade_fees import breakeven_sell_price
-    from services.trader_service import trader_fee_rate
-
-    trader = (group.trader or "").strip()
-    fee_rate = trader_fee_rate(trader)
-    mine = [t for t in trades if (getattr(t, "user", "") or "").strip() == trader]
+def _person_stock_parts(trades, group: GroupSpec, person: str, custom_rules, policy: str,
+                        extra_stock_ids: Optional[List[str]]) -> Dict[str, dict]:
+    """單一個人在這個分頁的每檔：持股、成本、已實現（沖銷用這個人的全部交易）。"""
+    mine = [t for t in trades if (getattr(t, "user", "") or "").strip() == person]
     in_group = [t for t in mine if trade_in_group(t, group)]
     group_ids = {t.id for t in in_group}
     by_stock = defaultdict(list)
@@ -266,7 +277,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
         n_by_stock[str(t.stock_id).strip()] += 1
     trade_by_id = {t.id: t for t in mine}
 
-    rows = []
+    out = {}
     for sid in set(n_by_stock) | set(extra_stock_ids or []):
         ts = sorted(by_stock.get(sid, []), key=lambda t: (t.trade_date, t.id))
         buys = [Lot(t.id, int(t.quantity or 0), float(t.price or 0), str(t.trade_date)) for t in ts if _is_buy(t)]
@@ -295,7 +306,43 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             qty += rem
             cost += rem * float(b.price) + (fee * rem / b.qty if b.qty else 0.0)
             cost_ex_fee += rem * float(b.price)
+        out[sid] = {"qty": qty, "cost": cost, "cost_ex_fee": cost_ex_fee, "realized": realized,
+                    "realized_cost": realized_cost, "has_realized": bool(g_matches), "n_trades": n_by_stock.get(sid, 0)}
+    return out
 
+
+def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes: Dict[str, dict],
+                    masters: dict, extra_stock_ids: Optional[List[str]] = None) -> dict:
+    """分頁內每檔的持股、均價、底價、市值、已實現、未實現。
+
+    口徑「以買進歸屬」（2026-10-07 Peggy 確認）：沖銷用該買賣人「全部」交易照全站引擎配對
+    （自定沖銷＋其餘先進先出），分頁只算「買進符合條件」的那幾批——
+      - 持股／均價＝這些買進批次剩下的股數與成本；
+      - 已實現＝賣出沖到這些批次的部分（不管賣出日期）；沖到分頁以外舊批次的賣出不算。
+    所以「全部」分頁與庫存損益頁同數字；「10/06 起」只看 10/06 起買進的那幾批。
+    多人分頁（Elsa 2026-11-05）：每個人各自沖銷，算完同一檔合併一列（股數、成本、損益相加）。
+
+    trades：全部交易（不需先篩分頁；這裡會依 group 篩）。
+    """
+    from services.trade_fees import breakeven_sell_price
+    from services.trader_service import trader_fee_rate
+
+    keys = ("qty", "cost", "cost_ex_fee", "realized", "realized_cost", "n_trades")
+    merged: Dict[str, dict] = {}
+    rate_by_sid: Dict[str, float] = {}
+    for person in group.traders:
+        rate = trader_fee_rate(person)
+        for sid, p in _person_stock_parts(trades, group, person, custom_rules, policy, extra_stock_ids).items():
+            acc = merged.setdefault(sid, dict.fromkeys(keys, 0) | {"has_realized": False})
+            for k in keys:
+                acc[k] += p[k]
+            acc["has_realized"] = acc["has_realized"] or p["has_realized"]
+            if p["qty"]:   # 底價費率：有持股的人裡取最高（寧可保守，賣到底價一定不虧）
+                rate_by_sid[sid] = max(rate_by_sid.get(sid, 0.0), rate)
+
+    rows = []
+    for sid, p in merged.items():
+        qty, cost, realized, realized_cost = p["qty"], p["cost"], p["realized"], p["realized_cost"]
         q = quotes.get(sid) or {}
         avg = cost / qty if qty else 0.0
         price = float(q["price"]) if q.get("price") else (avg if qty else 0.0)
@@ -303,6 +350,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
         unrealized = (price - avg) * qty if qty else 0.0
         m = masters.get(sid)
         is_etf = bool(getattr(m, "is_etf", False)) if m else False
+        fee_rate = rate_by_sid.get(sid) or trader_fee_rate(group.trader)
         rows.append({
             "stock_id": sid,
             "name": (getattr(m, "name", None) or sid) if m else sid,
@@ -312,16 +360,16 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             "change_pct": float(q.get("change_pct", 0) or 0),
             "qty": qty,
             "avg_cost": avg,
-            "avg_cost_ex_fee": cost_ex_fee / qty if qty else 0.0,   # 純買價均價（頁面切換「不含手續費」用）
+            "avg_cost_ex_fee": p["cost_ex_fee"] / qty if qty else 0.0,   # 純買價均價（頁面切換「不含手續費」用）
             "cost": cost,
             "breakeven": breakeven_sell_price(cost, qty, is_etf=is_etf, fee_rate=fee_rate) if qty else None,
             "market_value": mv,
             "realized": realized,
             "realized_pct": (realized / realized_cost * 100) if realized_cost else None,
-            "has_realized": bool(g_matches),
+            "has_realized": p["has_realized"],
             "unrealized": unrealized,
             "unrealized_pct": (unrealized / cost * 100) if qty and cost else None,
-            "n_trades": n_by_stock.get(sid, 0),
+            "n_trades": p["n_trades"],
         })
     rows.sort(key=lambda r: (-r["market_value"], -r["n_trades"], r["stock_id"]))
 

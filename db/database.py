@@ -129,6 +129,22 @@ try:
 except Exception:
     pass
 
+# 若 portfolio_groups 尚無 extra_traders 欄位則補上（多人分頁；只加欄位、不動資料）
+try:
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        if engine.dialect.name == "sqlite":
+            cols = [row[1] for row in conn.execute(text("PRAGMA table_info(portfolio_groups)"))]
+        else:
+            cols = [r[0] for r in conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'portfolio_groups'"
+            ))]
+        if cols and "extra_traders" not in cols:
+            conn.execute(text("ALTER TABLE portfolio_groups ADD COLUMN extra_traders TEXT"))
+            conn.commit()
+except Exception:
+    pass
+
 # 若 traders 尚無手續費折數欄位則補上（docs/specs/買賣人手續費折數.md）；
 # 第一次加欄位時帶入群組講好的折數：Peggy姐 2.5 折、王小姐可切 2.5 折（其餘空白＝一般人 2.8 折）
 try:

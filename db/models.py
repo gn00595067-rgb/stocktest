@@ -106,6 +106,7 @@ class PortfolioGroup(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     owner = Column(String(50), nullable=True)      # 分頁屬於哪個登入帳號（NULL＝舊資料，第一次進來時認領）
     trader = Column(String(50), nullable=False)    # 這個分頁是誰的帳（買賣人）
+    extra_traders = Column(Text, nullable=True)    # 也一起看的其他買賣人（逗號分隔；Elsa 2026-11-05 多人分頁）
     name = Column(String(50), nullable=False)
     start_date = Column(Date, nullable=True)
     end_date = Column(Date, nullable=True)

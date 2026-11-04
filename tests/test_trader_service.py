@@ -104,6 +104,7 @@ def test_rename_trader_moves_everything(mem_session):
     s.add(UserTraderBinding(user_id=1, trader_name="陳小姐"))
     s.add(PortfolioGroup(owner="老闆", trader="陳小姐", name="陳小姐"))
     s.add(PortfolioGroup(owner="老闆", trader="陳小姐", name="短線"))
+    s.add(PortfolioGroup(owner="老闆", trader="Peggy姐", name="合看", extra_traders="陳小姐,豪哥"))
     s.commit()
     pledges.metadata.create_all(s.connection())
     trade_refs.metadata.create_all(s.connection())
@@ -120,7 +121,9 @@ def test_rename_trader_moves_everything(mem_session):
     assert s.query(Trader).filter_by(name="美美").one().fee_discount == 0.25
     assert s.query(Trader).filter_by(name="陳小姐").first() is None
     assert [b.trader_name for b in s.query(UserTraderBinding)] == ["美美"]
-    assert sorted((g.trader, g.name) for g in s.query(PortfolioGroup)) == [("美美", "短線"), ("美美", "美美")]
+    assert sorted((g.trader, g.name) for g in s.query(PortfolioGroup)) == [
+        ("Peggy姐", "合看"), ("美美", "短線"), ("美美", "美美")]
+    assert s.query(PortfolioGroup).filter_by(name="合看").one().extra_traders == "美美,豪哥"
     assert s.execute(text("SELECT trader FROM pledges")).scalar() == "美美"
     assert s.execute(text('SELECT "user" FROM trade_refs')).scalar() == "美美"
 

@@ -196,3 +196,31 @@ def test_recent_trading_days_skips_weekend():
     assert recent_trading_days(date(2026, 10, 19)) == [date(2026, 10, 19), date(2026, 10, 16), date(2026, 10, 15)]  # 週一
     assert recent_trading_days(date(2026, 10, 21)) == [date(2026, 10, 21), date(2026, 10, 20), date(2026, 10, 19)]  # 週三
     assert recent_trading_days(date(2026, 10, 18))[1:] == [date(2026, 10, 16), date(2026, 10, 15)]                  # 週日
+
+
+def test_multi_person_group_merges_same_stock():
+    """Elsa 2026-11-05：11月短線＝Peggy姐＋豪哥；各自沖銷，同一檔合併一列。"""
+    trades = [t(1, "2303", date(2026, 11, 3), "BUY", 1000, 100, user="Peggy姐"),
+              t(2, "2303", date(2026, 11, 3), "BUY", 2000, 110, user="豪哥"),
+              t(3, "2303", date(2026, 11, 4), "SELL", 1000, 120, user="豪哥"),   # 豪哥自己沖自己的 110
+              t(4, "2330", date(2026, 11, 3), "BUY", 1000, 1000, user="雅雲姐")]  # 不在分頁的人
+    g = gp.GroupSpec(id=1, trader="Peggy姐", name="11月短線", extra_traders=["豪哥"])
+    assert g.traders == ["Peggy姐", "豪哥"] and g.is_multi
+    assert [x.id for x in gp.filter_trades(trades, g)] == [1, 2, 3]
+    s = gp.summarize_group(trades, g, [], "CUSTOM_PLUS_FIFO", {}, {})
+    assert [r["stock_id"] for r in s["rows"]] == ["2303"]
+    r = s["rows"][0]
+    assert r["qty"] == 2000 and r["avg_cost"] == pytest.approx(105)   # Peggy 1000@100＋豪哥剩 1000@110
+    assert r["realized"] == pytest.approx(10 * 1000) and r["n_trades"] == 3
+    assert g.for_person("豪哥").traders == ["豪哥"]
+
+
+def test_multi_person_group_persisted(sess):
+    gid, err = gp.create_group(sess, "老闆", "Peggy姐", "11月短線", extra_traders=["豪哥", "Peggy姐", "豪哥"])
+    assert err is None
+    g = next(x for x in gp.list_groups(sess, "老闆") if x.id == gid)
+    assert g.extra_traders == ["豪哥"]
+    # 沒權限看豪哥 → 整個分頁不列
+    assert gp.list_groups(sess, "老闆", can_access=lambda p: p == "Peggy姐") == []
+    gp.update_group(sess, gid, "11月短線", None, None, [], False, trader="Peggy姐", extra_traders=[])
+    assert next(x for x in gp.list_groups(sess, "老闆") if x.id == gid).extra_traders == []
