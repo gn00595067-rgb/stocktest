@@ -34,7 +34,7 @@ from services.price_service import get_quotes_cached, fetch_stock_list_cached, c
 from services.trade_fees import fees_for_trade, daytrade_capacity
 from services.prefs import resolve_default_trader
 from services.trader_service import (
-    list_trader_names, all_trader_names, ensure_traders_seeded, add_trader, trader_discounts, trader_fee_rate, discount_label,
+    list_trader_names, all_trader_names, ensure_traders_seeded, add_trader, rename_trader, trader_discounts, trader_fee_rate, discount_label,
 )
 from services.position_cost import compute_position_and_cost_by_stock
 from services.pledge_service import load_pledges, save_pledge, pledge_sell_warning, pledge_label
@@ -242,6 +242,18 @@ def _group_form(owner: str, group_id, trader_opts: list, default_trader: str):
     new_person = ""
     if person == _NEW_PERSON:
         new_person = st.text_input("新的人名", placeholder="例：小孩、王小姐", max_chars=50).strip()
+    if g and is_admin() and person == g.trader:
+        # 同一個人改名（Elsa 2026-11-04：陳小姐→美美）：上面下拉是「換成別人」，交易不會跟過去
+        with st.expander(f"✏️ 幫「{g.trader}」改名字"):
+            st.caption("同一個人換名字用這裡：交易、手續費折數、質押、分頁、權限綁定全部跟著改，數字不變。"
+                       "上面下拉選別人＝這個分頁改看別人的帳，交易不會跟過去。")
+            rn = st.text_input("新的名字", max_chars=50, key=f"yh_rename_{g.id}").strip()
+            if st.button("改名", key=f"yh_rename_btn_{g.id}", disabled=not rn):
+                ok, msg = rename_trader(g.trader, rn)
+                if ok:
+                    st.session_state["last_user"] = rn
+                    st.rerun()   # 整頁：分頁、持股、下拉選項都換成新名字
+                st.error(msg)
     kind = st.radio("分頁類型", [_KIND_FULL, _KIND_FILTER], horizontal=True,
                     index=0 if (g is None or g.is_full) else 1,
                     format_func={_KIND_FULL: "這個人的全部帳", _KIND_FILTER: "只看某段日期／某些股票"}.get)

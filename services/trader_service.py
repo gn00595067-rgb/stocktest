@@ -165,3 +165,59 @@ def discount_label(d: Optional[float]) -> str:
     from services.trade_fees import DEFAULT_DISCOUNT
     d = d or DEFAULT_DISCOUNT
     return f"{d * 10:g} 折"
+
+
+# ---------- 買賣人改名（docs/specs/買賣人改名.md） ----------
+# (表, 欄位, 這張表是不是第一次用到才建、可能還不存在)
+_RENAME_COLUMNS = [
+    ("trades", '"user"', False),
+    ("cashflows", '"user"', False),
+    ("traders", "name", False),
+    ("user_trader_bindings", "trader_name", False),
+    ("portfolio_groups", "trader", False),
+    ("manual_figures", "trader", False),
+    ("pledges", "trader", True),
+    ("trade_refs", '"user"', True),
+]
+
+
+def rename_trader(old: str, new: str, session=None) -> Tuple[bool, str]:
+    """同一個人改名：交易、主檔（含手續費折數）、權限綁定、分頁、手填數字、質押、書號全部改成新名字。
+
+    新名字已經有人用就擋下（那是合併兩個人，不是改名）。全部在同一個交易裡，失敗一起還原。
+    session 給測試用；沒給就自己開、自己關。
+    """
+    from sqlalchemy import inspect, text
+
+    old, new = (old or "").strip(), (new or "").strip()
+    if not new:
+        return False, "請輸入新的名字"
+    if len(new) > 50:
+        return False, "名稱過長（上限 50 字）"
+    if new == old:
+        return False, "新名字跟原本一樣"
+    own = session is None
+    sess = session or get_session()
+    try:
+        if sess.query(Trader.id).filter(Trader.name == new).first() is not None \
+                or sess.query(Trade.id).filter(Trade.user == new).first() is not None:
+            return False, f"「{new}」已經有人用了；這是把兩個人合併，不是改名，請換一個名字"
+        conn = sess.connection()   # 用 session 自己的連線：試算表模式另開連線會 rollback 掉未 commit 的改動
+        insp = inspect(conn)
+        n = {}
+        for table, col, optional in _RENAME_COLUMNS:
+            if optional and not insp.has_table(table):
+                continue
+            n[table] = conn.execute(text(f"UPDATE {table} SET {col} = :new WHERE {col} = :old"),
+                                    {"new": new, "old": old}).rowcount
+        conn.execute(text("UPDATE portfolio_groups SET name = :new WHERE trader = :new AND name = :old"),
+                     {"new": new, "old": old})
+        sess.commit()
+        clear_fee_discount_cache()
+        return True, f"已把「{old}」改成「{new}」（交易 {n.get('trades', 0)} 筆、分頁 {n.get('portfolio_groups', 0)} 個一起改）"
+    except Exception as e:
+        sess.rollback()
+        return False, str(e)
+    finally:
+        if own:
+            sess.close()
