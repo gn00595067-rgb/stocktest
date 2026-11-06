@@ -249,10 +249,12 @@ class TwseMisProvider(PriceProvider):
 
     def _parse(self, m: dict) -> Optional[dict]:
         z = self._f(m.get("z"))
-        if z is None:  # 尚無成交價，改用最佳買價→賣價→昨收
-            b = (m.get("b") or "").split("_")[0]
-            a = (m.get("a") or "").split("_")[0]
-            z = self._f(b) or self._f(a) or self._f(m.get("y"))
+        if z is None:  # 尚無成交價（收盤後常是 "-"）：改用參考成交價→最佳買價→最佳賣價→昨收
+            # 五檔第一格可能是 0.0000（市價單）：跌停鎖死時賣價是「0_2310_2315…」，要跳過 0 才拿得到跌停價，
+            # 不然會一路退回昨收，畫面變成股價沒更新、漲跌 0（11/06 奇鋐、穩懋）
+            def _first(levels):
+                return next((v for v in (self._f(x) for x in str(levels or "").split("_")) if v), None)
+            z = self._f(m.get("pz")) or _first(m.get("b")) or _first(m.get("a")) or self._f(m.get("y"))
         if z is None:
             return None
         y = self._f(m.get("y")) or z

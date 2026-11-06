@@ -39,3 +39,11 @@ def test_parse_no_trade_no_bid_uses_prev_close():
 def test_parse_invalid_returns_none():
     p = TwseMisProvider()
     assert p._parse({"c": "9999", "z": "-", "y": None, "b": "", "a": ""}) is None
+
+
+def test_parse_limit_down_locked_skips_market_order_zero():
+    """跌停鎖死：沒有成交價、沒有買價，賣價第一格是 0.0000（市價單）→ 要拿到跌停價，不是昨收（11/06 奇鋐）。"""
+    p = TwseMisProvider()
+    q = p._parse({"c": "3017", "z": "-", "pz": "-", "y": "2565.0000", "b": "-",
+                  "a": "0.0000_2310.0000_2315.0000_2320.0000_2325.0000_"})
+    assert q["price"] == 2310 and q["change"] == -255
