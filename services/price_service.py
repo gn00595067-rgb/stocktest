@@ -391,7 +391,118 @@ def _fallback_quotes(stock_ids: List[str]) -> dict:
     return out
 
 
+# ---------- 收盤後改用官方收盤價（2026-11-06 秘書比對：收盤後跟 Yahoo 差 1～幾檔） ----------
+# 證交所即時（MIS）收盤後常沒有成交價，最後一筆停在 13:2x、也沒有 13:30 收盤集合競價那一筆，
+# 退回最佳買價會差一檔。收盤後改用證交所／櫃買中心公布的當日收盤價（跟 Yahoo 同一份）。
+TWSE_DAY_ALL_URL = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"   # 實際回 CSV
+TPEX_DAY_CLOSE_URL = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+OFFICIAL_RETRY_SECONDS = 600     # 還沒公布（或抓失敗）時，最快 10 分鐘再試一次
+_official = {"day": None, "twse": {}, "tpex": {}, "tried": {"twse": 0.0, "tpex": 0.0}}
+
+
+def _roc_to_date(s) -> Optional[date]:
+    """民國日期 '1151106' → date(2026, 11, 6)。"""
+    t = str(s or "").strip().replace("/", "")
+    if len(t) < 7 or not t.isdigit():
+        return None
+    try:
+        return date(int(t[:-4]) + 1911, int(t[-4:-2]), int(t[-2:]))
+    except ValueError:
+        return None
+
+
+def _px(v) -> Optional[float]:
+    try:
+        x = float(str(v).replace(",", "").strip())
+        return x if x > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_twse_day_all_csv(text: str, day: date) -> dict:
+    """證交所「每日收盤行情（全部）」CSV → {股號: 收盤價}，只取日期＝day 的列（還沒公布就回空）。
+    欄位：日期,證券代號,證券名稱,成交股數,成交金額,開盤價,最高價,最低價,收盤價,漲跌價差,成交筆數"""
+    import csv
+    import io
+    out = {}
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 9 or _roc_to_date(row[0]) != day:
+            continue
+        px = _px(row[8])
+        if px:
+            out[row[1].strip()] = px
+    return out
+
+
+def parse_tpex_close_json(rows: list, day: date) -> dict:
+    """櫃買中心「上櫃股票每日收盤行情」openapi → {股號: 收盤價}，只取日期＝day 的列。"""
+    out = {}
+    for r in rows or []:
+        if _roc_to_date(r.get("Date")) != day:
+            continue
+        px = _px(r.get("Close"))
+        if px:
+            out[str(r.get("SecuritiesCompanyCode") or "").strip()] = px
+    return out
+
+
+def _tw_now():
+    from datetime import datetime as _dt, timezone, timedelta
+    return _dt.now(timezone(timedelta(hours=8)))
+
+
+def official_closes(now_ts: Optional[float] = None) -> dict:
+    """今天（台灣時間）官方收盤價 {股號: 價}；13:31 前、假日、還沒公布都回空。整份一天抓一次，沒抓到隔 10 分鐘再試。"""
+    from datetime import datetime as _dt, timezone, timedelta, time as _t
+    tw = _dt.fromtimestamp(now_ts if now_ts is not None else time.time(), tz=timezone(timedelta(hours=8)))
+    if tw.weekday() >= 5 or tw.time() < _t(13, 31):
+        return {}
+    day = tw.date()
+    if _official["day"] != day:
+        _official.update(day=day, twse={}, tpex={}, tried={"twse": 0.0, "tpex": 0.0})
+    now = time.time()
+    import requests
+    if not _official["twse"] and now - _official["tried"]["twse"] > OFFICIAL_RETRY_SECONDS:
+        _official["tried"]["twse"] = now
+        try:
+            r = requests.get(TWSE_DAY_ALL_URL, timeout=10)
+            if r.status_code == 200:
+                _official["twse"] = parse_twse_day_all_csv(r.content.decode("utf-8-sig", errors="replace"), day)
+        except Exception as e:
+            print(f"[quotes] 證交所收盤價抓取失敗：{e}", flush=True)
+    if not _official["tpex"] and now - _official["tried"]["tpex"] > OFFICIAL_RETRY_SECONDS:
+        _official["tried"]["tpex"] = now
+        try:
+            r = requests.get(TPEX_DAY_CLOSE_URL, timeout=10)
+            if r.status_code == 200:
+                _official["tpex"] = parse_tpex_close_json(r.json(), day)
+        except Exception as e:
+            print(f"[quotes] 櫃買收盤價抓取失敗：{e}", flush=True)
+    return {**_official["tpex"], **_official["twse"]}
+
+
+def apply_official_close(sid: str, q: Optional[dict], closes: dict, day: Optional[date] = None) -> Optional[dict]:
+    """報價是今天的、而且官方收盤價已公布 → 現價換成收盤價、漲跌照昨收重算。不改原本的 dict（快取共用）。"""
+    if not q or not closes:
+        return q
+    px = closes.get(str(sid).strip())
+    if not px:
+        return q
+    day = day or _tw_now().date()
+    if q.get("data_date") and str(q["data_date"])[:8] != f"{day:%Y%m%d}":
+        return q   # 報價不是今天的（例如停牌），不要拿今天的收盤硬套
+    y = q.get("prev_close") or px
+    chg = px - y
+    return {**q, "price": _round_price(px), "change": _round_price(chg),
+            "change_pct": (chg / y * 100) if y else 0.0, "source": "official_close"}
+
+
 def get_quote_cached(stock_id: str) -> Optional[dict]:
+    q = _get_quote_cached_raw(stock_id)
+    return apply_official_close(stock_id, q, official_closes())
+
+
+def _get_quote_cached_raw(stock_id: str) -> Optional[dict]:
     now = time.time()
     hit, data = _cache_lookup(stock_id, now)
     if hit:
@@ -434,6 +545,9 @@ def get_quotes_cached(stock_ids: List[str], exchanges: Optional[dict] = None) ->
             f"查不到 {n_fail}，耗時 {time.monotonic() - t0:.1f} 秒",
             flush=True,
         )
+    closes = official_closes()
+    if closes:
+        result = {sid: apply_official_close(sid, q, closes) for sid, q in result.items()}
     return result
 
 
