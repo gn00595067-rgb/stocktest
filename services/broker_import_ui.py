@@ -20,6 +20,7 @@ from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW, SELL_STRATEGIES, STATUS_LABEL,
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
     plan_daytrade, plan_sell_matches, settlement_by_user_date, table_from_lines,
+    orphan_keyed_trades, plan_review_fix,
 )
 from services.pnl_engine import net_pnl_for_match
 from services.prefs import resolve_default_trader
@@ -155,22 +156,69 @@ def render_broker_statement_section():
             done.append(r)
     rows = sorted(done, key=lambda r: r["seq"])
 
-    # ⚠️ 要確認的組：預設不匯，勾了才匯
+    # ⚠️ 要確認的組：預設先不處理；可選「照對帳單修正手 key 的那筆」或「另外匯入」（Peggy 2026-11-06：key 錯的要修正）
     review_groups = {}
     for r in rows:
         if r["status"] == REVIEW:
             review_groups.setdefault((r["user"], r["trade_date"], r["stock_id"], r["side"]), []).append(r)
-    force = set()
+    force, fixes = set(), []   # fixes：[(組, 修正內容)]
     if review_groups:
-        st.markdown("##### ⚠️ 要確認：系統裡已經有手 key 的交易，但價格或股數對不起來（預設不匯，避免重複算）")
-        for (u, d, sid, side), grp in review_groups.items():
+        st.markdown("##### ⚠️ 要確認：系統裡已經有手 key 的交易，但價格或股數對不起來")
+        for gk, grp in review_groups.items():
+            u, d, sid, side = gk
             desc = "、".join(f"{r['price']:g} × {r['quantity']:,}" for r in grp)
-            if st.checkbox(
+            tids = grp[0].get("review_trade_ids") or []
+            opts = ["skip"] + (["fix"] if len(tids) == 1 else []) + ["import"]
+            choice = st.radio(
                 f"{u}｜{d:%m/%d} {sid} {name_by_id.get(sid, '')} {'買' if side == 'BUY' else '賣'}｜"
-                f"手 key：{grp[0]['review_with']}｜對帳單：{desc} → 仍要匯入對帳單這幾筆",
-                key=f"bs_force_{u}_{d}_{sid}_{side}",
-            ):
-                force.add((u, d, sid, side))
+                f"手 key：{grp[0]['review_with']}｜對帳單：{desc}",
+                opts, horizontal=True, key=f"bs_review_{u}_{d}_{sid}_{side}",
+                format_func={"skip": "先不處理", "fix": "✏️ 手 key 打錯了：照對帳單修正那筆",
+                             "import": "手 key 那筆是另一筆交易：對帳單照樣匯入"}.get,
+            )
+            if choice == "import":
+                force.add(gk)
+            elif choice == "fix":
+                t0 = next(t for t in ctx[u].trades if int(t.id) == tids[0])
+                fx = plan_review_fix(grp, t0)
+                fixes.append((gk, fx))
+                if fx["qty_changed"]:
+                    st.caption(f"　↳ 股數會從 {int(t0.quantity):,} 改成 {fx['quantity']:,}，這筆原本的沖銷配對會清掉、改用預設沖銷"
+                               "（要指定再到「自定沖銷設定」）。")
+        if len(review_groups) > len(fixes) + len(force):
+            st.caption("「先不處理」的組這次不匯；可以先到仿Yahoo 改手 key 的那筆，再重新上傳。")
+    fix_keys = {gk for gk, _ in fixes}
+    for r in rows:   # 選了修正的組：視同已手 key（補書號、不另外匯入）
+        gk = (r["user"], r["trade_date"], r["stock_id"], r["side"])
+        if r["status"] == REVIEW and gk in fix_keys:
+            r["claim_trade_id"] = r["review_trade_ids"][0]
+
+    # 對帳單日期內、手 key 了但對帳單裡沒有的：多半 key 錯股票／日期／買賣，勾了才刪
+    orphan_del = set()
+    orphans = [(u, t) for u in users
+               for t in orphan_keyed_trades([r for r in rows if r["user"] == u], ctx[u].trades, ctx[u].refs)]
+    if orphans:
+        with st.expander(f"⚠️ 手 key 了、但對帳單裡沒有的交易 {len(orphans)} 筆（可能 key 錯股票、日期或買賣；勾了會刪掉）",
+                         expanded=True):
+            for u, t in orphans:
+                if st.checkbox(
+                    f"{u}｜{t.trade_date:%m/%d} {t.stock_id} {name_by_id.get(str(t.stock_id).strip(), '')} "
+                    f"{'買' if str(t.side).upper() == 'BUY' else '賣'} {float(t.price):g} × {int(t.quantity or 0):,}"
+                    f"（id {t.id}）→ 刪除", key=f"bs_orphan_{t.id}"):
+                    orphan_del.add(int(t.id))
+            st.caption("不是這個證券帳戶的交易（例如別家券商）就不要勾。刪除會連同它的沖銷配對一起刪。")
+
+    # 修正／刪除先套用到記憶體裡的交易，下面配當沖、沖銷、預估損益才會照修正後的算
+    fix_by_tid = {fx["trade_id"]: fx for _gk, fx in fixes}
+    for u in users:
+        c = ctx[u]
+        drop = orphan_del | {tid for tid, fx in fix_by_tid.items() if fx["qty_changed"]}
+        c.rules = [x for x in c.rules if x[0] not in drop and x[1] not in drop]
+        c.trades = [SimpleNamespace(**{**{k: getattr(t, k) for k in ("id", "user", "stock_id", "trade_date", "side",
+                                                                   "price", "quantity", "fee", "tax", "is_daytrade")},
+                                       **({k: fix_by_tid[int(t.id)][k] for k in ("price", "quantity", "fee", "tax")}
+                                          if int(t.id) in fix_by_tid else {})})
+                    for t in c.trades if int(t.id) not in orphan_del]
 
     to_import = [r for r in rows if r["status"] == NEW
                  or (r["status"] == REVIEW and (r["user"], r["trade_date"], r["stock_id"], r["side"]) in force)]
@@ -250,6 +298,8 @@ def render_broker_statement_section():
         + (f"（{per_user_txt}）" if multi else
            f"（買 {sum(r['side'] == 'BUY' for r in to_import)}／賣 {sum(r['side'] == 'SELL' for r in to_import)}）")
         + f"、✋ 已手 key {len(keyed)}、⏭️ 已匯入過 {cnt[DUP_IMPORT]}、⚠️ 要確認 {cnt[REVIEW]}"
+        + (f"（修正 {len(fixes)} 筆手 key）" if fixes else "")
+        + (f"；刪除對帳單沒有的手 key {len(orphan_del)} 筆" if orphan_del else "")
         + (f"；當沖賣出 {n_dt_sell} 筆" if n_dt_sell else "")
         + (f"；預估這次多出已實現損益 **{pnl:+,.0f}**" if all_rules else "")
     )
@@ -280,7 +330,9 @@ def render_broker_statement_section():
         if r["status"] == DUP_IMPORT and r.get("dup_user") and r["dup_user"] != main_user:
             status += f"（{r['dup_user']}）"
         if r["status"] == REVIEW and tid is not None:
-            status += "（勾了要匯）"
+            status += "（照樣匯入）"
+        elif r["status"] == REVIEW and (r["user"], r["trade_date"], r["stock_id"], r["side"]) in fix_keys:
+            status += "（照對帳單修正手 key）"
         v = {"狀態": status}
         if split or multi:
             v["買賣人"] = r["user"]
@@ -327,11 +379,12 @@ def render_broker_statement_section():
         label = (f"確認匯入 {len(to_import)} 筆（{per_user_txt}）" if multi
                  else f"確認匯入 {len(to_import)} 筆到「{to_import[0]['user']}」")
     else:
-        label = "沒有要新增的（只補上書號）" if keyed else "沒有要匯入的"
+        label = ("沒有要新增的（只修正／補書號）" if (fixes or orphan_del)
+                 else "沒有要新增的（只補上書號）" if keyed else "沒有要匯入的")
     # 按鈕旁列出每人每天的交割款（整份對帳單、不分狀態），上傳時順便跟券商 App 對一下
     settle = settlement_by_user_date(rows)
     b1, b2 = st.columns([1, 2], vertical_alignment="center")
-    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed))
+    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed or fixes or orphan_del))
     b2.markdown("　".join(
         f"💰 {f'{u} ' if len({k[0] for k in settle}) > 1 else ''}{d:%m/%d} 交割款："
         + (f"**應付 {-v:,.0f}**" if v < 0 else f"**應收 {v:,.0f}**")
@@ -365,6 +418,23 @@ def render_broker_statement_section():
             refs_new += [(r["trade_date"], r["order_no"], r["claim_trade_id"], "backfill")
                          for r in keyed if r["user"] == u]
             trs.add_refs(sess, u, refs_new, batch_id)
+        for (u, _d, _sid, _side), fx in fixes:   # 照對帳單修正手 key 的那筆（同一個交易裡）
+            t = sess.get(Trade, fx["trade_id"])
+            if t is not None:
+                t.price, t.quantity, t.fee, t.tax = fx["price"], fx["quantity"], fx["fee"], fx["tax"]
+                if fx["qty_changed"]:
+                    sess.query(CustomMatchRule).filter((CustomMatchRule.sell_trade_id == t.id)
+                                                       | (CustomMatchRule.buy_trade_id == t.id)).delete()
+        fix_refs = [(r["user"], r["trade_date"], r["order_no"], r["claim_trade_id"]) for r in rows
+                    if r["status"] == REVIEW and (r["user"], r["trade_date"], r["stock_id"], r["side"]) in fix_keys]
+        for u in users:
+            mine = [(d, o, tid, "fix") for uu, d, o, tid in fix_refs if uu == u]
+            if mine:
+                trs.add_refs(sess, u, mine, batch_id)
+        for tid in orphan_del:
+            sess.query(CustomMatchRule).filter((CustomMatchRule.sell_trade_id == tid)
+                                               | (CustomMatchRule.buy_trade_id == tid)).delete()
+            sess.query(Trade).filter(Trade.id == tid).delete()
         if do_fee:
             for upd in fee_updates:
                 t = sess.get(Trade, upd["trade_id"])
@@ -376,6 +446,8 @@ def render_broker_statement_section():
             f"已匯入 {len(to_import)} 筆" + (f"（{per_user_txt}）" if multi else f"到「{to_import[0]['user']}」" if to_import else "")
             + (f"、補上書號 {len(keyed)} 筆" if keyed else "")
             + (f"、更新手續費／稅 {len(fee_updates)} 筆" if do_fee else "")
+            + (f"、照對帳單修正手 key {len(fixes)} 筆" if fixes else "")
+            + (f"、刪除對帳單沒有的手 key {len(orphan_del)} 筆" if orphan_del else "")
             + "。下面是同一個檔重新檢查的結果，應該全部變成「已匯入過／已手 key」。"
         )
         st.rerun()

@@ -7,7 +7,7 @@ from typing import Optional
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW,
     assign_tmp_ids, build_name_map, classify_rows, parse_statement, plan_daytrade, plan_sell_matches,
-    daytrade_cap, table_from_lines,
+    daytrade_cap, table_from_lines, plan_review_fix, orphan_keyed_trades,
 )
 
 NAMES = build_name_map([("2303", "聯電"), ("2313", "華通"), ("3037", "欣興"), ("4958", "臻鼎-KY"),
@@ -273,3 +273,21 @@ def test_settlement_by_user_date_sums_net_regardless_of_status():
     s = settlement_by_user_date(rows)
     assert s[("P", D30)] == -109038 + 49800
     assert s[("P", D29)] == -108038
+
+
+def test_review_fix_and_orphans():
+    """盤中先 key、盤後匯入（Peggy 11/06 需求）：key 錯價格的可以照對帳單修正；對帳單沒有的手 key 列出來。"""
+    rows = _rows(("2303", D29, "BUY", 115.5, 1000, "A1", 164, 0), ("2303", D29, "BUY", 116, 2000, "A2", 330, 0),
+                 ("2330", D29, "BUY", 1000, 1000, "A3", 1425, 0))
+    trades = [T(1, "2303", D29, "BUY", 151.5, 3000),    # 打錯價格（股數合計對）
+              T(2, "2317", D29, "BUY", 200, 1000),      # 對帳單沒有：打錯股票
+              T(3, "2303", D28, "BUY", 100, 1000)]      # 別天的：不算
+    out = classify_rows(rows, trades, [])
+    assert _status(out) == [REVIEW, REVIEW, NEW]
+    assert out[0]["review_trade_ids"] == [1]
+    fix = plan_review_fix(out[:2], trades[0])
+    assert fix["quantity"] == 3000 and abs(fix["price"] - (115.5 * 1000 + 116 * 2000) / 3000) < 1e-3
+    assert fix["fee"] == 494 and fix["qty_changed"] is False and fix["old"] == "151.5 × 3,000"
+    assert [t.id for t in orphan_keyed_trades(out, trades, [])] == [2]
+    # 有書號的（之前匯入的）不算孤兒
+    assert orphan_keyed_trades(out, trades, [(D29, "Z9", 2)]) == []

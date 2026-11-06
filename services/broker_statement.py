@@ -263,8 +263,32 @@ def classify_rows(rows: List[dict], trades: List, refs: List[Tuple[date, str, in
         # 3) 對不起來：寧可停下來讓人看，也不要自動重複算
         desc = "、".join(f"{float(t.price):g} × {int(t.quantity or 0):,}" for t in left)
         for r in rest:
-            r.update(status=REVIEW, review_with=desc)
+            r.update(status=REVIEW, review_with=desc, review_trade_ids=[int(t.id) for t in left])
     return out
+
+
+def plan_review_fix(grp: List[dict], trade) -> dict:
+    """「要確認」那組選「以對帳單修正手 key 的」：把那一筆手 key 改成對帳單這幾列的合計（同合併 key 的口徑：股數加總、加權均價）。"""
+    qty = sum(r["quantity"] for r in grp)
+    price = round(sum(r["price"] * r["quantity"] for r in grp) / qty, 4) if qty else 0.0
+    old_qty = int(trade.quantity or 0)
+    return {"trade_id": int(trade.id), "price": price, "quantity": qty,
+            "fee": sum(r["fee"] for r in grp), "tax": sum(r["tax"] for r in grp),
+            "old": f"{float(trade.price):g} × {old_qty:,}", "qty_changed": qty != old_qty}
+
+
+def orphan_keyed_trades(rows: List[dict], trades: List, refs: List[Tuple[date, str, int]]) -> List:
+    """對帳單日期內、手 key 了但對帳單裡找不到的交易（沒書號、沒被任何一列認領、也不在「要確認」裡）。
+
+    多半是 key 錯股票／日期／買賣，或根本不是這個帳戶的；只列出來給人決定要不要刪，不自動刪。
+    rows：這個人 classify_rows 之後的列。
+    """
+    days = {r["trade_date"] for r in rows}
+    used = {r.get("claim_trade_id") for r in rows} | {i for r in rows for i in (r.get("review_trade_ids") or [])}
+    with_ref = {tid for _d0, _o, tid in refs}
+    return [t for t in sorted(trades, key=lambda x: int(x.id))
+            if _d(t.trade_date) in days and _side(t) in ("BUY", "SELL")
+            and int(t.id) not in used and int(t.id) not in with_ref]
 
 
 def mark_cross_user_dups(rows: List[dict], live_refs: List[Tuple[date, str, str, str, str]]) -> List[dict]:
