@@ -55,7 +55,8 @@ if not hasattr(PortfolioGroup, "owner"):   # 資料模型（db.models）是舊�
     st.error("系統剛更新，資料表需要重新載入。請管理者到 Streamlit Cloud「Manage app → Reboot app」重開一次。")
     st.stop()
 
-st.set_page_config(page_title="股票輸入（仿Yahoo）", layout="wide")
+# 董事長 2026-11-06（iPad）：側邊欄平常收起來，不要擋持股表
+st.set_page_config(page_title="股票輸入（仿Yahoo）", layout="wide", initial_sidebar_state="collapsed")
 _PAGE_T0 = time.monotonic()
 inject_mobile_css()
 ensure_bootstrap_admin()
@@ -64,38 +65,50 @@ render_auth_sidebar()
 
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
 # 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
-_DETAIL_COLS = [1.1, 0.95, 0.95, 0.95, 0.8, 0.8, 1.2, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
-_FORM_COLS = [1.1, 0.95, 0.95, 0.95, 0.8, 0.8, 1.2, 0.7]           # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
+_DETAIL_COLS = [1.25, 1.25, 0.95, 0.95, 0.55, 0.55, 1.1, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
+_FORM_COLS = [1.25, 1.25, 0.95, 0.95, 0.55, 0.55, 1.1, 0.7]           # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
 _ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 8 欄合成一個 HTML grid（.yh-grid）
 
 st.markdown("""
 <style>
-/* 分頁列：像 Yahoo 的文字分頁＋底線 */
-.st-key-yh_tabs div[role="radiogroup"] { gap: 1.6rem; flex-wrap: wrap; }
+/* 董事長 2026-11-06：上方空間盡量小，持股表多露幾列（Streamlit 預設頂端留白 6rem） */
+.block-container { padding-top: 2.2rem !important; }
+/* 手機（Streamlit 欄位改上下排）時共用表頭沒意義，藏起來 */
+@media (max-width: 640px) { [class*="st-key-yh_exphdr_"] { display: none; } }
+/* 展開區輸入框小一點：iPad 直放時日期、買賣不被切掉 */
+[class*="st-key-yh_exp_"] input { font-size: .9rem; padding-left: .3rem; padding-right: .3rem; }
+[class*="st-key-yh_exp_"] [data-baseweb="select"] > div { padding-left: .2rem; font-size: .9rem; }
+/* 分頁列：像 Yahoo 的文字分頁＋底線；小字、只排一列，太多就左右滑 */
+.st-key-yh_tabs [data-testid="stWidgetLabel"] { display: none; }
+.st-key-yh_tabs div[role="radiogroup"] { gap: 1.1rem; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
 .st-key-yh_tabs div[role="radiogroup"] label > div:first-child { display: none; }
-.st-key-yh_tabs div[role="radiogroup"] label { padding: 0.25rem 0 0.4rem 0; border-bottom: 3px solid transparent; }
-.st-key-yh_tabs div[role="radiogroup"] label p { font-size: 1.15rem; font-weight: 600; color: #555; }
+.st-key-yh_tabs div[role="radiogroup"] label { padding: 0.1rem 0 0.3rem 0; border-bottom: 3px solid transparent;
+    flex: 0 0 auto; margin: 0; }
+.st-key-yh_tabs div[role="radiogroup"] label p { font-size: .98rem; font-weight: 600; color: #555; white-space: nowrap; }
 .st-key-yh_tabs div[role="radiogroup"] label:has(input:checked) { border-bottom-color: #222; }
 .st-key-yh_tabs div[role="radiogroup"] label:has(input:checked) p { color: #111; }
 .yh-card { border: 1px solid #e5e5e5; border-radius: 10px; display: grid;
            grid-template-columns: 1.3fr 1fr 1fr; overflow: hidden; }
 /* 總覽卡：三格等高、標題在上數字在下；數字不換行、字級隨寬度縮放，窄螢幕改成上下排 */
-.yh-card .cell { padding: 1rem 1.5rem; min-width: 0; }
+.yh-card .cell { padding: .5rem 1rem; min-width: 0; }
 .yh-card .cell + .cell { border-left: 1px solid #eee; }
-.yh-card .lbl { color: #777; font-size: .9rem; margin-bottom: .25rem; white-space: nowrap; }
+.yh-card .lbl { color: #777; font-size: .8rem; margin-bottom: .1rem; white-space: nowrap; }
 .yh-card .val { font-weight: 800; line-height: 1.15; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.yh-card .big { font-size: clamp(1.5rem, 2.6vw, 2.3rem); color: #111; }
-.yh-card .mid { font-size: clamp(1.2rem, 1.9vw, 1.65rem); }
+.yh-card .big { font-size: clamp(1.25rem, 2.2vw, 1.8rem); color: #111; }
+.yh-card .mid { font-size: clamp(1.05rem, 1.6vw, 1.4rem); }
 .yh-card .unit, .yh-card .pct { font-size: .9rem; font-weight: 600; margin-left: .3rem; }
 .yh-card .unit { color: #999; }
 .yh-cardwrap { container-type: inline-size; }
-@container (max-width: 820px) {   /* 中等寬：市值一整行，兩個損益並排 */
+@container (max-width: 820px) {   /* 中等寬（iPad 直放）：仍三格一列，％ 換到下一行 */
+  .yh-card .cell { padding: .45rem .7rem; }
+  .yh-card .pct { display: block; margin-left: 0; }
+}
+@container (max-width: 560px) {   /* 再窄：市值一整行，兩個損益並排 */
   .yh-card { grid-template-columns: 1fr 1fr; }
   .yh-card .cell:first-child { grid-column: 1 / -1; border-bottom: 1px solid #eee; }
   .yh-card .cell:nth-child(2) { border-left: none; }
-  .yh-card .cell { padding: .8rem 1.1rem; }
 }
-@container (max-width: 480px) {   /* 手機：全部上下排 */
+@container (max-width: 360px) {   /* 很窄的手機：全部上下排 */
   .yh-card { grid-template-columns: 1fr; }
   .yh-card .cell + .cell { border-left: none; }
   .yh-card .cell:nth-child(3) { border-top: 1px solid #eee; }
@@ -103,6 +116,10 @@ st.markdown("""
 /* 按鈕、表頭、數字一律不折行（折行會讓列高不一、看起來歪） */
 .st-key-yh_new_group button p, .st-key-yh_refresh button p, .st-key-yh_add_stock button p,
 .st-key-yh_edit_group button p, .st-key-yh_del_group button p { white-space: nowrap; }
+.st-key-yh_new_group button { min-height: 0; padding: .15rem .6rem; }
+.st-key-yh_new_group button p { font-size: .85rem; }
+.st-key-yh_avg_ex_fee label p { white-space: nowrap; font-size: .85rem; }
+.st-key-yh_refresh button { min-height: 0; padding: .2rem .7rem; }
 .yh-th, .yh-td { white-space: nowrap; }
 .yh-grid { font-size: .92rem; }
 .yh-grid .yh-th { font-size: .82rem; }
@@ -621,14 +638,18 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
     open_key = f"yh_open_{group.trader}"   # 展開狀態跟著分頁的主要的人（同持股表）
     multi_person = group.is_multi
     if multi_person:   # 多人分頁：輸入、沖銷、折數、質押都是單人的事，先選這次給誰
-        who = st.radio("這次輸入給誰", group.traders, horizontal=True, key=f"yh_who_{group.id}_{sid}")
+        who = st.radio("這次輸入給誰", group.traders, horizontal=True, key=f"yh_who_{group.id}_{sid}",
+                       label_visibility="collapsed", format_func=lambda p: f"輸入給 {p}")
         group = group.for_person(who)
     holding_qty = int(holding_by.get(group.trader, 0))
     pledged = int(pledged_by.get(group.trader, 0))
     price_now = row["price"] or 0.0
-    _pledge_editor(group.trader, sid, holding_qty, pledged)
+    # 共用表頭：新增列與交易明細同一組欄位（像 Yahoo）
+    hdr = st.container(key=f"yh_exphdr_{sid}").columns(_DETAIL_COLS)
+    for c, lab in zip(hdr, ["交易日期", "買入/賣出", '交易股數<span class="u">股</span>',
+                            '交易股價<span class="u">元</span>', "手續費", "稅", "金額／市值"]):
+        c.markdown(f'<div class="yh-th c">{lab}</div>', unsafe_allow_html=True)
     # 新增交易（送出後換一組 key，輸入框自動清空）
-    st.markdown("**新增交易**")
     n = st.session_state.get(f"yh_form_n_{sid}", 0)
     entry_date = st.session_state.get("yh_entry_date") or gp.tw_today()   # 上方「輸入日期」（fragment 重跑也讀得到）
     k = f"yh_new_{sid}_{n}_{entry_date:%Y%m%d}"   # 日期也進 key：上方改了輸入日期，表單日期跟著換
@@ -694,9 +715,6 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
             sold_before += int(qty)
         entries.append(dict(d=d, qty=qty, price=price, is_dt=is_dt, fee=fee, tax=tax, errors=errors, warns=warns))
     side_lb = "買入" if side == "BUY" else "賣出"
-    if st.button(f"＋ 再加一筆{side_lb}", key=f"{k}_addrow", help=f"一次輸入多筆{side_lb}，最後一起送出"):
-        row_ids.append(max(row_ids) + 1)
-        _rerun_fragment()
 
     multi = len(entries) > 1
     e0 = entries[0]
@@ -735,7 +753,12 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
                  f"{int(e0['qty']):,} 股 @ {float(e0['price']):,.2f}（{e0['d']:%m/%d}）")
     else:
         label = "✅ 新增交易"
-    if st.button(label, key=f"{k}_go", type="primary", disabled=not can_send):
+    # 「再加一筆」和「確認新增」同一列，放在沖銷配對、提醒下面
+    act_add, act_go = st.columns([1, 3], vertical_alignment="center")
+    if act_add.button(f"＋ 再加一筆{side_lb}", key=f"{k}_addrow", help=f"一次輸入多筆{side_lb}，最後一起送出"):
+        row_ids.append(max(row_ids) + 1)
+        _rerun_fragment()
+    if act_go.button(label, key=f"{k}_go", type="primary", disabled=not can_send):
         sig = (group.trader, sid, side, tuple((str(e["d"]), int(e["qty"]), float(e["price"])) for e in entries))
         last = st.session_state.get("yh_last_submit")
         if last and last[0] == sig and time.monotonic() - last[1] < 2.0:
@@ -772,13 +795,8 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
                                             f"（{sid} {_nm}，{e0['d']:%m/%d}）")
             st.rerun()   # 整頁：持股、均價、總覽一起更新
 
-    st.markdown("**交易明細**")
+    st.markdown('<hr style="margin:.2rem 0;border:none;border-top:1px solid #eee">', unsafe_allow_html=True)
     _dcols = _DETAIL_COLS
-    hdr = st.columns(_dcols)
-    for c, lab, left in zip(hdr, ["交易日期", "買入/賣出", '交易股數<span class="u">股</span>',
-                                  '交易股價<span class="u">元</span>', "手續費", "稅", "市值"],
-                            [1, 1, 0, 0, 0, 0, 0]):
-        c.markdown(f'<div class="yh-th c">{lab}</div>', unsafe_allow_html=True)
     pend_key = f"yh_del_pending_{sid}"
     edit_key = f"yh_edit_pending_{sid}"
     _all = sorted(stock_trades, key=lambda x: (x.trade_date, x.id), reverse=True)
@@ -832,6 +850,9 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
         if st.button("收起，只看最近 10 筆" if _show_all else f"顯示全部 {len(_all)} 筆交易", key=f"yh_more_{sid}"):
             st.session_state[f"yh_showall_{sid}"] = not _show_all
             _rerun_fragment()
+    # 質押不常改（董事長 2026-11-06：輸入區要像 Yahoo 簡單），收在最下面
+    with st.expander(f"🏦 質押{'中 ' + format(pledged, ',') + ' 股' if pledged else ''}（{group.trader}）"):
+        _pledge_editor(group.trader, sid, holding_qty, pledged)
 
 
 class _NS:
@@ -873,14 +894,14 @@ if st.session_state.get(gkey) not in ids:
     st.session_state[gkey] = ids[0]
 # Peggy 2026-10-22：新增股票／搜尋／分頁設定／輸入日期平常收起來（有需要再點開），分頁列緊貼總覽卡，
 # 讓下面持股表多露幾檔。收合區要用到下面選定的分頁，所以先佔位置、選完分頁再填內容。
-_tools = st.expander("⚙️ 新增股票・搜尋・編輯分頁・輸入日期", expanded=False)
-tc, nc = st.columns([6, 1.1], vertical_alignment="center")
+tc, nc = st.columns([7, 1], vertical_alignment="center")
 with tc:
     with st.container(key="yh_tabs"):
         gid = st.radio("分頁", ids, key=gkey, horizontal=True, label_visibility="collapsed",
                        format_func=lambda i, _n={g.id: g.name for g in groups}: _n.get(i, str(i)))
-if nc.button("＋ 新增分頁", key="yh_new_group"):
+if nc.button("＋ 分頁", key="yh_new_group", help="新增分頁"):
     _dlg_new_group(owner, trader_opts, _def)
+_tools = st.expander("⚙️ 新增股票・搜尋・編輯分頁・輸入日期", expanded=False)
 group = next(g for g in groups if g.id == gid)
 trader = group.trader                      # 這個分頁是誰的帳：輸入的交易記在這個人名下
 st.session_state["last_user"] = trader
@@ -967,21 +988,20 @@ st.markdown(f"""
     <div class="val mid {_cls(summary['unrealized'])}">{_arrow(summary['unrealized'])}{abs(summary['unrealized']):,.2f}<span class="pct">{f"({abs(up):.2f}%)" if up is not None else ""}</span></div></div>
 </div></div>
 """, unsafe_allow_html=True)
-rc1, rc2 = st.columns([5, 1], vertical_alignment="center")
+rc1, rc_fee, rc2 = st.columns([3.4, 1.5, 1.1], vertical_alignment="center")
 from datetime import datetime, timezone, timedelta
 _tw = datetime.now(timezone(timedelta(hours=8)))
 _live = _tw_market_open()
 _open_key = f"yh_open_{trader}"
 # 展開／收合只重跑持股表、不會重畫這行字，所以暫停條件直接寫在說明裡
-_ar_note = (f"盤中每 {AUTO_REFRESH_SEC} 秒自動更新股價（展開某檔輸入時暫停）" if _live
-            else "已收盤，股價不再自動更新")
-rc1.caption(f"畫面更新：{_tw:%H:%M:%S}（台灣時間）・紅▲賺、綠▼賠・{_ar_note}")
+_ar_note = (f"盤中每 {AUTO_REFRESH_SEC} 秒自動更新（展開輸入時暫停）" if _live else "已收盤")
+rc1.caption(f"{_tw:%H:%M:%S} 更新・{_ar_note}")
 if rc2.button("🔄 更新股價", key="yh_refresh"):
     clear_quote_cache()
     st.rerun()
 
-# 放在持股表上方自己一列：跟說明文字擠同一列時，窄畫面標籤會被折成好幾行
-st.toggle("均價不含手續費", key="yh_avg_ex_fee",
+# 跟更新時間同一列（標籤小字不折行，見 CSS）
+rc_fee.toggle("均價不含手續費", key="yh_avg_ex_fee",
           help="打開：「持股成本均價」只算買進價格（不含買進手續費），方便跟券商 App 的成交均價對。"
                "底價、未實現損益仍含手續費，不受影響。")
 
