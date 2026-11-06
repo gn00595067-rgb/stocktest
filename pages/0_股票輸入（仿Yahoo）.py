@@ -1073,8 +1073,11 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
             # 質借：股數下加一行「質押 X・可動用 Y」（可動用以這個人全部持股計，不受分頁日期影響）
             _hold = {p: int(pos.get(sid, {}).get("qty", 0)) for p, pos in pos_by_person.items()}
             _pled = {p: int((pledges_by or {}).get(p, {}).get(sid, 0)) for p in pos_by_person}
-            _pl = "".join(f'<span class="l2 pledge">{x}</span>'
-                          for x in pledge_label(sum(_hold.values()), sum(_pled.values())))
+            _lines = pledge_label(sum(_hold.values()), sum(_pled.values()))
+            if not group.is_full:
+                # 短線等「只看某段日期／某些股票」的分頁：持股只算分頁內，跟全部持股算的可動用對不起來，只留質押（11/06 回饋）
+                _lines = _lines[:1]
+            _pl = "".join(f'<span class="l2 pledge">{x}</span>' for x in _lines)
             c1.markdown(
                 '<div class="yh-grid">'
                 f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span></div>'
