@@ -41,10 +41,11 @@ SELL_STRATEGIES = {
 
 MERGE_PRICE_TOL = 0.005   # 合併 key 的均價容許誤差
 
-REQUIRED_COLUMNS = ["股名", "日期", "成交股數", "淨收付", "成交單價", "委託書號"]
-# 各家證券 App 欄名不同（國泰：淨收付金額、成交價），讀進來先統一成上面的名稱
-COLUMN_ALIASES = {"淨收付金額": "淨收付", "成交價": "成交單價"}
-HEADER_KEYS = {"股名", "日期", "委託書號"}   # 有這三欄的那一列才是表頭
+REQUIRED_COLUMNS = ["股名", "日期", "成交股數", "淨收付", "成交單價"]
+# 各家證券 App 欄名不同（國泰：淨收付金額、成交價；另一家：成交日期、股票名稱、股數），讀進來先統一成上面的名稱
+COLUMN_ALIASES = {"淨收付金額": "淨收付", "成交價": "成交單價",
+                  "成交日期": "日期", "股票名稱": "股名", "股數": "成交股數"}
+HEADER_KEYS = {"股名", "日期", "成交股數"}   # （套別名後）有這三欄的那一列才是表頭
 HEADER_SCAN_LINES = 20
 
 
@@ -72,12 +73,15 @@ def table_from_lines(lines: List[List[str]]) -> Tuple[List[dict], int]:
     表頭不一定在第 1 列（國泰會先放一行「根據您篩選後的結果…」），往下找含「股名」「日期」「委託書號」的那列；
     找不到就用第 1 列，交給 parse_statement 回報缺哪些欄。整列空白的略過。
     """
-    lines = [[str(c or "").strip() for c in ln] for ln in lines]
-    hi = next((i for i, ln in enumerate(lines[:HEADER_SCAN_LINES]) if HEADER_KEYS <= set(ln)), 0)
+    lines = [[str(c or "").strip() for c in ln] for ln in lines]   # strip 也去掉表頭欄名前的 tab
+
+    def aliased(header):
+        return [COLUMN_ALIASES[h] if h in COLUMN_ALIASES and COLUMN_ALIASES[h] not in header else h for h in header]
+
+    hi = next((i for i, ln in enumerate(lines[:HEADER_SCAN_LINES]) if HEADER_KEYS <= set(aliased(ln))), 0)
     if not lines:
         return [], 2
-    header = lines[hi]
-    header = [COLUMN_ALIASES[h] if h in COLUMN_ALIASES and COLUMN_ALIASES[h] not in header else h for h in header]
+    header = aliased(lines[hi])
     records = [dict(zip(header, ln)) for ln in lines[hi + 1:] if any(ln)]
     return records, hi + 2
 
@@ -114,17 +118,44 @@ def _cell(rec: dict, col: str) -> str:
     return "" if s.lower() == "nan" else s
 
 
+NAME_WITH_ID = re.compile(r"^(.*?)\s*[(（]\s*([0-9A-Za-z]+)\s*[)）]$")   # 南亞(1303)
+
+
+def has_order_no(records: List[dict]) -> bool:
+    """這份檔有沒有委託書號欄。沒有的（另一家券商格式）改用內容比對防重複，見規格 2026-11-09 追加。"""
+    return bool(records) and "委託書號" in records[0]
+
+
+def same_day_dup_counts(rows: List[dict]) -> Dict[tuple, int]:
+    """檔內同日、同股、同買賣、同價、同股數的列各有幾筆（>1 的是「同日相同」，分開成交是正常的，照匯但要顯示）。"""
+    out: Dict[tuple, int] = defaultdict(int)
+    for r in rows:
+        out[content_key(r)] += 1
+    return dict(out)
+
+
+def content_key(r) -> tuple:
+    """沒有書號時判斷「同一筆交易」的內容：日期、股號、買賣、價格、股數。r 可以是對帳單列（dict）或交易物件。"""
+    if isinstance(r, dict):
+        return (r["trade_date"], r["stock_id"], r["side"], round(float(r["price"]), 4), int(r["quantity"]))
+    return (_d(r.trade_date), str(r.stock_id).strip(), _side(r), round(float(r.price or 0), 4), int(r.quantity or 0))
+
+
 def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
-                    first_line: int = 2) -> Tuple[List[dict], List[Tuple[int, str]]]:
+                    first_line: int = 2, master_ids: Optional[Iterable[str]] = None) -> Tuple[List[dict], List[Tuple[int, str]]]:
     """records：CSV 每列一個 dict（欄名→文字，用 table_from_lines 讀）；first_line：第一筆在檔案的列號。
+    master_ids：主檔所有股號；股名帶代號（南亞(1303)）時用來確認股號存在。
 
     檔案數字一律照收（證券 App 匯出，不檢核、不重算手續費）。回傳 (rows 依處理順序排好, errors[(列號, 原因)])。
+    沒有委託書號欄的檔：order_no 一律空字串、同日完全相同的列不去重（分開成交是正常的）。
     """
     if not records:
         return [], [(0, "檔案沒有資料")]
     missing = [c for c in REQUIRED_COLUMNS if c not in records[0]]
     if missing:
         return [], [(0, f"不是證券 App 的成交明細格式：缺少欄位「{'」「'.join(missing)}」")]
+    with_order = has_order_no(records)
+    master_ids = {str(x) for x in (master_ids or [])}
     rows, errors, seen = [], [], set()
     for i, rec in enumerate(records):
         row_no = i + first_line
@@ -133,7 +164,19 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
         if cur and cur != "台幣":
             errors.append((row_no, f"{name}：幣別是「{cur}」，只匯入台幣交易"))
             continue
-        ids = name_map.get(_norm_name(name), [])
+        kind = _cell(rec, "類別")
+        if kind and not kind.startswith("現股"):
+            errors.append((row_no, f"{name}：類別是「{kind}」，只匯入現股買賣（融資融券請先手 key）"))
+            continue
+        m = NAME_WITH_ID.match(name)
+        if m:   # 股名帶代號（南亞(1303)）：代號直接用，不靠股名對主檔
+            name, sid = m.group(1).strip(), m.group(2).upper()
+            ids = [sid] if sid in master_ids else []
+            if not ids:
+                errors.append((row_no, f"主檔找不到代號 {sid}（{name}），請先到「主檔設定」補上這檔股票"))
+                continue
+        else:
+            ids = name_map.get(_norm_name(name), [])
         if not ids:
             errors.append((row_no, f"主檔找不到「{name}」，請先到「主檔設定」補上這檔股票"))
             continue
@@ -149,10 +192,13 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
             errors.append((row_no, f"{name}：股數、價格或淨收付是空的"))
             continue
         order_no = _cell(rec, "委託書號")
-        if not order_no:
+        if with_order and not order_no:
             errors.append((row_no, f"{name}：沒有委託書號"))
             continue
-        side = "BUY" if net < 0 else "SELL"   # 淨收付：付錢＝買進、收錢＝賣出
+        if "買" in kind or "賣" in kind:
+            side = "BUY" if "買" in kind else "SELL"
+        else:
+            side = "BUY" if net < 0 else "SELL"   # 淨收付：付錢＝買進、收錢＝賣出
         row = {
             "row_no": row_no, "stock_id": ids[0], "stock_name": name, "trade_date": d, "side": side,
             "price": float(price), "quantity": int(round(qty)),
@@ -161,7 +207,7 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
             "net": float(net),   # 淨收付（負＝付、正＝收），加總就是券商的交割款
         }
         key = (d, order_no, row["stock_id"], side, row["price"], row["quantity"], row["fee"], row["tax"])
-        if key in seen:   # 同一個檔裡一模一樣的列（重複下載拼檔）只算一次
+        if with_order and key in seen:   # 同一個檔裡一模一樣的列（重複下載拼檔）只算一次
             errors.append((row_no, f"{name} {order_no}：檔案裡重複出現，只算一次"))
             continue
         seen.add(key)
@@ -277,18 +323,39 @@ def plan_review_fix(grp: List[dict], trade) -> dict:
             "old": f"{float(trade.price):g} × {old_qty:,}", "qty_changed": qty != old_qty}
 
 
-def orphan_keyed_trades(rows: List[dict], trades: List, refs: List[Tuple[date, str, int]]) -> List:
+def orphan_keyed_trades(rows: List[dict], trades: List, refs: List[Tuple[date, str, int]],
+                        whole_range: bool = False) -> List:
     """對帳單日期內、手 key 了但對帳單裡找不到的交易（沒書號、沒被任何一列認領、也不在「要確認」裡）。
 
     多半是 key 錯股票／日期／買賣，或根本不是這個帳戶的；只列出來給人決定要不要刪，不自動刪。
     rows：這個人 classify_rows 之後的列。
+    whole_range：檔案＝最早～最晚日期整段的全部交易（沒書號的格式），中間沒成交的日子也算；否則只看檔案裡出現的日期。
     """
     days = {r["trade_date"] for r in rows}
+    if whole_range and days:
+        lo, hi = min(days), max(days)
+        days = {_d(t.trade_date) for t in trades if lo <= _d(t.trade_date) <= hi} | days
     used = {r.get("claim_trade_id") for r in rows} | {i for r in rows for i in (r.get("review_trade_ids") or [])}
     with_ref = {tid for _d0, _o, tid in refs}
     return [t for t in sorted(trades, key=lambda x: int(x.id))
             if _d(t.trade_date) in days and _side(t) in ("BUY", "SELL")
             and int(t.id) not in used and int(t.id) not in with_ref]
+
+
+def cross_user_same_content(rows: List[dict], other_trades: List) -> List[Tuple[dict, str]]:
+    """沒書號的檔：別的買賣人在同日有一模一樣的交易（日期、股號、買賣、價格、股數）→ [(列, 那個人)]。
+
+    可能之前匯給了別人；只提醒不擋（同一個人本來就可能同價同量買好幾筆）。同內容照數量一對一配，不重複算。
+    """
+    pool: Dict[tuple, List[str]] = defaultdict(list)
+    for t in sorted(other_trades, key=lambda x: int(x.id)):
+        pool[content_key(t)].append(str(getattr(t, "user", "") or ""))
+    out = []
+    for r in rows:
+        users = pool.get(content_key(r))
+        if users:
+            out.append((r, users.pop(0)))
+    return out
 
 
 def mark_cross_user_dups(rows: List[dict], live_refs: List[Tuple[date, str, str, str, str]]) -> List[dict]:

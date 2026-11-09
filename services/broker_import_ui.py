@@ -20,7 +20,8 @@ from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW, SELL_STRATEGIES, STATUS_LABEL,
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
     plan_daytrade, plan_sell_matches, settlement_by_user_date, table_from_lines,
-    orphan_keyed_trades, plan_review_fix,
+    orphan_keyed_trades, plan_review_fix, has_order_no, same_day_dup_counts, content_key,
+    cross_user_same_content,
 )
 from services.pnl_engine import net_pnl_for_match
 from services.prefs import resolve_default_trader
@@ -70,6 +71,20 @@ def _load_user(user):
         sess.close()
 
 
+def _other_users_trades(user, days):
+    """別的買賣人在這些日期的交易（沒書號的檔用來提醒「可能之前匯給了別人」）。"""
+    if not days:
+        return []
+    sess = get_session()
+    try:
+        out = (sess.query(Trade).filter(Trade.user != user, Trade.trade_date >= min(days), Trade.trade_date <= max(days))
+               .order_by(Trade.id).all())
+        sess.expunge_all()
+        return out
+    finally:
+        sess.close()
+
+
 def _assign_users(rows, main_user, traders, name_by_id, editor_key):
     """勾了「有幾筆要算在別人帳上」才出現逐筆改人的表格；回傳 {seq: 買賣人}。"""
     assign = {r["seq"]: main_user for r in rows}
@@ -105,6 +120,7 @@ def render_broker_statement_section():
     st.caption(
         "上傳證券 App 盤後匯出的成交明細 CSV（股名、日期、成交股數、淨收付、成交單價、手續費、交易稅、委託書號…）。"
         "會自動略過**已匯入過**（同一個委託書號）和**已經手 key** 的交易，只補沒 key 的；當沖會自動配對。"
+        "沒有委託書號的格式（成交日期、類別、股票名稱(代號)…）也可以：用日期、股票、買賣、價格、股數比對。"
     )
     msg = st.session_state.pop("bs_done_msg", None)
     if msg:
@@ -130,8 +146,12 @@ def render_broker_statement_section():
 
     masters, live_refs = _load_base()
     name_by_id = dict(masters)
-    rows, errors = parse_statement(recs, build_name_map(masters), first_line)
+    with_order = has_order_no(recs)
+    rows, errors = parse_statement(recs, build_name_map(masters), first_line, master_ids=[m[0] for m in masters])
     mark_cross_user_dups(rows, live_refs)
+    if not with_order and rows:
+        st.info("這份對帳單**沒有委託書號**：會把它當成檔案日期內的全部交易，"
+                "用日期、股票、買賣、價格、股數跟系統裡的交易比對；系統裡已有的不會重複匯入。")
     if errors:
         st.warning(f"有 {len(errors)} 列不會匯入：")
         st.dataframe(pd.DataFrame([{"列": e[0], "原因": e[1]} for e in errors]),
@@ -155,6 +175,34 @@ def render_broker_statement_section():
             r["user"] = u
             done.append(r)
     rows = sorted(done, key=lambda r: r["seq"])
+
+    dup_counts = same_day_dup_counts(rows)
+    if not with_order:
+        n_same = [k for k, v in dup_counts.items() if v > 1]
+        if n_same:
+            st.warning(
+                f"檔案裡同一天有完全相同的交易 {len(n_same)} 組（同股、同價、同股數；預覽表「同日相同」那欄）："
+                + "、".join(f"{k[0]:%m/%d} {name_by_id.get(k[1], k[1])} {k[3]:g} × {k[4]:,} ×{dup_counts[k]}" for k in n_same[:6])
+                + ("…" if len(n_same) > 6 else "")
+                + "。分開成交是正常的，**全部照匯**；請跟券商 App 核對筆數。")
+        if all(r["status"] in (KEYED_EXACT, KEYED_MERGED, DUP_IMPORT) for r in rows):
+            st.success(f"#### ✅ 這份檔案的 {len(rows)} 筆都已經在系統裡了\n可能是重複匯入，不用再匯。")
+        days = {r["trade_date"] for r in rows}
+        pending = [r for r in rows if r["status"] not in (KEYED_EXACT, KEYED_MERGED, DUP_IMPORT)]
+        cross = cross_user_same_content(pending, [t for t in _other_users_trades(main_user, days) if t.user not in users])
+        if cross:
+            by_u = {}
+            for _r, u in cross:
+                by_u[u] = by_u.get(u, 0) + 1
+            st.warning(
+                "⚠️ 別的買賣人在同一天有一模一樣的交易："
+                + "、".join(f"{u} {n} 筆" for u, n in by_u.items())
+                + "。可能這份之前匯給了別人，請確認「匯入到哪個買賣人」有沒有選對（只提醒，不擋）。")
+            with st.expander("看是哪幾筆"):
+                st.dataframe(pd.DataFrame([{
+                    "已在誰的帳上": u, "日期": f"{r['trade_date']:%Y/%m/%d}", "股票": f"{r['stock_id']} {r['stock_name']}",
+                    "買/賣": "買" if r["side"] == "BUY" else "賣", "股數": r["quantity"], "價格": r["price"],
+                } for r, u in cross]), use_container_width=True, hide_index=True)
 
     # ⚠️ 要確認的組：預設先不處理；可選「照對帳單修正手 key 的那筆」或「另外匯入」（Peggy 2026-11-06：key 錯的要修正）
     review_groups = {}
@@ -196,7 +244,8 @@ def render_broker_statement_section():
     # 對帳單日期內、手 key 了但對帳單裡沒有的：多半 key 錯股票／日期／買賣，勾了才刪
     orphan_del = set()
     orphans = [(u, t) for u in users
-               for t in orphan_keyed_trades([r for r in rows if r["user"] == u], ctx[u].trades, ctx[u].refs)]
+               for t in orphan_keyed_trades([r for r in rows if r["user"] == u], ctx[u].trades, ctx[u].refs,
+                                            whole_range=not with_order)]
     if orphans:
         with st.expander(f"⚠️ 手 key 了、但對帳單裡沒有的交易 {len(orphans)} 筆（可能 key 錯股票、日期或買賣；勾了會刪掉）",
                          expanded=True):
@@ -297,7 +346,8 @@ def render_broker_statement_section():
         f"**共 {len(rows)} 筆** → 🆕 新增 **{len(to_import)}**"
         + (f"（{per_user_txt}）" if multi else
            f"（買 {sum(r['side'] == 'BUY' for r in to_import)}／賣 {sum(r['side'] == 'SELL' for r in to_import)}）")
-        + f"、✋ 已手 key {len(keyed)}、⏭️ 已匯入過 {cnt[DUP_IMPORT]}、⚠️ 要確認 {cnt[REVIEW]}"
+        + (f"、✋ 已手 key {len(keyed)}" if with_order else f"、✅ 系統裡已有 {len(keyed)}")
+        + f"、⏭️ 已匯入過 {cnt[DUP_IMPORT]}、⚠️ 要確認 {cnt[REVIEW]}"
         + (f"（修正 {len(fixes)} 筆手 key）" if fixes else "")
         + (f"；刪除對帳單沒有的手 key {len(orphan_del)} 筆" if orphan_del else "")
         + (f"；當沖賣出 {n_dt_sell} 筆" if n_dt_sell else "")
@@ -327,6 +377,8 @@ def render_broker_statement_section():
     def view(r):
         tid = r.get("tmp_id") if r["seq"] in import_seqs else None
         status = STATUS_LABEL[r["status"]]
+        if not with_order and r["status"] in (KEYED_EXACT, KEYED_MERGED):
+            status = "✅ 系統裡已有" + ("（合併）" if r["status"] == KEYED_MERGED else "")
         if r["status"] == DUP_IMPORT and r.get("dup_user") and r["dup_user"] != main_user:
             status += f"（{r['dup_user']}）"
         if r["status"] == REVIEW and tid is not None:
@@ -340,6 +392,7 @@ def render_broker_statement_section():
             "日期": f"{r['trade_date']:%Y/%m/%d}", "股票": f"{r['stock_id']} {r['stock_name']}",
             "買/賣": "買" if r["side"] == "BUY" else "賣", "股數": r["quantity"], "價格": r["price"],
             "手續費": r["fee"], "稅": r["tax"], "委託書號": r["order_no"],
+            "同日相同": f"×{dup_counts[content_key(r)]}" if dup_counts.get(content_key(r), 0) > 1 else "",
             "當沖": "✓" if tid is not None and tid in dt_flag else "",
             "沖銷到": "、".join(match_text.get(tid, [])) if tid is not None else "",
             # 直接給字串：整欄都是 None 時 Styler 的格式不會套用，畫面會出現「None」
@@ -352,7 +405,7 @@ def render_broker_statement_section():
     def show(rs):
         df = pd.DataFrame([view(r) for r in rs])
         # 只有買進時「當沖／沖銷到／預估損益」整欄空白，拿掉讓表比較好讀
-        df = df.drop(columns=[c for c in ("當沖", "沖銷到", "預估損益") if (df[c] == "").all()])
+        df = df.drop(columns=[c for c in ("當沖", "沖銷到", "預估損益", "同日相同", "委託書號") if (df[c] == "").all()])
         st.dataframe(df.style.format(fmt), use_container_width=True, hide_index=True)
 
     main = [r for r in rows if r["status"] in (NEW, REVIEW)]
@@ -380,11 +433,14 @@ def render_broker_statement_section():
                  else f"確認匯入 {len(to_import)} 筆到「{to_import[0]['user']}」")
     else:
         label = ("沒有要新增的（只修正／補書號）" if (fixes or orphan_del)
-                 else "沒有要新增的（只補上書號）" if keyed else "沒有要匯入的")
+                 else "沒有要新增的（只補上書號）" if keyed and with_order
+                 else "沒有要新增的（只更新手續費／稅）" if fee_updates else "沒有要匯入的")
+    # 沒書號的檔：已有的交易沒有書號可補，只剩手續費／稅可更新
+    keyed_work = keyed if with_order else fee_updates
     # 按鈕旁列出每人每天的交割款（整份對帳單、不分狀態），上傳時順便跟券商 App 對一下
     settle = settlement_by_user_date(rows)
     b1, b2 = st.columns([1, 2], vertical_alignment="center")
-    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed or fixes or orphan_del))
+    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed_work or fixes or orphan_del))
     b2.markdown("　".join(
         f"💰 {f'{u} ' if len({k[0] for k in settle}) > 1 else ''}{d:%m/%d} 交割款："
         + (f"**應付 {-v:,.0f}**" if v < 0 else f"**應收 {v:,.0f}**")
@@ -413,10 +469,11 @@ def render_broker_statement_section():
                                      buy_trade_id=id_map.get(b_id, b_id), matched_qty=int(q)))
         batch_id = datetime.now().strftime("%Y%m%d%H%M%S")
         for u in users:
+            # 沒書號的檔不記 trade_refs（重匯靠內容比對認回來）
             refs_new = [(r["trade_date"], r["order_no"], id_map[r["tmp_id"]], "import")
-                        for r in to_import if r["user"] == u]
+                        for r in to_import if r["user"] == u and r["order_no"]]
             refs_new += [(r["trade_date"], r["order_no"], r["claim_trade_id"], "backfill")
-                         for r in keyed if r["user"] == u]
+                         for r in keyed if r["user"] == u and r["order_no"]]
             trs.add_refs(sess, u, refs_new, batch_id)
         for (u, _d, _sid, _side), fx in fixes:   # 照對帳單修正手 key 的那筆（同一個交易裡）
             t = sess.get(Trade, fx["trade_id"])
@@ -428,7 +485,7 @@ def render_broker_statement_section():
         fix_refs = [(r["user"], r["trade_date"], r["order_no"], r["claim_trade_id"]) for r in rows
                     if r["status"] == REVIEW and (r["user"], r["trade_date"], r["stock_id"], r["side"]) in fix_keys]
         for u in users:
-            mine = [(d, o, tid, "fix") for uu, d, o, tid in fix_refs if uu == u]
+            mine = [(d, o, tid, "fix") for uu, d, o, tid in fix_refs if uu == u and o]
             if mine:
                 trs.add_refs(sess, u, mine, batch_id)
         for tid in orphan_del:
@@ -444,7 +501,7 @@ def render_broker_statement_section():
         st.session_state.pop("bs_split", None)   # 下一份對帳單預設回到整份給一個人
         st.session_state["bs_done_msg"] = (
             f"已匯入 {len(to_import)} 筆" + (f"（{per_user_txt}）" if multi else f"到「{to_import[0]['user']}」" if to_import else "")
-            + (f"、補上書號 {len(keyed)} 筆" if keyed else "")
+            + (f"、補上書號 {len(keyed)} 筆" if keyed and with_order else "")
             + (f"、更新手續費／稅 {len(fee_updates)} 筆" if do_fee else "")
             + (f"、照對帳單修正手 key {len(fixes)} 筆" if fixes else "")
             + (f"、刪除對帳單沒有的手 key {len(orphan_del)} 筆" if orphan_del else "")

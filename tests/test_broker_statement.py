@@ -291,3 +291,87 @@ def test_review_fix_and_orphans():
     assert [t.id for t in orphan_keyed_trades(out, trades, [])] == [2]
     # 有書號的（之前匯入的）不算孤兒
     assert orphan_keyed_trades(out, trades, [(D29, "Z9", 2)]) == []
+
+
+# ---------------------------------------------------------------- 沒有委託書號的格式（2026-11-09）
+from services.broker_statement import (   # noqa: E402
+    content_key, cross_user_same_content, has_order_no, same_day_dup_counts,
+)
+
+NO_ORDER_LINES = [
+    ["成交日期", "\t類別", "\t股票名稱", "\t股數", "\t成交價", "\t價金", "\t手續費", "\t交易稅",
+     "\t融資金額/券擔保品", "\t資自備款/券保證金", "\t利息", "\t稅款", "\t券手續費/標借費", "\t淨收付金額"],
+    ["2026/11/5", "現股買進", "南亞(1303)", "1000", "262.5", "262500", "93", "0", "", "", "0", "", "0", "-262593"],
+    ["2026/11/5", "現股買進", "南亞(1303)", "1000", "256", "256000", "91", "0", "", "", "0", "", "0", "-256091"],
+    ["2026/11/5", "現股買進", "南亞(1303)", "1000", "256", "256000", "91", "0", "", "", "0", "", "0", "-256091"],
+    ["2026/11/5", "現股買進", "元大高股息(0056)", "17", "56.4", "958", "1", "0", "", "", "0", "", "0", "-959"],
+    ["2026/11/4", "現股賣出", "聯電(2303)", "1000", "118.5", "118500", "47", "355", "", "", "0", "", "0", "118098"],
+]
+D4, D5 = date(2026, 11, 4), date(2026, 11, 5)
+IDS = ["1303", "0056", "2303"]
+
+
+def _parse_no_order(lines=NO_ORDER_LINES):
+    recs, first = table_from_lines(lines)
+    return recs, *parse_statement(recs, {}, first, master_ids=IDS)
+
+
+def test_no_order_parse():
+    recs, rows, errors = _parse_no_order()
+    assert not has_order_no(recs) and errors == []
+    assert len(rows) == 5   # 同日完全相同的南亞 256 兩筆都留著（分開成交）
+    sell = rows[0]
+    assert (sell["trade_date"], sell["stock_id"], sell["stock_name"], sell["side"], sell["tax"]) == (D4, "2303", "聯電", "SELL", 355)
+    assert {r["stock_id"] for r in rows} == {"1303", "0056", "2303"}   # 0 開頭代號直接用括號裡的
+    assert all(r["order_no"] == "" for r in rows)
+    same = {k: v for k, v in same_day_dup_counts(rows).items() if v > 1}
+    assert same == {(D5, "1303", "BUY", 256.0, 1000): 2}
+
+
+def test_no_order_parse_errors():
+    lines = NO_ORDER_LINES[:1] + [
+        ["2026/11/5", "融資買進", "南亞(1303)", "1000", "256", "256000", "91", "0", "", "", "0", "", "0", "-102091"],
+        ["2026/11/5", "現股買進", "台積電(2330)", "1000", "1000", "1000000", "356", "0", "", "", "0", "", "0", "-1000356"],
+    ]
+    _recs, rows, errors = _parse_no_order(lines)
+    assert rows == []
+    assert "融資買進" in errors[0][1] and "2330" in errors[1][1]
+
+
+def test_no_order_reimport_all_found():
+    """重匯：上次匯入的交易（沒有書號）靠內容一對一認回來，同日相同的兩筆也各認一筆。"""
+    _recs, rows, _ = _parse_no_order()
+    trades = [T(i + 1, r["stock_id"], r["trade_date"], r["side"], r["price"], r["quantity"], r["fee"], r["tax"])
+              for i, r in enumerate(rows)]
+    out = classify_rows(rows, trades, [])
+    assert all(r["status"] == KEYED_EXACT for r in out)
+    assert len({r["claim_trade_id"] for r in out}) == 5
+
+
+def test_no_order_same_day_partial():
+    """同日相同兩筆、系統裡只有一筆 → 一筆已有、一筆新增。"""
+    _recs, rows, _ = _parse_no_order()
+    out = classify_rows(rows, [T(1, "1303", D5, "BUY", 256, 1000, 91, 0)], [])
+    nanya256 = [r["status"] for r in out if r["stock_id"] == "1303" and r["price"] == 256]
+    assert sorted(nanya256) == sorted([KEYED_EXACT, NEW])
+
+
+def test_no_order_cross_user():
+    _recs, rows, _ = _parse_no_order()
+    other = [T(9, "1303", D5, "BUY", 256, 1000, user="雅雲"), T(10, "2303", D4, "SELL", 118.5, 1000, user="雅雲")]
+    hits = cross_user_same_content(rows, other)
+    assert sorted((r["stock_id"], u) for r, u in hits) == [("1303", "雅雲"), ("2303", "雅雲")]   # 南亞 256 兩筆只配到一筆
+
+
+def test_orphans_whole_range():
+    """沒書號的檔＝最早～最晚日期整段：中間沒出現在檔案的日子，手 key 的也列出來。"""
+    rows = [dict(trade_date=D4), dict(trade_date=date(2026, 11, 6))]
+    mid = T(1, "2303", D5, "BUY", 100, 1000)
+    out_of_range = T(2, "2303", date(2026, 11, 7), "BUY", 100, 1000)
+    assert orphan_keyed_trades(rows, [mid, out_of_range], []) == []
+    assert orphan_keyed_trades(rows, [mid, out_of_range], [], whole_range=True) == [mid]
+
+
+def test_content_key_trade_and_row():
+    r = dict(trade_date=D5, stock_id="1303", side="BUY", price=256.0, quantity=1000)
+    assert content_key(r) == content_key(T(1, "1303", D5, "buy", 256, 1000))
