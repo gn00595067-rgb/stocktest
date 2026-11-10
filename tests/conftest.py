@@ -7,3 +7,10 @@ import pytest
 def _no_official_close_fetch(monkeypatch):
     import services.price_service as ps
     monkeypatch.setattr(ps, "official_closes", lambda now_ts=None: {})
+
+
+@pytest.fixture(autouse=True)
+def _no_yahoo_fetch(monkeypatch):
+    """Yahoo 即時報價預設不連網（要測 Yahoo 的測試自己再 monkeypatch）。"""
+    import services.price_service as ps
+    monkeypatch.setattr(ps._yahoo_provider, "get_quotes", lambda ids, exchanges=None: {})

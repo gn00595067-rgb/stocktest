@@ -340,6 +340,143 @@ class TwseMisProvider(PriceProvider):
 _mis_provider = TwseMisProvider()
 
 
+class YahooTwProvider:
+    """台灣 Yahoo 股市即時報價（非官方介面，免 token、不延遲）。
+    2026-11-10 實測：證交所 MIS 盤中成交價欄常是「-」只能用最佳買價近似，Yahoo 有真正成交價，
+    也是秘書／Peggy 對照的來源；一次超過約 50 檔會回 400，分批抓。查不到的代號會被略過。"""
+    BASE = "https://tw.stock.yahoo.com/_td-stock/api/resource/StockServices.stockList;fields=avgPrice%2Corderbook;symbols="
+    HEADERS = {"User-Agent": "Mozilla/5.0"}
+    CHUNK = 40
+    TIMEOUT = 10
+
+    @staticmethod
+    def _symbols(sid: str, exchange: Optional[str]) -> List[str]:
+        e = str(exchange or "").upper()
+        if e in ("TWSE", "TSE"):
+            return [f"{sid}.TW"]
+        if e in ("TPEX", "OTC"):
+            return [f"{sid}.TWO"]
+        return [f"{sid}.TW", f"{sid}.TWO"]
+
+    @staticmethod
+    def _f(v):
+        if isinstance(v, dict):
+            v = v.get("raw")
+        try:
+            x = float(str(v).replace(",", ""))
+            return x if x > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _parse(self, x: dict) -> Optional[dict]:
+        from datetime import datetime as _dt, timezone, timedelta
+        px = self._f(x.get("price"))
+        if px is None:
+            return None
+        y = self._f(x.get("regularMarketPreviousClose")) or px
+        chg = px - y
+        try:
+            tw = _dt.fromisoformat(str(x.get("regularMarketTime")).replace("Z", "+00:00")).astimezone(
+                timezone(timedelta(hours=8)))
+            d, t = f"{tw:%Y%m%d}", f"{tw:%H:%M:%S}"
+        except (TypeError, ValueError):
+            d, t = "", None
+        lu, ld = _compute_limit_prices(y, is_etf=False)
+        return {
+            "name": x.get("symbolName"),
+            "price": _round_price(px),
+            "change": _round_price(chg),
+            "change_pct": (chg / y * 100) if y else 0.0,
+            "prev_close": y,
+            "limit_up": self._f(x.get("limitUpPrice")) or lu,
+            "limit_down": self._f(x.get("limitDownPrice")) or ld,
+            "open": self._f(x.get("regularMarketOpen")) or px,
+            "high": self._f(x.get("regularMarketDayHigh")),
+            "low": self._f(x.get("regularMarketDayLow")),
+            "source": "yahoo_tw",
+            "data_date": d,
+            "time": t,
+        }
+
+    def _fetch(self, symbols: List[str]) -> list:
+        try:
+            import requests
+            from urllib.parse import quote
+            r = requests.get(self.BASE + quote(",".join(symbols)), headers=self.HEADERS, timeout=self.TIMEOUT)
+            if r.status_code != 200:
+                print(f"[quotes] Yahoo 回 HTTP {r.status_code}（{len(symbols)} 檔）", flush=True)
+                return []
+            data = r.json()
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            print(f"[quotes] Yahoo 批次失敗（{len(symbols)} 檔）：{e}", flush=True)
+            return []
+
+    def get_quotes(self, stock_ids: List[str], exchanges: Optional[dict] = None) -> dict:
+        ids = [str(s).strip() for s in stock_ids if str(s).strip()]
+        syms = [s for sid in ids for s in self._symbols(sid, (exchanges or {}).get(sid))]
+        if not syms:
+            return {}
+        chunks = [syms[i:i + self.CHUNK] for i in range(0, len(syms), self.CHUNK)]
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as ex:
+            arr = [x for part in ex.map(self._fetch, chunks) for x in part]
+        out = {}
+        for x in arr:
+            code = str(x.get("systexId") or str(x.get("symbol") or "").split(".")[0]).strip()
+            q = self._parse(x)
+            if code and q and code not in out:
+                out[code] = q
+        return out
+
+
+_yahoo_provider = YahooTwProvider()
+
+
+def _today_tw() -> str:
+    from datetime import datetime as _dt, timezone, timedelta
+    return f"{_dt.now(timezone(timedelta(hours=8))):%Y%m%d}"
+
+
+def pick_live_quote(mis_q: Optional[dict], yahoo_q: Optional[dict], today: str) -> Optional[dict]:
+    """兩個即時來源擇一：今天的 Yahoo（真正成交價）> 今天的證交所 > 有什麼用什麼。"""
+    for q in (yahoo_q, mis_q):
+        if q and str(q.get("data_date") or "")[:8] == today:
+            return q
+    return yahoo_q or mis_q
+
+
+def _live_quotes(ids: List[str], exchanges: Optional[dict] = None) -> dict:
+    """證交所與 Yahoo 同時抓（多花不到時間），每檔挑較好的一個；任一來源掛掉另一個頂上。"""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_mis = ex.submit(_mis_provider.get_quotes, ids, exchanges)
+        f_yh = ex.submit(_yahoo_provider.get_quotes, ids, exchanges)
+        mis, yh = f_mis.result(), f_yh.result()
+    today = _today_tw()
+    out = {}
+    for sid in ids:
+        q = pick_live_quote(mis.get(sid), yh.get(sid), today)
+        if q:
+            out[sid] = q
+    print(f"[quotes] 即時來源：證交所 {len(mis)}、Yahoo {len(yh)}／共 {len(ids)} 檔", flush=True)
+    return out
+
+
+def stale_quote_ids(stock_ids: List[str], quotes: dict, now: Optional[float] = None) -> List[str]:
+    """盤中拿不到今天即時價的股號（沒報價、或只拿到前幾天的日資料），給畫面提示用；收盤後回空。"""
+    if not _tw_market_open(now):
+        return []
+    from datetime import datetime as _dt, timezone, timedelta
+    today = f"{_dt.fromtimestamp(now if now is not None else time.time(), tz=timezone(timedelta(hours=8))):%Y%m%d}"
+    out = []
+    for sid in stock_ids:
+        q = quotes.get(str(sid).strip())
+        if not q or str(q.get("data_date") or "").replace("-", "")[:8] != today:
+            out.append(str(sid).strip())
+    return out
+
+
 def get_price_service():
     token = os.environ.get("FINMIND_TOKEN")
     if token:
@@ -509,7 +646,7 @@ def apply_official_close(sid: str, q: Optional[dict], closes: dict, day: Optiona
     if not px:
         return q
     day = day or _tw_now().date()
-    if q.get("data_date") and str(q["data_date"])[:8] != f"{day:%Y%m%d}":
+    if q.get("data_date") and str(q["data_date"]).replace("-", "")[:8] != f"{day:%Y%m%d}":
         return q   # 報價不是今天的（例如停牌），不要拿今天的收盤硬套
     y = q.get("prev_close") or px
     chg = px - y
@@ -528,7 +665,7 @@ def _get_quote_cached_raw(stock_id: str) -> Optional[dict]:
     if hit:
         return data
     # 主源：TWSE MIS 官方即時（免 token）；失敗再退回 FinMind / Mock
-    data = _mis_provider.get_quote(stock_id)
+    data = _live_quotes([str(stock_id).strip()]).get(str(stock_id).strip())
     if not data:
         data = _fallback_quotes([stock_id]).get(stock_id)
     _price_cache[stock_id] = (data, now)  # 查不到也記（負快取），避免每次重跑都重試
@@ -550,7 +687,7 @@ def get_quotes_cached(stock_ids: List[str], exchanges: Optional[dict] = None) ->
             missing.append(sid)
     if missing:
         t0 = time.monotonic()
-        fresh = _mis_provider.get_quotes(missing, exchanges=exchanges)
+        fresh = _live_quotes(missing, exchanges=exchanges)
         need = [sid for sid in missing if not fresh.get(sid)]
         fb = _fallback_quotes(need)
         for sid in missing:
@@ -561,7 +698,7 @@ def get_quotes_cached(stock_ids: List[str], exchanges: Optional[dict] = None) ->
         n_fail = len(need) - len(fb)
         # 印在 Streamlit Cloud log：判斷「頁面慢」是不是卡在抓報價
         print(
-            f"[quotes] 查 {len(missing)} 檔：證交所 {len(missing) - len(need)}、FinMind 補 {len(fb)}、"
+            f"[quotes] 查 {len(missing)} 檔：即時 {len(missing) - len(need)}、FinMind 補 {len(fb)}、"
             f"查不到 {n_fail}，耗時 {time.monotonic() - t0:.1f} 秒",
             flush=True,
         )

@@ -30,7 +30,7 @@ from services.auth_service import (
     ensure_bootstrap_admin, login_guard, render_auth_sidebar, is_admin, get_current_user,
     get_allowed_traders, can_access_trader, filter_trades_by_permission,
 )
-from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache, _tw_market_open
+from services.price_service import get_quotes_cached, fetch_stock_list_cached, clear_quote_cache, _tw_market_open, stale_quote_ids
 from services.trade_fees import fees_for_trade, daytrade_capacity
 from services.prefs import resolve_default_trader
 from services.trader_service import (
@@ -996,6 +996,12 @@ _open_key = f"yh_open_{trader}"
 # 展開／收合只重跑持股表、不會重畫這行字，所以暫停條件直接寫在說明裡
 _ar_note = (f"盤中每 {AUTO_REFRESH_SEC} 秒自動更新（展開輸入時暫停）" if _live else "已收盤")
 rc1.caption(f"{_tw:%H:%M:%S} 更新・{_ar_note}")
+# 盤中有股票拿不到今天的即時價（來源全掛、只剩前一天收盤）就明講，免得拿昨收當現價判斷（2026-11-10 Peggy）
+_stale = stale_quote_ids([r["stock_id"] for r in summary["rows"] if r["qty"]] + extra, quotes)   # 只看有持股／自選的，已出清的下市股不算
+if _stale:
+    _stale_nm = lambda s: f"{_row_names.get(s) or getattr(_MASTERS.get(s), 'name', '') or ''}{s}"
+    st.warning(f"⚠️ {len(_stale)} 檔沒抓到今天的即時股價，畫面上是前一天收盤：{'、'.join(_stale_nm(s) for s in _stale[:8])}"
+               f"{' 等' if len(_stale) > 8 else ''}。請按「更新股價」重試。")
 if rc2.button("🔄 更新股價", key="yh_refresh"):
     clear_quote_cache()
     st.rerun()

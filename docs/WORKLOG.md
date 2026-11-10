@@ -786,3 +786,9 @@
 **為什麼**：Peggy 9:20 回報股價沒即時更新。實測證交所即時 API 開盤時段 50 檔要 5～6 秒（原逾時 5 秒）、超過 200 通道直接回參數錯誤；整包失敗後全部退回 FinMind 日資料＝昨天收盤＋昨天漲跌，看起來像沒更新。
 **驗證**：pytest 220 passed；本機 live 抓 93 檔 3.8 秒、價格日期都是 20261110。
 **下一步**：Streamlit Cloud 拉新版後請 Peggy 重新整理仿 Yahoo 頁確認股價有跳；若仍是昨收，看 Cloud log 的 `[quotes] 證交所批次失敗` 訊息。
+
+## 2026-11-10 — 盤中即時價加第二來源（台灣 Yahoo）＋拿不到即時價時提示
+**做了什麼**：`price_service` 新增 `YahooTwProvider`（40 檔一批並行）、`_live_quotes` 證交所與 Yahoo 同時抓並用 `pick_live_quote` 擇一、`stale_quote_ids`；仿 Yahoo 頁盤中有持股／自選股拿不到今天價就黃字列出。`apply_official_close` 日期比對容許 FinMind 的 `YYYY-MM-DD`。
+**為什麼**：Jonathan 要求「一定要盤中價格」。只修證交所逾時不保證：海外主機、限流、證交所盤中成交價常是「-」都會讓價格不即時，而且退回昨收時畫面看不出來。
+**驗證**：pytest 226 passed（新增 6 個）；live 15 檔 2.1 秒全為今天 Yahoo 成交價；模擬證交所失敗時 Yahoo 補齊 15/15。黃字提示畫面未實際觸發截圖。
+**下一步**：Cloud 拉新版後盤中看 log `[quotes] 即時來源：證交所 X、Yahoo Y` 確認兩邊都抓得到；若 Yahoo 擋海外 IP 再評估富果 API。
