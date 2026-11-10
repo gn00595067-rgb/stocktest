@@ -472,46 +472,99 @@ def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int
     return out, flagged
 
 
-def plan_sell_matches(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]],
-                      strategy: str) -> Tuple[List[Tuple[int, int, int]], Dict[int, int]]:
-    """當沖以外剩下的新賣出，照統一方式從庫存沖。rules 要包含既有規則＋剛排好的當沖規則。
+def _remaining_buys(sid: str, new_rows: List[dict], trades: List,
+                    rules: List[Tuple[int, int, int]]) -> List[Lot]:
+    """這檔股票還能沖的買進：既有交易用「自定＋先進先出」（頁面預設口徑）算完還剩的＋這次新匯入的買進。
 
-    能沖的庫存＝既有交易用「自定＋先進先出」（頁面預設口徑）算完還剩的買進＋這次新匯入的買進。
-    回傳 (規則, {賣出 tmp_id: 庫存不足股數})。strategy=NONE 不寫規則。
+    rules 要包含既有規則＋已排好的規則（當沖、自己挑的）；新賣出（tmp_id 負數）的規則直接扣掉買進。
     """
-    if strategy not in SELL_STRATEGIES or strategy == "NONE":
+    old = [t for t in trades if str(t.stock_id).strip() == sid and _side(t) in ("BUY", "SELL")]
+    new = [r for r in new_rows if r["stock_id"] == sid]
+    buys = [Lot(int(t.id), int(t.quantity or 0), float(t.price or 0), str(_d(t.trade_date))) for t in old if _side(t) == "BUY"]
+    buys += [Lot(r["tmp_id"], r["quantity"], r["price"], str(r["trade_date"])) for r in new if r["side"] == "BUY"]
+    old_sells = [Lot(int(t.id), int(t.quantity or 0), float(t.price or 0), str(_d(t.trade_date))) for t in old if _side(t) == "SELL"]
+    ids = {b.trade_id for b in buys} | {s.trade_id for s in old_sells} | {r["tmp_id"] for r in new}
+    my_rules = [(s, b, q) for s, b, q in rules if s in ids and b in ids]
+    # 先算既有賣出（＋已排好的規則）吃掉哪些買進
+    new_sell_lots = [Lot(r["tmp_id"], 0, r["price"], str(r["trade_date"])) for r in new if r["side"] == "SELL"]
+    taken = defaultdict(int)
+    for m in compute_matches(buys, old_sells + new_sell_lots, "CUSTOM_PLUS_FIFO", custom_rules=my_rules):
+        taken[m[0]] += m[2]
+    for s, b, q in my_rules:   # 新賣出的規則：sell lot 的 qty 是 0，上面沒算到，這裡補扣
+        if s < 0:
+            taken[b] += q
+    remain = [Lot(b.trade_id, b.qty - taken.get(b.trade_id, 0), b.price, b.date) for b in buys]
+    return [b for b in remain if b.qty > 0]
+
+
+def pending_sells(new_rows: List[dict], rules: List[Tuple[int, int, int]]) -> List[dict]:
+    """這次新匯入、扣掉已排好的規則（當沖）後還有股數要沖的賣出；回傳 [{**row, "remain": 股數}]（照 seq）。"""
+    used_sell, _ = _rule_used(rules)
+    out = []
+    for r in sorted(new_rows, key=lambda x: x["seq"]):
+        if r["side"] == "SELL" and r["quantity"] - used_sell.get(r["tmp_id"], 0) > 0:
+            out.append({**r, "remain": r["quantity"] - used_sell.get(r["tmp_id"], 0)})
+    return out
+
+
+def available_buys(sell_row: dict, new_rows: List[dict], trades: List,
+                   rules: List[Tuple[int, int, int]]) -> List[Lot]:
+    """這筆賣出可以自己挑的買進：同股、成交日不晚於賣出日、還沒沖完的（§7.1）。"""
+    day = str(sell_row["trade_date"])
+    return [b for b in _remaining_buys(sell_row["stock_id"], new_rows, trades, rules) if b.date <= day]
+
+
+def check_picks(picks: Dict[int, Dict[int, int]], sell_qty: Dict[int, int],
+                avail_qty: Dict[int, int]) -> List[str]:
+    """自己挑的有沒有挑超過：picks＝{賣出 id: {買進 id: 股數}}；回傳 [("sell"|"buy", id, 超過股數)]（空＝沒問題）。"""
+    errs = []
+    for s, m in picks.items():
+        tot = sum(q for q in m.values() if q > 0)
+        if tot > sell_qty.get(s, 0):
+            errs.append(("sell", s, tot - sell_qty.get(s, 0)))
+    used = defaultdict(int)
+    for m in picks.values():
+        for b, q in m.items():
+            if q > 0:
+                used[b] += q
+    for b, q in used.items():
+        if q > avail_qty.get(b, 0):
+            errs.append(("buy", b, q - avail_qty.get(b, 0)))
+    return errs
+
+
+def plan_sell_matches(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]],
+                      strategy: str, overrides: Optional[Dict[int, str]] = None,
+                      ) -> Tuple[List[Tuple[int, int, int]], Dict[int, int]]:
+    """當沖以外剩下的新賣出，照統一方式從庫存沖。rules 要包含既有規則＋剛排好的當沖規則（＋自己挑的）。
+
+    能沖的庫存見 _remaining_buys。overrides＝{賣出 tmp_id: 方式}：少數幾筆另外指定（§7.1）。
+    賣出照（日期, id）逐筆、各用自己的方式從剩下的庫存挑（跟 compute_matches 一次沖的順序相同）。
+    回傳 (規則, {賣出 tmp_id: 庫存不足股數})。方式是 NONE 的賣出不寫規則。
+    """
+    overrides = {k: v for k, v in (overrides or {}).items() if v in SELL_STRATEGIES}
+    if strategy not in SELL_STRATEGIES:
+        return [], {}
+    if strategy == "NONE" and all(v == "NONE" for v in overrides.values()):
         return [], {}
     used_sell, _ = _rule_used(rules)
     out, short = [], {}
     stocks = {r["stock_id"] for r in new_rows if r["side"] == "SELL"}
     for sid in sorted(stocks):
-        old = [t for t in trades if str(t.stock_id).strip() == sid and _side(t) in ("BUY", "SELL")]
+        remain = {b.trade_id: b for b in _remaining_buys(sid, new_rows, trades, rules)}
         new = [r for r in new_rows if r["stock_id"] == sid]
-        buys = [Lot(int(t.id), int(t.quantity or 0), float(t.price or 0), str(_d(t.trade_date))) for t in old if _side(t) == "BUY"]
-        buys += [Lot(r["tmp_id"], r["quantity"], r["price"], str(r["trade_date"])) for r in new if r["side"] == "BUY"]
-        old_sells = [Lot(int(t.id), int(t.quantity or 0), float(t.price or 0), str(_d(t.trade_date))) for t in old if _side(t) == "SELL"]
-        ids = {b.trade_id for b in buys} | {s.trade_id for s in old_sells} | {r["tmp_id"] for r in new}
-        my_rules = [(s, b, q) for s, b, q in rules if s in ids and b in ids]
-        # 先算既有賣出（＋已排好的當沖規則）吃掉哪些買進
-        new_sell_lots = [Lot(r["tmp_id"], 0, r["price"], str(r["trade_date"])) for r in new if r["side"] == "SELL"]
-        taken = defaultdict(int)
-        for m in compute_matches(buys, old_sells + new_sell_lots, "CUSTOM_PLUS_FIFO", custom_rules=my_rules):
-            taken[m[0]] += m[2]
-        for s, b, q in my_rules:   # 新賣出的當沖規則：sell lot 的 qty 是 0，上面沒算到，這裡補扣
-            if s < 0:
-                taken[b] += q
-        remain = [Lot(b.trade_id, b.qty - taken.get(b.trade_id, 0), b.price, b.date) for b in buys]
-        remain = [b for b in remain if b.qty > 0]
         to_match = [Lot(r["tmp_id"], r["quantity"] - used_sell.get(r["tmp_id"], 0), r["price"], str(r["trade_date"]))
-                    for r in sorted(new, key=lambda x: x["seq"]) if r["side"] == "SELL"]
-        to_match = [s for s in to_match if s.qty > 0]
-        if not to_match:
-            continue
-        got = defaultdict(int)
-        for b_id, s_id, q, *_ in compute_matches(remain, to_match, strategy):
-            out.append((s_id, b_id, q))
-            got[s_id] += q
-        for s in to_match:
-            if got[s.trade_id] < s.qty:
-                short[s.trade_id] = s.qty - got[s.trade_id]
+                    for r in new if r["side"] == "SELL"]
+        for s in sorted((s for s in to_match if s.qty > 0), key=lambda x: (x.date, x.trade_id)):
+            how = overrides.get(s.trade_id, strategy)
+            if how == "NONE":
+                continue
+            got = 0
+            for b_id, s_id, q, *_ in compute_matches([b for b in remain.values() if b.qty > 0], [s], how):
+                out.append((s_id, b_id, q))
+                got += q
+                b = remain[b_id]
+                remain[b_id] = Lot(b.trade_id, b.qty - q, b.price, b.date)
+            if got < s.qty:
+                short[s.trade_id] = s.qty - got
     return out, short

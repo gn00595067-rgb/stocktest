@@ -375,3 +375,36 @@ def test_orphans_whole_range():
 def test_content_key_trade_and_row():
     r = dict(trade_date=D5, stock_id="1303", side="BUY", price=256.0, quantity=1000)
     assert content_key(r) == content_key(T(1, "1303", D5, "buy", 256, 1000))
+
+
+def test_sell_overrides_per_sell():
+    """Elsa 11/10：統一保守（成本高先沖），其中一筆改樂觀；同股兩筆賣出各用各的方式、不會沖到同一筆。"""
+    trades, _ = _hwa_tong()
+    rows = assign_tmp_ids(_rows(("2313", D30, "SELL", 230, 1000, "S1"), ("2313", D30, "SELL", 231, 1000, "S2")))
+    s1, s2 = rows[0]["tmp_id"], rows[1]["tmp_id"]
+    assert plan_sell_matches(rows, trades, [], "CONSERVATIVE") == ([(s1, 1, 1000), (s2, 2, 1000)], {})
+    assert plan_sell_matches(rows, trades, [], "CONSERVATIVE", {s1: "OPTIMISTIC"}) == ([(s1, 3, 1000), (s2, 1, 1000)], {})
+    # 統一不指定、只有一筆指定 → 只寫那一筆
+    assert plan_sell_matches(rows, trades, [], "NONE", {s2: "FIFO"}) == ([(s2, 1, 1000)], {})
+    # 個別不指定 → 那筆不寫
+    assert plan_sell_matches(rows, trades, [], "FIFO", {s1: "NONE"}) == ([(s2, 1, 1000)], {})
+
+
+def test_manual_picks_reserve_buys_and_remainder_uses_strategy():
+    """自己挑的先佔掉買進（當成已排好的規則傳進去），沒挑滿的照統一方式補，其他賣出不會再沖到被挑的。"""
+    from services.broker_statement import available_buys, check_picks, pending_sells
+    trades, _ = _hwa_tong()
+    rows = assign_tmp_ids(_rows(("2313", D30, "SELL", 230, 1500, "S1"), ("2313", D30, "SELL", 231, 1000, "S2")))
+    s1, s2 = rows[0]["tmp_id"], rows[1]["tmp_id"]
+    assert [b.trade_id for b in available_buys(rows[0], rows, trades, [])] == [1, 2, 3]
+    picks = [(s1, 3, 1000)]                                   # S1 指定沖 10/29 215 那筆 1 張，差 500 股照統一
+    assert [p["remain"] for p in pending_sells(rows, picks)] == [500, 1000]
+    rules, short = plan_sell_matches(rows, trades, picks, "CONSERVATIVE")
+    assert rules == [(s1, 1, 500), (s2, 1, 500), (s2, 2, 500)] and short == {}
+    # 只能挑賣出日（含）以前的買進
+    late = assign_tmp_ids(_rows(("2313", D28, "SELL", 230, 1000, "S1")))
+    assert [b.trade_id for b in available_buys(late[0], late, trades, [])] == [1, 2]
+    # 挑超過
+    assert check_picks({s1: {1: 1000}, s2: {1: 500}}, {s1: 1500, s2: 1000}, {1: 1000}) == [("buy", 1, 500)]
+    assert check_picks({s1: {1: 1000, 2: 1000}}, {s1: 1500}, {1: 1000, 2: 1000}) == [("sell", s1, 500)]
+    assert check_picks({s1: {1: 1000}}, {s1: 1500}, {1: 1000}) == []

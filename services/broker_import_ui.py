@@ -21,7 +21,7 @@ from services.broker_statement import (
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
     plan_daytrade, plan_sell_matches, settlement_by_user_date, table_from_lines,
     orphan_keyed_trades, plan_review_fix, has_order_no, same_day_dup_counts, content_key,
-    cross_user_same_content,
+    cross_user_same_content, available_buys, check_picks, pending_sells,
 )
 from services.pnl_engine import net_pnl_for_match
 from services.prefs import resolve_default_trader
@@ -113,6 +113,87 @@ def _assign_users(rows, main_user, traders, name_by_id, editor_key):
         if x["買賣人"]:
             assign[int(x["seq"])] = str(x["買賣人"])
     return assign, True
+
+
+# §7.1 少數幾筆另外指定：表格裡的選項文字 → 方式（SAME＝照上面統一的、PICK＝自己挑買進）
+_OVR_SAME, _OVR_PICK = "SAME", "PICK"
+_OVR_LABEL = {
+    "照上面的方式": _OVR_SAME, "先進先出": "FIFO", "保守：成本高的先沖": "CONSERVATIVE",
+    "樂觀：成本低的先沖": "OPTIMISTIC", "均價：最接近平均成本": "MEAN", "不指定（不沖）": "NONE",
+    "自己挑買進": _OVR_PICK,
+}
+
+
+def _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id, key_sfx):
+    """勾了「有幾筆賣出要另外指定」才出現；回傳 (overrides {賣出 tmp_id: 方式}, 自己挑的規則, 有沒有挑超過)。"""
+    pend = [(u, r) for u in users for r in pending_sells(new_by_user[u], ctx[u].rules + dt_rules)]
+    if not pend or not st.checkbox(
+        "有幾筆賣出要另外指定沖銷（例如某一筆要沖特定那筆買進；其他照上面的方式）", key="bs_ovr",
+    ):
+        return {}, [], False
+    st.caption("在第一欄「沖銷方式」改要另外指定的那幾筆，其他維持「照上面的方式」。選「自己挑買進」下面會出現可以沖的買進。")
+    multi = len({u for u, _r in pend}) > 1
+    df = pd.DataFrame([{
+        "seq": r["seq"], "沖銷方式": "照上面的方式", "買賣人": u, "日期": f"{r['trade_date']:%m/%d}",
+        "股票": f"{r['stock_id']} {name_by_id.get(r['stock_id'], '')}", "價格": r["price"], "要沖股數": r["remain"],
+    } for u, r in pend])
+    ed = st.data_editor(
+        df, hide_index=True, use_container_width=True,
+        key=f"bs_ovr_ed_{key_sfx}_{abs(hash(tuple(r['seq'] for _u, r in pend)))}",
+        # 沖銷方式放第一欄：手機寬度時右邊會被截掉，要改的欄位一定要看得到
+        column_order=["沖銷方式"] + (["買賣人"] if multi else []) + ["日期", "股票", "價格", "要沖股數"],
+        disabled=["買賣人", "日期", "股票", "價格", "要沖股數"],
+        column_config={
+            "沖銷方式": st.column_config.SelectboxColumn("沖銷方式", options=list(_OVR_LABEL), required=True),
+            "要沖股數": st.column_config.NumberColumn(format="%d"),
+        },
+    )
+    choice = {int(x["seq"]): _OVR_LABEL.get(x["沖銷方式"], _OVR_SAME) for _, x in ed.iterrows()}
+    overrides, pick_rules, picks, sell_qty, avail_qty, label_of = {}, [], {}, {}, {}, {}
+    for u, r in pend:
+        how = choice.get(r["seq"], _OVR_SAME)
+        if how not in (_OVR_SAME, _OVR_PICK):
+            overrides[r["tmp_id"]] = how
+        if how != _OVR_PICK:
+            continue
+        head = f"{u}｜{r['trade_date']:%m/%d} {r['stock_id']} {name_by_id.get(r['stock_id'], '')} 賣 {r['price']:g} × {r['remain']:,}"
+        st.markdown(f"**自己挑：{head}**")
+        lots = available_buys(r, new_by_user[u], ctx[u].trades, ctx[u].rules + dt_rules)
+        if not lots:
+            st.warning("賣出日以前沒有還沒沖完的買進可以挑。")
+            continue
+        for b in lots:
+            avail_qty[b.trade_id] = b.qty
+            label_of[b.trade_id] = f"{b.date[5:].replace('-', '/')} {b.price:g}"
+        bdf = pd.DataFrame([{
+            "buy_id": b.trade_id, "沖這筆幾股": 0, "買進日期": b.date.replace("-", "/"), "價格": b.price,
+            "來源": "這次匯入" if b.trade_id < 0 else "原本庫存", "還沒沖": b.qty,
+        } for b in lots])
+        bed = st.data_editor(
+            bdf, hide_index=True, use_container_width=True,
+            key=f"bs_pick_{key_sfx}_{r['seq']}_{abs(hash(tuple(b.trade_id for b in lots)))}",
+            column_order=["沖這筆幾股", "買進日期", "價格", "來源", "還沒沖"],
+            disabled=["買進日期", "價格", "來源", "還沒沖"],
+            column_config={
+                "沖這筆幾股": st.column_config.NumberColumn(min_value=0, step=1, format="%d"),
+                "價格": st.column_config.NumberColumn(format="%.2f"),
+                "還沒沖": st.column_config.NumberColumn(format="%d"),
+            },
+        )
+        mine = {int(x["buy_id"]): int(x["沖這筆幾股"] or 0) for _, x in bed.iterrows() if int(x["沖這筆幾股"] or 0) > 0}
+        picks[r["tmp_id"]] = mine
+        sell_qty[r["tmp_id"]] = r["remain"]
+        got = sum(mine.values())
+        if got < r["remain"]:
+            rest = "不沖（上面選了不指定）" if strategy == "NONE" else "照上面的方式補沖"
+            st.caption(f"挑了 {got:,} 股，還差 {r['remain'] - got:,} 股{rest}。")
+        pick_rules += [(r["tmp_id"], b, q) for b, q in mine.items()]
+    errs = check_picks(picks, sell_qty, avail_qty)
+    for kind, i, over in errs:
+        st.error(f"挑太多：這筆賣出多挑了 {over:,} 股" if kind == "sell"
+                 else f"挑太多：{label_of.get(i, i)} 那筆買進只剩 {avail_qty[i]:,} 股，挑了 {avail_qty[i] + over:,} 股"
+                 "（有幾筆賣出挑同一筆時是合計）")
+    return overrides, pick_rules, bool(errs)
 
 
 def render_broker_statement_section():
@@ -305,15 +386,19 @@ def render_broker_statement_section():
             new_dt_sells = {x[0] for x in dt_rules if x[0] < 0}
             dt_flag = new_dt_sells | {i for x in keep for i in x[:2]}
             dt_rules = keep
+    # §7.1 少數幾筆另外指定：自己挑的先佔掉買進，其他賣出逐筆照各自的方式
+    overrides, pick_rules, pick_err = _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id,
+                                                      key_sfx=f"{main_user}_{getattr(f, 'name', '')}")
     sell_rules, shortage = [], {}
     for u in users:
-        rr, sh = plan_sell_matches(new_by_user[u], ctx[u].trades, ctx[u].rules + dt_rules, strategy)
+        rr, sh = plan_sell_matches(new_by_user[u], ctx[u].trades, ctx[u].rules + dt_rules + pick_rules,
+                                   strategy, overrides)
         sell_rules += rr
         shortage.update(sh)
 
-    # 同一對（賣, 買）合併成一條規則（當沖跟統一沖銷可能沖到同一筆買進）
+    # 同一對（賣, 買）合併成一條規則（當沖、自己挑、統一沖銷可能沖到同一筆買進）
     all_rules = {}
-    for s_id, b_id, q in dt_rules + sell_rules:
+    for s_id, b_id, q in dt_rules + pick_rules + sell_rules:
         all_rules[(s_id, b_id)] = all_rules.get((s_id, b_id), 0) + q
 
     # 預估這次多出的已實現損益（淨額，扣手續費稅）與每筆賣出沖到哪
@@ -440,7 +525,7 @@ def render_broker_statement_section():
     # 按鈕旁列出每人每天的交割款（整份對帳單、不分狀態），上傳時順便跟券商 App 對一下
     settle = settlement_by_user_date(rows)
     b1, b2 = st.columns([1, 2], vertical_alignment="center")
-    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=not (to_import or keyed_work or fixes or orphan_del))
+    clicked = b1.button(label, type="primary", key="bs_do_import", disabled=pick_err or not (to_import or keyed_work or fixes or orphan_del))
     b2.markdown("　".join(
         f"💰 {f'{u} ' if len({k[0] for k in settle}) > 1 else ''}{d:%m/%d} 交割款："
         + (f"**應付 {-v:,.0f}**" if v < 0 else f"**應收 {v:,.0f}**")
