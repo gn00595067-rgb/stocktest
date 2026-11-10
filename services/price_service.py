@@ -277,6 +277,30 @@ class TwseMisProvider(PriceProvider):
             "time": m.get("t"),
         }
 
+    CHUNK = 30          # 每批通道數（上限 200 之內，小批比較快回）
+    TIMEOUT = 10        # 開盤時段證交所回應慢，5 秒常逾時
+
+    def _fetch_channels(self, channels: List[str]) -> list:
+        """抓一批通道，失敗回空 list（不影響其他批）。"""
+        try:
+            import requests
+            r = requests.get(
+                self.BASE,
+                params={"ex_ch": "|".join(channels), "json": "1", "delay": "0"},
+                headers=self.HEADERS,
+                timeout=self.TIMEOUT,
+            )
+            if r.status_code != 200:
+                print(f"[quotes] 證交所回 HTTP {r.status_code}（{len(channels)} 通道）", flush=True)
+                return []
+            j = r.json()
+            if j.get("rtcode") not in (None, "0000"):
+                print(f"[quotes] 證交所回 rtcode={j.get('rtcode')}（{len(channels)} 通道）", flush=True)
+            return j.get("msgArray", []) or []
+        except Exception as e:
+            print(f"[quotes] 證交所批次失敗（{len(channels)} 通道）：{e}", flush=True)
+            return []
+
     def get_quotes(self, stock_ids: List[str], exchanges: Optional[dict] = None) -> dict:
         """一次批次抓多檔，回傳 {stock_id: quote}。exchanges 可選：{stock_id: 'TWSE'/'TPEX'}。"""
         ids = [str(s).strip() for s in stock_ids if str(s).strip()]
@@ -290,19 +314,15 @@ class TwseMisProvider(PriceProvider):
             else:  # 未知交易所：兩個通道都查，取有效者
                 channels.append(f"tse_{sid}.tw")
                 channels.append(f"otc_{sid}.tw")
-        try:
-            import requests
-            r = requests.get(
-                self.BASE,
-                params={"ex_ch": "|".join(channels), "json": "1", "delay": "0"},
-                headers=self.HEADERS,
-                timeout=5,  # 正常 1 秒內回；卡住時別讓整頁跟著等太久
-            )
-            if r.status_code != 200:
-                return {}
-            arr = r.json().get("msgArray", []) or []
-        except Exception:
-            return {}
+        # 分批同時抓（2026-11-10 Peggy 回報開盤後股價沒更新）：證交所一次超過 200 個通道直接回「參數錯誤」，
+        # 開盤時段 50 檔就要 5～6 秒，整包一次抓常逾時 → 全部退回 FinMind 日資料，畫面變成昨天收盤。
+        chunks = [channels[i:i + self.CHUNK] for i in range(0, len(channels), self.CHUNK)]
+        if len(chunks) == 1:
+            arr = self._fetch_channels(chunks[0])
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(len(chunks), 6)) as ex:
+                arr = [m for part in ex.map(self._fetch_channels, chunks) for m in part]
         out = {}
         for m in arr:
             code = str(m.get("c") or "").strip()
