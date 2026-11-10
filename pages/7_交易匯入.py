@@ -280,6 +280,12 @@ def _extract_stock_id_from_text(text):
     return m.group(1) if m else None
 
 
+def _is_app_statement(df) -> bool:
+    """證券 App 對帳單：表頭或前幾列有「根據您篩選後的結果」說明列。"""
+    cells = [str(c) for c in df.columns] + [str(v) for v in df.head(5).values.ravel()]
+    return any("根據您篩選" in c for c in cells)
+
+
 def parse_upload_to_rows(df, name2id):
     rows = []
     errors = []
@@ -409,6 +415,12 @@ else:
         if df_raw is None and uploaded.name.lower().endswith(".xlsx"):
             st.error(f"無法讀取 Excel：{e}")
             df_raw = None
+    # 證券 App 對帳單（第一行是「根據您篩選後的結果…」）傳到這裡會整份讀不到欄位，而且這區不防重複、沒有沖銷選項，
+    # 硬匯會重複入帳 → 擋下、指到上面「〇」（2026-11-10 老闆傳錯區塊）
+    if df_raw is not None and _is_app_statement(df_raw):
+        st.error("這是**證券 App 匯出的對帳單**，請改用本頁最上面的「**〇、券商對帳單（證券 App 匯出）**」上傳："
+                 "那裡會略過已 key／已匯入的交易，賣出也可以選沖銷方式。")
+        df_raw = None
     if df_raw is not None and not df_raw.empty:
         sess = get_session()
         name2id = build_name_to_stock_id(sess)
