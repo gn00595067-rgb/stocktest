@@ -392,7 +392,7 @@ def test_sell_overrides_per_sell():
 
 def test_manual_picks_reserve_buys_and_remainder_uses_strategy():
     """自己挑的先佔掉買進（當成已排好的規則傳進去），沒挑滿的照統一方式補，其他賣出不會再沖到被挑的。"""
-    from services.broker_statement import available_buys, check_picks, pending_sells
+    from services.broker_statement import available_buys, pending_sells
     trades, _ = _hwa_tong()
     rows = assign_tmp_ids(_rows(("2313", D30, "SELL", 230, 1500, "S1"), ("2313", D30, "SELL", 231, 1000, "S2")))
     s1, s2 = rows[0]["tmp_id"], rows[1]["tmp_id"]
@@ -404,7 +404,34 @@ def test_manual_picks_reserve_buys_and_remainder_uses_strategy():
     # 只能挑賣出日（含）以前的買進
     late = assign_tmp_ids(_rows(("2313", D28, "SELL", 230, 1000, "S1")))
     assert [b.trade_id for b in available_buys(late[0], late, trades, [])] == [1, 2]
-    # 挑超過
-    assert check_picks({s1: {1: 1000}, s2: {1: 500}}, {s1: 1500, s2: 1000}, {1: 1000}) == [("buy", 1, 500)]
-    assert check_picks({s1: {1: 1000, 2: 1000}}, {s1: 1500}, {1: 1000, 2: 1000}) == [("sell", s1, 500)]
-    assert check_picks({s1: {1: 1000}}, {s1: 1500}, {1: 1000}) == []
+
+
+def test_allocate_picks_whole_stock():
+    """Elsa 11/10：聯電賣 5 筆共 25 張，整檔指定沖 11/05 100×10 張、11/04 100×10 張、11/04 101×5 張。"""
+    from services.broker_statement import allocate_picks
+    sells = [(-5, 5000, "2026-11-10"), (-1, 5000, "2026-11-10"), (-2, 5000, "2026-11-10"),
+             (-3, 5000, "2026-11-10"), (-4, 5000, "2026-11-10")]
+    picks = [(30, 10000, "2026-11-05"), (10, 10000, "2026-11-04"), (11, 5000, "2026-11-04")]
+    rules, left = allocate_picks(sells, picks)
+    assert left == 0
+    assert rules == [(-5, 10, 5000), (-4, 10, 5000), (-3, 11, 5000), (-2, 30, 5000), (-1, 30, 5000)]
+    # 挑的買進比賣出晚 → 分不出去
+    assert allocate_picks([(-1, 1000, "2026-11-04")], [(30, 1000, "2026-11-05")]) == ([], 1000)
+
+
+def test_pick_buys_used_only_by_unruled_old_sells():
+    """以前沒寫規則的賣出（頁面用先進先出現算）佔的買進仍可挑；挑走後舊賣出改沖別的，不夠才算擠到。"""
+    from services.broker_statement import available_buys, old_sells_short
+    D4, D10 = date(2026, 11, 4), date(2026, 11, 10)
+    trades = [T(1, "2303", D4, "BUY", 100, 1000), T(2, "2303", D4, "BUY", 105, 1000),
+              T(3, "2303", D4, "SELL", 105.5, 1000)]                     # 先進先出會沖到 100 那筆
+    rows = assign_tmp_ids(_rows(("2303", D10, "SELL", 102, 1000, "S1")))
+    s1 = rows[0]["tmp_id"]
+    assert [(b.trade_id, b.qty) for b in available_buys(rows[0], rows, trades, [])] == [(1, 1000), (2, 1000)]
+    # 寫死的規則才真的佔掉
+    assert [b.trade_id for b in available_buys(rows[0], rows, trades, [(3, 1, 1000)])] == [2]
+    # 挑 100 那筆 → 舊賣出改沖 105，不會沖不到；統一沖銷也不會再沖到 100
+    assert old_sells_short("2303", rows, trades, [(s1, 1, 1000)]) == 0
+    assert plan_sell_matches(rows, trades, [(s1, 1, 1000)], "FIFO") == ([], {})
+    # 庫存只夠一筆：挑走後舊賣出沖不到
+    assert old_sells_short("2303", rows, trades[:1] + trades[2:], [(s1, 1, 1000)]) == 1000

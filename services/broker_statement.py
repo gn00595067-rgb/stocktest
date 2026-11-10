@@ -472,12 +472,8 @@ def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int
     return out, flagged
 
 
-def _remaining_buys(sid: str, new_rows: List[dict], trades: List,
-                    rules: List[Tuple[int, int, int]]) -> List[Lot]:
-    """這檔股票還能沖的買進：既有交易用「自定＋先進先出」（頁面預設口徑）算完還剩的＋這次新匯入的買進。
-
-    rules 要包含既有規則＋已排好的規則（當沖、自己挑的）；新賣出（tmp_id 負數）的規則直接扣掉買進。
-    """
+def _stock_lots(sid: str, new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]]):
+    """這檔股票的 (買進 lots, 既有賣出 lots, 新賣出 lots, 相關規則)。新賣出的 qty＝已排好規則的股數（還沒沖的部分不算）。"""
     old = [t for t in trades if str(t.stock_id).strip() == sid and _side(t) in ("BUY", "SELL")]
     new = [r for r in new_rows if r["stock_id"] == sid]
     buys = [Lot(int(t.id), int(t.quantity or 0), float(t.price or 0), str(_d(t.trade_date))) for t in old if _side(t) == "BUY"]
@@ -485,16 +481,34 @@ def _remaining_buys(sid: str, new_rows: List[dict], trades: List,
     old_sells = [Lot(int(t.id), int(t.quantity or 0), float(t.price or 0), str(_d(t.trade_date))) for t in old if _side(t) == "SELL"]
     ids = {b.trade_id for b in buys} | {s.trade_id for s in old_sells} | {r["tmp_id"] for r in new}
     my_rules = [(s, b, q) for s, b, q in rules if s in ids and b in ids]
-    # 先算既有賣出（＋已排好的規則）吃掉哪些買進
-    new_sell_lots = [Lot(r["tmp_id"], 0, r["price"], str(r["trade_date"])) for r in new if r["side"] == "SELL"]
+    used_sell, _ = _rule_used(my_rules)
+    # 新賣出的規則（當沖、自己挑的）要先佔掉買進，既有沒寫規則的賣出才用剩下的跑先進先出
+    new_sells = [Lot(r["tmp_id"], used_sell.get(r["tmp_id"], 0), r["price"], str(r["trade_date"]))
+                 for r in new if r["side"] == "SELL"]
+    return buys, old_sells, new_sells, my_rules
+
+
+def _remaining_buys(sid: str, new_rows: List[dict], trades: List,
+                    rules: List[Tuple[int, int, int]]) -> List[Lot]:
+    """這檔股票還能沖的買進：既有交易用「自定＋先進先出」（頁面預設口徑）算完還剩的＋這次新匯入的買進。
+
+    rules 要包含既有規則＋已排好的規則（當沖、自己挑的）。
+    """
+    buys, old_sells, new_sells, my_rules = _stock_lots(sid, new_rows, trades, rules)
     taken = defaultdict(int)
-    for m in compute_matches(buys, old_sells + new_sell_lots, "CUSTOM_PLUS_FIFO", custom_rules=my_rules):
+    for m in compute_matches(buys, old_sells + new_sells, "CUSTOM_PLUS_FIFO", custom_rules=my_rules):
         taken[m[0]] += m[2]
-    for s, b, q in my_rules:   # 新賣出的規則：sell lot 的 qty 是 0，上面沒算到，這裡補扣
-        if s < 0:
-            taken[b] += q
     remain = [Lot(b.trade_id, b.qty - taken.get(b.trade_id, 0), b.price, b.date) for b in buys]
     return [b for b in remain if b.qty > 0]
+
+
+def old_sells_short(sid: str, new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]]) -> int:
+    """既有賣出用「自定＋先進先出」算完還有幾股沖不到（自己挑買進後檢查：不能把以前的賣出擠到沒庫存）。"""
+    buys, old_sells, new_sells, my_rules = _stock_lots(sid, new_rows, trades, rules)
+    got = defaultdict(int)
+    for m in compute_matches(buys, old_sells + new_sells, "CUSTOM_PLUS_FIFO", custom_rules=my_rules):
+        got[m[1]] += m[2]
+    return sum(max(0, s.qty - got.get(s.trade_id, 0)) for s in old_sells)
 
 
 def pending_sells(new_rows: List[dict], rules: List[Tuple[int, int, int]]) -> List[dict]:
@@ -509,28 +523,38 @@ def pending_sells(new_rows: List[dict], rules: List[Tuple[int, int, int]]) -> Li
 
 def available_buys(sell_row: dict, new_rows: List[dict], trades: List,
                    rules: List[Tuple[int, int, int]]) -> List[Lot]:
-    """這筆賣出可以自己挑的買進：同股、成交日不晚於賣出日、還沒沖完的（§7.1）。"""
+    """這筆賣出可以自己挑的買進：同股、成交日不晚於賣出日，扣掉**寫死的沖銷規則**後還有股數的（§7.1）。
+
+    以前沒寫規則的賣出不算佔用：它們在各頁面是用先進先出現算的，這裡挑走後會改沖別的買進
+    （Elsa 11/10：11/04 的當沖賣出沒寫規則，先進先出剛好算掉 100、101 那兩筆，她就挑不到）。
+    挑完要用 old_sells_short 檢查以前的賣出有沒有因此沖不到。
+    """
     day = str(sell_row["trade_date"])
-    return [b for b in _remaining_buys(sell_row["stock_id"], new_rows, trades, rules) if b.date <= day]
+    buys, _old, _new, my_rules = _stock_lots(sell_row["stock_id"], new_rows, trades, rules)
+    _, used_buy = _rule_used(my_rules)
+    out = [Lot(b.trade_id, b.qty - used_buy.get(b.trade_id, 0), b.price, b.date) for b in buys if b.date <= day]
+    return [b for b in out if b.qty > 0]
 
 
-def check_picks(picks: Dict[int, Dict[int, int]], sell_qty: Dict[int, int],
-                avail_qty: Dict[int, int]) -> List[str]:
-    """自己挑的有沒有挑超過：picks＝{賣出 id: {買進 id: 股數}}；回傳 [("sell"|"buy", id, 超過股數)]（空＝沒問題）。"""
-    errs = []
-    for s, m in picks.items():
-        tot = sum(q for q in m.values() if q > 0)
-        if tot > sell_qty.get(s, 0):
-            errs.append(("sell", s, tot - sell_qty.get(s, 0)))
-    used = defaultdict(int)
-    for m in picks.values():
-        for b, q in m.items():
-            if q > 0:
-                used[b] += q
-    for b, q in used.items():
-        if q > avail_qty.get(b, 0):
-            errs.append(("buy", b, q - avail_qty.get(b, 0)))
-    return errs
+def allocate_picks(sells: List[Tuple[int, int, str]], picks: List[Tuple[int, int, str]],
+                   ) -> Tuple[List[Tuple[int, int, int]], int]:
+    """整檔一起挑的買進分給這檔的各筆賣出（§7.1）：賣出照（日期, id）、挑的買進照（日期, id）依序配，
+    買進成交日不能晚於賣出日。sells／picks＝[(id, 股數, 'YYYY-MM-DD')]。回傳 (規則 [(賣, 買, 股數)], 分不出去的股數)。
+    """
+    left = [[b, q, d] for b, q, d in sorted(picks, key=lambda x: (x[2], x[0])) if q > 0]
+    out = []
+    for s_id, s_qty, s_day in sorted(sells, key=lambda x: (x[2], x[0])):
+        need = s_qty
+        for p in left:
+            if need <= 0:
+                break
+            if p[1] <= 0 or p[2] > s_day:
+                continue
+            q = min(need, p[1])
+            out.append((s_id, p[0], q))
+            p[1] -= q
+            need -= q
+    return out, sum(p[1] for p in left)
 
 
 def plan_sell_matches(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]],
