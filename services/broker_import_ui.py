@@ -131,36 +131,38 @@ def _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id, key
         "有幾筆賣出要另外指定沖銷（例如某一筆要沖特定那筆買進；其他照上面的方式）", key="bs_ovr",
     ):
         return {}, [], False
-    st.caption("在第一欄「沖銷方式」改要另外指定的那幾筆，其他維持「照上面的方式」。選「自己挑買進」下面會出現可以沖的買進。")
+    # 2026-11-10 Elsa：原本是一張賣出表、要點兩下改「沖銷方式」才出現買進，看不懂 → 改成先勾賣出、直接列買進
     multi = len({u for u, _r in pend}) > 1
-    df = pd.DataFrame([{
-        "seq": r["seq"], "沖銷方式": "照上面的方式", "買賣人": u, "日期": f"{r['trade_date']:%m/%d}",
-        "股票": f"{r['stock_id']} {name_by_id.get(r['stock_id'], '')}", "價格": r["price"], "要沖股數": r["remain"],
-    } for u, r in pend])
-    ed = st.data_editor(
-        df, hide_index=True, use_container_width=True,
-        key=f"bs_ovr_ed_{key_sfx}_{abs(hash(tuple(r['seq'] for _u, r in pend)))}",
-        # 沖銷方式放第一欄：手機寬度時右邊會被截掉，要改的欄位一定要看得到
-        column_order=["沖銷方式"] + (["買賣人"] if multi else []) + ["日期", "股票", "價格", "要沖股數"],
-        disabled=["買賣人", "日期", "股票", "價格", "要沖股數"],
-        column_config={
-            "沖銷方式": st.column_config.SelectboxColumn("沖銷方式", options=list(_OVR_LABEL), required=True),
-            "要沖股數": st.column_config.NumberColumn(format="%d"),
-        },
+
+    def sell_label(u, r):
+        return (f"{u}｜" if multi else "") + (
+            f"{r['trade_date']:%m/%d} {r['stock_id']} {name_by_id.get(r['stock_id'], '')} 賣 {r['price']:g} × {r['remain']:,}"
+            + (f"（書號 {r['order_no']}）" if r.get("order_no") else ""))
+
+    by_seq = {r["seq"]: (u, r) for u, r in pend}
+    chosen = st.multiselect(
+        "① 哪幾筆**賣出**要另外指定？（沒選的照上面的方式）", list(by_seq),
+        format_func=lambda q: sell_label(*by_seq[q]), key=f"bs_ovr_pick_{key_sfx}",
+        placeholder="點這裡選賣出（可以選好幾筆）",
     )
-    choice = {int(x["seq"]): _OVR_LABEL.get(x["沖銷方式"], _OVR_SAME) for _, x in ed.iterrows()}
+    if chosen:
+        st.caption("② 下面每筆賣出各有一張**可以沖的買進**，在「沖這筆幾股」填要沖的股數。")
     overrides, pick_rules, picks, sell_qty, avail_qty, label_of = {}, [], {}, {}, {}, {}
-    for u, r in pend:
-        how = choice.get(r["seq"], _OVR_SAME)
+    how_opts = list(_OVR_LABEL)[1:]   # 已經選了要另外指定，不再列「照上面的方式」
+    for seq in chosen:
+        u, r = by_seq[seq]
+        st.markdown("---")
+        how = _OVR_LABEL[st.selectbox(
+            f"**{sell_label(u, r)}** 怎麼沖", how_opts, key=f"bs_ovr_how_{key_sfx}_{seq}",
+            index=how_opts.index("自己挑買進"),
+        )]
         if how not in (_OVR_SAME, _OVR_PICK):
             overrides[r["tmp_id"]] = how
         if how != _OVR_PICK:
             continue
-        head = f"{u}｜{r['trade_date']:%m/%d} {r['stock_id']} {name_by_id.get(r['stock_id'], '')} 賣 {r['price']:g} × {r['remain']:,}"
-        st.markdown(f"**自己挑：{head}**")
         lots = available_buys(r, new_by_user[u], ctx[u].trades, ctx[u].rules + dt_rules)
         if not lots:
-            st.warning("賣出日以前沒有還沒沖完的買進可以挑。")
+            st.warning("賣出日以前沒有還沒沖完的買進可以挑（以前的賣出已經把庫存沖完）。")
             continue
         for b in lots:
             avail_qty[b.trade_id] = b.qty
