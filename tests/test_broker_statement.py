@@ -435,3 +435,28 @@ def test_pick_buys_used_only_by_unruled_old_sells():
     assert plan_sell_matches(rows, trades, [(s1, 1, 1000)], "FIFO") == ([], {})
     # 庫存只夠一筆：挑走後舊賣出沖不到
     assert old_sells_short("2303", rows, trades[:1] + trades[2:], [(s1, 1, 1000)]) == 1000
+
+
+def test_overflow_split_to_other_user():
+    """Elsa 11/11：短線帳賣 5340 但沒庫存（是 Peggy姐 10 月買的）→ 不夠的拆給 Peggy姐。"""
+    from services.broker_statement import inventory_shortage, split_overflow, stock_available
+    D10, D11 = date(2026, 10, 15), date(2026, 11, 11)
+    short_trades = [T(1, "5340", D11, "BUY", 100, 500, user="P11月短線")]
+    rows = assign_tmp_ids(_rows(("5340", D11, "SELL", 110, 2000, "X1", 100, 330)))
+    for r in rows:
+        r["user"] = "P11月短線"
+    s1 = rows[0]["tmp_id"]
+    assert inventory_shortage(rows, short_trades, []) == {s1: 1500}
+    peggy = [T(2, "5340", D10, "BUY", 90, 3000, user="Peggy姐")]
+    assert stock_available("5340", D11, [], peggy, []) == 3000
+    kept, new = split_overflow(rows[0], 1500, "Peggy姐", 99)
+    assert (kept["quantity"], kept["fee"], kept["tax"], kept["user"]) == (500, 25, 82, "P11月短線")
+    assert (new["quantity"], new["fee"], new["tax"], new["user"], new["seq"]) == (1500, 75, 248, "Peggy姐", 99)
+    assert new["order_no"] == "X1" and "tmp_id" not in new
+    rows[0]["net"] = 219570
+    k2, n2 = split_overflow(rows[0], 1500, "Peggy姐", 99)
+    assert k2["net"] + n2["net"] == 219570
+    # 拆完兩邊都夠沖
+    assign_tmp_ids([new])
+    assert inventory_shortage([kept], short_trades, []) == {}
+    assert plan_sell_matches([new], peggy, [], "CONSERVATIVE") == ([(new["tmp_id"], 2, 1500)], {})

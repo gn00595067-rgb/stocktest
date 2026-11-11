@@ -592,3 +592,31 @@ def plan_sell_matches(new_rows: List[dict], trades: List, rules: List[Tuple[int,
             if got < s.qty:
                 short[s.trade_id] = s.qty - got
     return out, short
+
+
+# ---------------------------------------------------------------- 庫存不夠拆給別人（§7.2）
+def inventory_shortage(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]]) -> Dict[int, int]:
+    """先用先進先出試算（當沖＋從庫存沖），哪幾筆新賣出庫存不夠：{賣出 tmp_id: 不夠的股數}。
+    各種沖銷方式只是挑哪幾筆買進不同，夠不夠沖的總數一樣，所以用先進先出算就好。"""
+    dt, _ = plan_daytrade(new_rows, trades, rules, "FIFO")
+    _, short = plan_sell_matches(new_rows, trades, rules + dt, "FIFO")
+    return short
+
+
+def stock_available(sid: str, day: date, new_rows: List[dict], trades: List,
+                    rules: List[Tuple[int, int, int]]) -> int:
+    """這個人這檔股票到 day 為止還能沖幾股（給「不夠的記到誰」選單顯示）。"""
+    return sum(b.qty for b in _remaining_buys(sid, new_rows, trades, rules) if b.date <= str(day))
+
+
+def split_overflow(row: dict, qty: int, to_user: str, new_seq: int) -> Tuple[dict, dict]:
+    """賣出拆兩筆：原本的人留 quantity−qty、to_user 記 qty；手續費、稅、淨收付照股數比例拆（合計不變）。
+    回傳 (改過的原列, 新列)；新列 seq＝new_seq（tmp_id 之後再給）。"""
+    total = int(row["quantity"])
+    part = {k: round(float(row.get(k) or 0) * qty / total) for k in ("fee", "tax", "net")}   # net：交割款合計不變
+    new = {**row, "seq": new_seq, "user": to_user, "quantity": qty, **part,
+           "split_from": row["user"], "note": f"對帳單同一筆拆過來（{row['user']} 庫存不夠）"}
+    new.pop("tmp_id", None)
+    kept = {**row, "quantity": total - qty, "split_to": to_user,
+            **{k: float(row.get(k) or 0) - part[k] for k in ("fee", "tax", "net")}}
+    return kept, new

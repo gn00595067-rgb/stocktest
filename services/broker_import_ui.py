@@ -22,6 +22,7 @@ from services.broker_statement import (
     plan_daytrade, plan_sell_matches, settlement_by_user_date, table_from_lines,
     orphan_keyed_trades, plan_review_fix, has_order_no, same_day_dup_counts, content_key,
     cross_user_same_content, available_buys, allocate_picks, pending_sells, old_sells_short,
+    inventory_shortage, split_overflow, stock_available,
 )
 from services.pnl_engine import net_pnl_for_match
 from services.prefs import resolve_default_trader
@@ -229,6 +230,60 @@ def _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id, key
         st.error("填錯了：" + e)
     return overrides, pick_rules, bool(errs)
 
+def _overflow_split(rows, to_import, users, ctx, traders, name_by_id, key_sfx):
+    """§7.2 庫存不夠的賣出：選「不夠的股數記到誰」就把那筆拆兩筆（原列就地改股數，新列加進 rows／to_import）。
+    回傳這次多出來的買賣人（ctx 會補上他們的資料）。"""
+    short = {}
+    for u in users:
+        mine = [r for r in to_import if r["user"] == u]
+        short.update(inventory_shortage(mine, ctx[u].trades, ctx[u].rules))
+    if not short:
+        return []
+    st.markdown("##### ⚠️ 庫存不夠的賣出：不夠的股數要記到誰？")
+    st.caption("例如短線帳沒有這檔、是 Peggy姐 以前買的：選 Peggy姐，這筆就拆成兩筆，"
+               "夠的留在原本的人、不夠的記到選的人（手續費、稅照股數比例拆），各自沖自己的庫存。")
+    others_ctx = {}
+    added, moved, next_seq = [], [], max(r["seq"] for r in rows) + 1
+    by_tmp = {r["tmp_id"]: r for r in to_import}
+    for tid, q in sorted(short.items(), key=lambda kv: by_tmp[kv[0]]["seq"]):
+        r = by_tmp[tid]
+        opts, labels = [None], {None: f"先不處理（照樣記在 {r['user']}，庫存不足 {q:,} 股）"}
+        for v in traders:
+            if v == r["user"]:
+                continue
+            if v not in ctx and v not in others_ctx:
+                others_ctx[v] = _load_user(v)
+            c = ctx.get(v) or others_ctx[v]
+            mine_v = [x for x in to_import if x["user"] == v]
+            avail = stock_available(r["stock_id"], r["trade_date"], mine_v, c.trades, c.rules)
+            opts.append(v)
+            labels[v] = f"{v}（這檔可沖 {avail:,} 股" + ("" if avail >= q else "，也不夠") + "）"
+        to = st.selectbox(
+            f"{r['user']}｜{r['trade_date']:%m/%d} {r['stock_id']} {name_by_id.get(r['stock_id'], '')} "
+            f"賣 {r['price']:g} × {r['quantity']:,}（書號 {r['order_no'] or '—'}）→ 不夠的 **{q:,} 股** 記到",
+            opts, format_func=labels.get, key=f"bs_ovf_{key_sfx}_{r['seq']}",
+        )
+        if to is None:
+            continue
+        if q >= r["quantity"]:   # 整筆都沒庫存：整筆改記到選的人，不拆出 0 股的交易
+            r.update(user=to, note=f"對帳單匯入時改記（{r['user']} 沒有庫存）")
+            moved.append(r)
+            continue
+        kept, new = split_overflow(r, q, to, next_seq)
+        next_seq += 1
+        r.update(kept)
+        added.append(new)
+    if not added and not moved:
+        return []
+    assign_tmp_ids(added)
+    rows.extend(added)
+    to_import.extend(added)
+    new_users = sorted({x["user"] for x in added + moved} - set(users))
+    for v in new_users:
+        ctx[v] = others_ctx.get(v) or _load_user(v)
+    return new_users
+
+
 def render_broker_statement_section():
     st.subheader("〇、券商對帳單（證券 App 匯出）")
     st.caption(
@@ -386,6 +441,9 @@ def render_broker_statement_section():
     to_import = [r for r in rows if r["status"] == NEW
                  or (r["status"] == REVIEW and (r["user"], r["trade_date"], r["stock_id"], r["side"]) in force)]
     assign_tmp_ids(to_import)   # seq 全檔唯一，所以暫時 id 跨人也不會撞
+    # §7.2 庫存不夠的賣出：不夠的股數拆給別的買賣人（拆出來的列 seq 接在全檔最後，暫時 id 也不會撞）
+    users += _overflow_split(rows, to_import, users, ctx, traders, name_by_id,
+                             key_sfx=f"{main_user}_{getattr(f, 'name', '')}")
     new_by_user = {u: [r for r in to_import if r["user"] == u] for u in users}
 
     # 有新賣出 → 選沖銷方式（所有人共用一種）：當沖沖今天哪幾筆買進、當沖以外從庫存沖哪幾筆，都照這個
@@ -474,8 +532,9 @@ def render_broker_statement_section():
     if shortage:
         sid_of = {r["tmp_id"]: (r["user"], r["stock_id"]) for r in to_import}
         st.error("庫存不足：" + "、".join(
-            f"{sid_of[s][0]} {by_id[s].trade_date:%m/%d} {sid_of[s][1]} 少 {q:,} 股" for s, q in shortage.items())
-            + "（可能還有更早的買進沒 key；仍可匯入，沖不到的部分之後再補）")
+            f"{sid_of[s][0]} {by_id[s].trade_date:%m/%d} {sid_of[s][1]} {name_by_id.get(sid_of[s][1], '')} 少 {q:,} 股"
+            for s, q in shortage.items())
+            + "（是別人帳上的庫存：在上面「不夠的股數要記到誰」選人；或可能還有更早的買進沒 key，仍可匯入、之後再補）")
 
     if by_stock:
         with st.expander(f"📊 預估損益分股看（{len(by_stock)} 檔；跟自己的帳對不起來時看這裡）", expanded=len(by_stock) > 1):
