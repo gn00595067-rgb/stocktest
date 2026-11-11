@@ -133,7 +133,7 @@ def _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id, key
     """
     pend = [(u, r) for u in users for r in pending_sells(new_by_user[u], ctx[u].rules + dt_rules)]
     if not pend or not st.checkbox(
-        "有幾檔股票要另外指定沖哪幾筆買進（其他照上面的方式）", key="bs_ovr",
+        "有幾檔股票要另外指定（例：台積電自己挑要沖哪幾筆、南亞用均價；其他照上面的方式）", key="bs_ovr",
     ):
         return {}, [], False
     multi = len({u for u, _r in pend}) > 1
@@ -245,34 +245,44 @@ def _overflow_split(rows, to_import, users, ctx, traders, name_by_id, key_sfx):
     others_ctx = {}
     added, moved, next_seq = [], [], max(r["seq"] for r in rows) + 1
     by_tmp = {r["tmp_id"]: r for r in to_import}
+    # 同一人同一檔只問一次（Elsa 11/11：「4 筆交易就要選四次」）
+    groups = {}
     for tid, q in sorted(short.items(), key=lambda kv: by_tmp[kv[0]]["seq"]):
         r = by_tmp[tid]
-        opts, labels = [None], {None: f"先不處理（照樣記在 {r['user']}，庫存不足 {q:,} 股）"}
+        groups.setdefault((r["user"], r["stock_id"]), []).append((r, q))
+    for (u, sid), items in groups.items():
+        need = sum(q for _r, q in items)
+        last_day = max(r["trade_date"] for r, _q in items)
+        opts, labels = [None], {None: f"先不處理（照樣記在 {u}，庫存不足 {need:,} 股）"}
         for v in traders:
-            if v == r["user"]:
+            if v == u:
                 continue
             if v not in ctx and v not in others_ctx:
                 others_ctx[v] = _load_user(v)
             c = ctx.get(v) or others_ctx[v]
             mine_v = [x for x in to_import if x["user"] == v]
-            avail = stock_available(r["stock_id"], r["trade_date"], mine_v, c.trades, c.rules)
+            avail = stock_available(sid, last_day, mine_v, c.trades, c.rules)
             opts.append(v)
-            labels[v] = f"{v}（這檔可沖 {avail:,} 股" + ("" if avail >= q else "，也不夠") + "）"
+            labels[v] = f"{v}（這檔可沖 {avail:,} 股" + ("" if avail >= need else "，也不夠") + "）"
         to = st.selectbox(
-            f"{r['user']}｜{r['trade_date']:%m/%d} {r['stock_id']} {name_by_id.get(r['stock_id'], '')} "
-            f"賣 {r['price']:g} × {r['quantity']:,}（書號 {r['order_no'] or '—'}）→ 不夠的 **{q:,} 股** 記到",
-            opts, format_func=labels.get, key=f"bs_ovf_{key_sfx}_{r['seq']}",
+            f"{u}｜{sid} {name_by_id.get(sid, '')}：{len(items)} 筆賣出共不夠 **{need:,} 股** → 記到",
+            opts, format_func=labels.get, key=f"bs_ovf_{key_sfx}_{u}_{sid}",
         )
+        with st.expander(f"是哪 {len(items)} 筆"):
+            st.dataframe(pd.DataFrame([{
+                "日期": f"{r['trade_date']:%m/%d}", "價格": r["price"], "股數": r["quantity"], "不夠": q,
+                "書號": r["order_no"] or "—"} for r, q in items]), use_container_width=True, hide_index=True)
         if to is None:
             continue
-        if q >= r["quantity"]:   # 整筆都沒庫存：整筆改記到選的人，不拆出 0 股的交易
-            r.update(user=to, note=f"對帳單匯入時改記（{r['user']} 沒有庫存）")
-            moved.append(r)
-            continue
-        kept, new = split_overflow(r, q, to, next_seq)
-        next_seq += 1
-        r.update(kept)
-        added.append(new)
+        for r, q in items:
+            if q >= r["quantity"]:   # 整筆都沒庫存：整筆改記到選的人，不拆出 0 股的交易
+                r.update(user=to, note=f"對帳單匯入時改記（{u} 沒有庫存）")
+                moved.append(r)
+                continue
+            kept, new = split_overflow(r, q, to, next_seq)
+            next_seq += 1
+            r.update(kept)
+            added.append(new)
     if not added and not moved:
         return []
     assign_tmp_ids(added)
@@ -464,11 +474,10 @@ def render_broker_statement_section():
             "當沖的賣出要沖哪裡的買進",
             [True, False], key="bs_dt_any", horizontal=True,
             format_func=lambda v: "以前的庫存＋當天的買進都可以（照上面方式挑）" if v else "只沖當天的買進",
-        )
-        st.caption(
-            "ℹ️ **怎麼判斷當沖**：看券商扣的證交稅——稅是成交金額 0.15%（當沖減半）＝當沖，0.3%＝一般賣出。"
-            "當沖的賣出可以選要不要也沖以前幾天買的庫存；選「只沖當天的買進」時不動原本庫存，"
-            "當天買的比賣的多，沖哪幾筆照上面選的方式（先進先出＝照成交順序）。"
+            # 說明收進 ⓘ：放在畫面上會把下面「另外指定」擠到看不到（Elsa 11/11 找不到）
+            help="怎麼判斷當沖：看券商扣的證交稅——稅是成交金額 0.15%（當沖減半）＝當沖，0.3%＝一般賣出。"
+                 "當沖的賣出可以選要不要也沖以前幾天買的庫存；選「只沖當天的買進」時不動原本庫存，"
+                 "當天買的比賣的多，沖哪幾筆照上面選的方式（先進先出＝照成交順序）。",
         )
         if dt_any:
             # 新匯入的當沖賣出改走統一沖銷（從全部庫存挑）；稅是當沖稅，賣出仍標當沖。
