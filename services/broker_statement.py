@@ -14,7 +14,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from services.pnl_engine import Lot, compute_matches
+from services.pnl_engine import Lot, compute_matches, noloss_order
 
 # 狀態（預覽表顯示文字見 STATUS_LABEL）
 NEW = "new"
@@ -34,6 +34,7 @@ STATUS_LABEL = {
 SELL_STRATEGIES = {
     "FIFO": "先進先出（預設）",
     "CONSERVATIVE": "保守：成本高的先沖（帳上賺最少）",
+    "NOLOSS": "成本高但不賠：不賠的買進裡成本高的先沖（含手續費、稅）",
     "OPTIMISTIC": "樂觀：成本低的先沖（帳上賺最多）",
     "MEAN": "均價：最接近平均成本的先沖",
     "NONE": "不指定：不寫沖銷規則，交給各頁面的計算方式",
@@ -416,8 +417,11 @@ def daytrade_cap(row: dict) -> Optional[int]:
     return None
 
 
-def _order_day_buys(buys: List[list], strategy: str) -> List[list]:
-    """同一天的買進（[id, 剩餘股數, 是否新匯入, 價格]）照沖銷方式排先後；FIFO／NONE 照成交順序。"""
+def _order_day_buys(buys: List[list], strategy: str, sell_price: float = 0.0) -> List[list]:
+    """同一天的買進（[id, 剩餘股數, 是否新匯入, 價格]）照沖銷方式排先後；FIFO／NONE 照成交順序。
+    NOLOSS 用當天賣出的均價判斷賠不賠。"""
+    if strategy == "NOLOSS":
+        return noloss_order(buys, sell_price, key=lambda b: (b[3],))
     if strategy == "CONSERVATIVE":
         return sorted(buys, key=lambda b: -b[3])
     if strategy == "OPTIMISTIC":
@@ -455,7 +459,9 @@ def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int
 
     out, flagged = [], set()
     for _key, sides in by_day.items():
-        buys, sells = _order_day_buys(sides["BUY"], strategy), sides["SELL"]
+        sells = sides["SELL"]
+        s_avg = sum(x[1] * x[3] for x in sells) / sum(x[1] for x in sells) if sells and sum(x[1] for x in sells) else 0.0
+        buys = _order_day_buys(sides["BUY"], strategy, s_avg)
         if not buys or not sells or not any(x[2] for x in buys + sells):
             continue
         for s in sells:

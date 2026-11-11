@@ -77,6 +77,19 @@ def net_pnl_for_match(
     return pnl_gross - buy_fee - sell_fee - sell_tax
 
 
+# 「成本高但不賠」：買進成本 ≤ 賣價 × 這個係數才算不賠（公定手續費買賣各 0.1425%、證交稅 0.3%，不打折＝最保守）
+NOLOSS_FACTOR = (1 - 0.001425 - 0.003) / (1 + 0.001425)
+
+
+def noloss_order(buys: list, sell_price: float, key) -> list:
+    """不賠的買進成本高的先（帳上賺最少但不賠）；不賠的不夠時，剩下的賠最少（成本低）的先。
+    key(b) 回傳 (價格, …) 排序鍵；Elsa 2026-11-11：「沖短線成本高的，但不要賠」。"""
+    cap = float(sell_price) * NOLOSS_FACTOR
+    ok = sorted([b for b in buys if key(b)[0] <= cap], key=key, reverse=True)
+    loss = sorted([b for b in buys if key(b)[0] > cap], key=key)
+    return ok + loss
+
+
 def compute_matches(
     buys: List[Lot],
     sells: List[Lot],
@@ -113,9 +126,11 @@ def compute_matches(
     def _eligible_buys_for_sell(all_buys: List[Lot], sell: Lot) -> List[Lot]:
         return [b for b in all_buys if b.qty > 0 and b.date <= sell.date]
 
-    def _strategy_order(buys_for_sell: List[Lot], strategy: str) -> List[Lot]:
+    def _strategy_order(buys_for_sell: List[Lot], strategy: str, sell: Optional[Lot] = None) -> List[Lot]:
         if not buys_for_sell:
             return []
+        if strategy == "NOLOSS" and sell is not None:
+            return noloss_order(buys_for_sell, sell.price, key=lambda b: (b.price, b.date, b.trade_id))
         if strategy == "FIFO":
             return sorted(buys_for_sell, key=lambda b: (b.date, b.trade_id))
         if strategy == "CONSERVATIVE":
@@ -135,7 +150,7 @@ def compute_matches(
         for s in sorted(all_sells, key=lambda x: (x.date, x.trade_id)):
             if s.qty <= 0:
                 continue
-            ordered = _strategy_order(_eligible_buys_for_sell(all_buys, s), strategy)
+            ordered = _strategy_order(_eligible_buys_for_sell(all_buys, s), strategy, s)
             for b in ordered:
                 if s.qty <= 0:
                     break
@@ -160,7 +175,7 @@ def compute_matches(
         strat = "OPTIMISTIC"
     elif policy in ("CUSTOM_PLUS_MEAN", "CUSTOM_PLUS_UNMATCHED_MEAN", "CUSTOM_PLUS_AVG"):
         strat = "MEAN"
-    elif policy in ("FIFO", "CONSERVATIVE", "OPTIMISTIC", "MEAN"):
+    elif policy in ("FIFO", "CONSERVATIVE", "OPTIMISTIC", "MEAN", "NOLOSS"):
         # 允許純策略（未使用自定規則）
         strat = policy
         buys0 = [Lot(trade_id=b.trade_id, qty=int(b.qty), price=float(b.price), date=str(b.date)) for b in buys]

@@ -120,7 +120,7 @@ def _assign_users(rows, main_user, traders, name_by_id, editor_key):
 _OVR_SAME, _OVR_PICK = "SAME", "PICK"
 _OVR_LABEL = {
     "照上面的方式": _OVR_SAME, "先進先出": "FIFO", "保守：成本高的先沖": "CONSERVATIVE",
-    "樂觀：成本低的先沖": "OPTIMISTIC", "均價：最接近平均成本": "MEAN", "不指定（不沖）": "NONE",
+    "成本高但不賠": "NOLOSS", "樂觀：成本低的先沖": "OPTIMISTIC", "均價：最接近平均成本": "MEAN", "不指定（不沖）": "NONE",
     "自己挑買進": _OVR_PICK,
 }
 

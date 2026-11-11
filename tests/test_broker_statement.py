@@ -460,3 +460,25 @@ def test_overflow_split_to_other_user():
     assign_tmp_ids([new])
     assert inventory_shortage([kept], short_trades, []) == {}
     assert plan_sell_matches([new], peggy, [], "CONSERVATIVE") == ([(new["tmp_id"], 2, 1500)], {})
+
+
+def test_noloss_strategy():
+    """Elsa 11/11：「沖成本高的，但不要賠」— 含手續費、稅不賠的買進裡挑最貴的；都會賠時挑賠最少的。"""
+    D1, D2 = date(2026, 11, 1), date(2026, 11, 11)
+    trades = [T(1, "2303", D1, "BUY", 104, 1000), T(2, "2303", D1, "BUY", 99.5, 1000),   # 99.5 扣費用後會賠
+              T(3, "2303", D1, "BUY", 98, 1000), T(4, "2303", D1, "BUY", 95, 1000)]
+    rows = assign_tmp_ids(_rows(("2303", D2, "SELL", 100, 2000, "S1")))
+    s1 = rows[0]["tmp_id"]
+    assert plan_sell_matches(rows, trades, [], "NOLOSS") == ([(s1, 3, 1000), (s1, 4, 1000)], {})
+    assert plan_sell_matches(rows, trades, [], "CONSERVATIVE")[0] == [(s1, 1, 1000), (s1, 2, 1000)]
+    # 不賠的不夠：剩下的從賠最少（成本低）的開始
+    rows3 = assign_tmp_ids(_rows(("2303", D2, "SELL", 100, 3000, "S1")))
+    t = rows3[0]["tmp_id"]
+    assert plan_sell_matches(rows3, trades, [], "NOLOSS")[0] == [(t, 3, 1000), (t, 4, 1000), (t, 2, 1000)]
+
+
+def test_noloss_daytrade_day_buys():
+    rows = assign_tmp_ids(_rows(("2303", D29, "BUY", 101, 1000, "A1"), ("2303", D29, "BUY", 99, 1000, "A2"),
+                                ("2303", D29, "BUY", 98, 1000, "A3"), ("2303", D29, "SELL", 100, 1000, "A4")))
+    a1, a2, a3, a4 = (r["tmp_id"] for r in rows)
+    assert plan_daytrade(rows, [], [], "NOLOSS")[0] == [(a4, a2, 1000)]
