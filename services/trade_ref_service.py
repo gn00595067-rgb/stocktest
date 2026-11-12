@@ -164,3 +164,30 @@ def undo_batch(session, batch_id: str, user: str) -> int:
     session.query(Trade).filter(Trade.id.in_(ids)).delete(synchronize_session=False)
     session.execute(delete(trade_refs).where(trade_refs.c.trade_id.in_(ids)))
     return len(set(ids))
+
+
+def lock_imports(session) -> None:
+    """同一時間只讓一個匯入寫入（Postgres advisory lock，交易結束自動放開）。
+    2026-11-12：Elsa 按了確認匯入後以為卡住、重整又匯一次，兩邊在對方還沒存好前都判斷成新增 → 重複。
+    SQLite（試算表模式、測試）只有一條連線，本來就不會同時寫。"""
+    from sqlalchemy import text
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SELECT pg_advisory_xact_lock(20261112)"))
+
+
+def already_imported(session, refs: Iterable[Tuple[str, date, str]]) -> int:
+    """[(買賣人, 成交日, 書號)] 裡有幾個已經有書號紀錄、而且交易還在（上鎖後再檢查一次用）。"""
+    from db.models import Trade
+    ensure_table(session)
+    keys = {(u, d, o) for u, d, o in refs if o}
+    if not keys:
+        return 0
+    t = Trade.__table__
+    rows = session.execute(
+        select(trade_refs.c.user, trade_refs.c.trade_date, trade_refs.c.order_no)
+        .select_from(trade_refs.join(t, t.c.id == trade_refs.c.trade_id))
+        .where(trade_refs.c.order_no.in_({o for _u, _d, o in keys}))
+    ).all()
+    found = {(u, d if isinstance(d, date) else datetime.strptime(str(d)[:10], "%Y-%m-%d").date(), o)
+             for u, d, o in rows}
+    return len(keys & found)

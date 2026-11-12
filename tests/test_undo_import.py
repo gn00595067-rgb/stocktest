@@ -63,3 +63,18 @@ def test_same_order_no_twice_in_one_batch():
     s2.commit()
     assert trs.list_import_batches(s2)[0]["n"] == 3
     assert trs.undo_batch(s2, k, "短線") == 3
+
+
+def test_already_imported_recheck():
+    """上鎖後再檢查：同一份在另一個視窗剛匯好 → 這次要擋下。交易刪了就不算。"""
+    s = _sess()
+    d = date.today()
+    t = Trade(user="短線", stock_id="2303", trade_date=d, side="BUY", price=100, quantity=1000)
+    s.add(t); s.flush()
+    trs.add_refs(s, "短線", [(d, "A1", t.id, "import")], "b")
+    s.commit()
+    trs.lock_imports(s)   # SQLite 不做事
+    assert trs.already_imported(s, [("短線", d, "A1"), ("短線", d, "A2")]) == 1
+    assert trs.already_imported(s, [("雅雲", d, "A1"), ("短線", d, None)]) == 0
+    s.delete(t); s.commit()
+    assert trs.already_imported(s, [("短線", d, "A1")]) == 0

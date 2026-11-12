@@ -6,7 +6,7 @@
 """
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pandas as pd
@@ -637,6 +637,13 @@ def render_broker_statement_section():
     sess = get_session()
     try:
         trs.ensure_table(sess)
+        trs.lock_imports(sess)
+        # 上鎖後再檢查一次：另一個視窗剛好同時匯同一份，等它存好後這裡就看得到
+        if trs.already_imported(sess, [(r["user"], r["trade_date"], r["order_no"]) for r in to_import]):
+            sess.rollback()
+            st.error("這份對帳單**剛剛已經匯入過了**（可能按了兩次、或另一個視窗同時在匯），這次沒有寫入。"
+                     "請重新整理頁面確認。")
+            return
         id_map = {}
         for r in sorted(to_import, key=lambda x: x["seq"]):
             t = Trade(user=r["user"], stock_id=r["stock_id"], trade_date=r["trade_date"], side=r["side"],
@@ -717,14 +724,16 @@ def render_undo_section():
             return
         name_by_id = dict(_load_base()[0])
 
+        # batch_id 是主機時間；Streamlit Cloud 主機是 UTC，顯示時換成台灣時間
+        tw_shift = timedelta(hours=8) - (datetime.now().astimezone().utcoffset() or timedelta(0))
+
         def label(x):
-            t = datetime.strptime(x["batch_id"], "%Y%m%d%H%M%S")
+            t = datetime.strptime(x["batch_id"], "%Y%m%d%H%M%S") + tw_shift
             days = "、".join(f"{d:%m/%d}" for d in sorted(x["days"]))
             return (f"{t:%m/%d %H:%M} 匯入｜{x['user']}｜{x['n']} 筆（成交日 {days}）"
                     + (f"｜⚠️ 其中 {x['dup']} 筆跟別的交易一模一樣，疑似重複" if x["dup"] else ""))
 
-        st.caption("每一列是一次「確認匯入」。疑似重複＝同一人同一天有內容完全相同的交易（同股、同價、同股數）。"
-                   "時間是 Streamlit 主機時間（可能比台灣慢 8 小時）。")
+        st.caption("每一列是一次「確認匯入」（台灣時間）。疑似重複＝同一人同一天有內容完全相同的交易（同股、同價、同股數）。")
         idx = st.radio("選要復原哪一次", range(len(batches)), format_func=lambda i: label(batches[i]),
                        key="bs_undo_pick", index=None)
         if idx is None:
@@ -732,7 +741,8 @@ def render_undo_section():
         x = batches[idx]
         st.caption("這次的股票：" + "、".join(f"{s} {name_by_id.get(s, '')}" for s in sorted(x["stocks"])))
         ok = st.checkbox(f"確定刪掉這次匯入的 {x['n']} 筆交易（連同它們的沖銷配對）", key=f"bs_undo_ok_{idx}")
-        st.caption("只刪這次**新增**的交易；這次順便補書號、修正、更新手續費的既有交易不會還原。")
+        st.caption("會刪掉的只有這次匯入**新加進去**的交易。"
+                   "如果這次匯入時也順便改了原本就有的交易（補書號、照對帳單修正、更新手續費），那些改動不會改回來。")
         if st.button("↩️ 復原這次匯入", type="primary", disabled=not ok, key="bs_undo_do"):
             sess = get_session()
             try:
