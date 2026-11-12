@@ -48,7 +48,14 @@ def add_refs(session, user: str, refs: Iterable[Tuple[date, str, int, str]], bat
     ensure_table(session)
     n = 0
     now = datetime.utcnow()
+    seen: Dict[tuple, int] = {}
     for d, order_no, trade_id, source in refs:
+        # 同一批裡同一天同書號出現第二次（券商把一張委託拆兩列，例：奇鋐 k02Zc 37 股＋13 股）：
+        # 存成「書號#2」，每筆交易都記得到批次（復原匯入才刪得乾淨）；比對重複仍用原書號
+        k = (d, order_no)
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] > 1:
+            order_no = f"{order_no}#{seen[k]}"
         session.execute(delete(trade_refs).where(
             (trade_refs.c.user == user) & (trade_refs.c.trade_date == d) & (trade_refs.c.order_no == order_no)))
         session.execute(insert(trade_refs).values(
@@ -83,3 +90,77 @@ def load_live_refs_all_users(session) -> List[Tuple[date, str, str, str, str]]:
     ).all()
     return [(d if isinstance(d, date) else datetime.strptime(str(d)[:10], "%Y-%m-%d").date(),
              str(o), str(u), str(sid).strip(), str(sd or "").strip().upper()) for d, o, u, sid, sd in rows]
+
+
+def _unref_in_range(session, user: str, ids) -> set:
+    """舊批次補漏：同一批 id 範圍內、這個人、完全沒有書號紀錄的交易（2026-11-12 前同批重複書號只記到最後一筆）。
+    匯入是同一個交易連續寫入，id 連號，中間不會夾別的匯入。"""
+    from db.models import Trade
+    ids = [int(i) for i in ids]
+    if not ids:
+        return set()
+    cand = [int(r[0]) for r in session.query(Trade.id).filter(
+        Trade.user == user, Trade.id >= min(ids), Trade.id <= max(ids)).all()]
+    has_ref = {int(r[0]) for r in session.execute(
+        select(trade_refs.c.trade_id).where(trade_refs.c.trade_id.in_(cand))).all()} if cand else set()
+    return {i for i in cand if i not in has_ref and i not in set(ids)}
+
+
+def list_import_batches(session, days: int = 14) -> List[dict]:
+    """最近的匯入批次（只算 source=import、交易還在的），新到舊。
+    每批：batch_id、買賣人、筆數、成交日範圍、股票、跟「別批或手 key 的交易」內容一模一樣的筆數（疑似重複）。"""
+    from db.models import Trade
+    ensure_table(session)
+    t = Trade.__table__
+    rows = session.execute(
+        select(trade_refs.c.batch_id, trade_refs.c.user, t.c.id, t.c.trade_date, t.c.stock_id, t.c.side,
+               t.c.price, t.c.quantity)
+        .select_from(trade_refs.join(t, t.c.id == trade_refs.c.trade_id))
+        .where(trade_refs.c.source == "import")
+    ).all()
+    batches: Dict[tuple, dict] = {}
+    for b, u, tid, d, sid, side, price, qty in rows:
+        if not b:
+            continue
+        x = batches.setdefault((b, u), {"batch_id": b, "user": u, "ids": set(), "days": set(), "stocks": set()})
+        x["ids"].add(int(tid))
+        x["days"].add(d)
+        x["stocks"].add(str(sid).strip())
+    if not batches:
+        return []
+    for x in batches.values():
+        x["ids"] |= _unref_in_range(session, x["user"], x["ids"])
+    cutoff = (datetime.now().date().toordinal() - days)
+    out = [x for x in batches.values() if datetime.strptime(x["batch_id"][:8], "%Y%m%d").date().toordinal() >= cutoff]
+    # 疑似重複：同人、同日、同股、同買賣、同價、同股數的交易不只這批有
+    users = {x["user"] for x in out}
+    all_days = {d for x in out for d in x["days"]}
+    if out:
+        trs = session.query(Trade).filter(Trade.user.in_(users), Trade.trade_date.in_(all_days)).all()
+        by_key: Dict[tuple, List[int]] = {}
+        for tr in trs:
+            k = (tr.user, tr.trade_date, str(tr.stock_id).strip(), str(tr.side).upper(), float(tr.price), int(tr.quantity))
+            by_key.setdefault(k, []).append(int(tr.id))
+        key_of = {i: k for k, ids in by_key.items() for i in ids}
+        for x in out:
+            x["dup"] = sum(1 for i in x["ids"] if i in key_of and any(j not in x["ids"] for j in by_key[key_of[i]]))
+    for x in out:
+        x["n"] = len(x["ids"])
+    return sorted(out, key=lambda x: x["batch_id"], reverse=True)
+
+
+def undo_batch(session, batch_id: str, user: str) -> int:
+    """刪掉這批匯入新增的交易（連同沖銷規則、書號紀錄）。補書號／修正／手續費更新動到的既有交易不動。不 commit。"""
+    from db.models import CustomMatchRule, Trade
+    ensure_table(session)
+    ids = [int(r[0]) for r in session.execute(
+        select(trade_refs.c.trade_id).where((trade_refs.c.batch_id == batch_id) & (trade_refs.c.user == user)
+                                            & (trade_refs.c.source == "import"))).all()]
+    if not ids:
+        return 0
+    ids = list(set(ids) | _unref_in_range(session, user, ids))
+    session.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id.in_(ids)
+                                          | CustomMatchRule.buy_trade_id.in_(ids)).delete(synchronize_session=False)
+    session.query(Trade).filter(Trade.id.in_(ids)).delete(synchronize_session=False)
+    session.execute(delete(trade_refs).where(trade_refs.c.trade_id.in_(ids)))
+    return len(set(ids))

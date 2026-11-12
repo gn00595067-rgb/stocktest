@@ -702,3 +702,50 @@ def render_broker_statement_section():
         st.error(f"匯入失敗，什麼都沒寫入：{e}")
     finally:
         sess.close()
+
+
+def render_undo_section():
+    """↩️ 復原匯入：列最近的匯入批次，勾確認後整批刪掉（2026-11-12 Elsa：短線不小心匯了兩次）。"""
+    with st.expander("↩️ 復原匯入（不小心匯錯、匯兩次時用）"):
+        sess = get_session()
+        try:
+            batches = trs.list_import_batches(sess)
+        finally:
+            sess.close()
+        if not batches:
+            st.caption("最近 14 天沒有對帳單匯入紀錄。")
+            return
+        name_by_id = dict(_load_base()[0])
+
+        def label(x):
+            t = datetime.strptime(x["batch_id"], "%Y%m%d%H%M%S")
+            days = "、".join(f"{d:%m/%d}" for d in sorted(x["days"]))
+            return (f"{t:%m/%d %H:%M} 匯入｜{x['user']}｜{x['n']} 筆（成交日 {days}）"
+                    + (f"｜⚠️ 其中 {x['dup']} 筆跟別的交易一模一樣，疑似重複" if x["dup"] else ""))
+
+        st.caption("每一列是一次「確認匯入」。疑似重複＝同一人同一天有內容完全相同的交易（同股、同價、同股數）。"
+                   "時間是 Streamlit 主機時間（可能比台灣慢 8 小時）。")
+        idx = st.radio("選要復原哪一次", range(len(batches)), format_func=lambda i: label(batches[i]),
+                       key="bs_undo_pick", index=None)
+        if idx is None:
+            return
+        x = batches[idx]
+        st.caption("這次的股票：" + "、".join(f"{s} {name_by_id.get(s, '')}" for s in sorted(x["stocks"])))
+        ok = st.checkbox(f"確定刪掉這次匯入的 {x['n']} 筆交易（連同它們的沖銷配對）", key=f"bs_undo_ok_{idx}")
+        st.caption("只刪這次**新增**的交易；這次順便補書號、修正、更新手續費的既有交易不會還原。")
+        if st.button("↩️ 復原這次匯入", type="primary", disabled=not ok, key="bs_undo_do"):
+            sess = get_session()
+            try:
+                n = trs.undo_batch(sess, x["batch_id"], x["user"])
+                sess.commit()
+                st.session_state["bs_done_msg"] = f"已復原：刪掉 {x['user']} 這次匯入的 {n} 筆交易。"
+                st.session_state.pop("bs_undo_pick", None)
+                st.rerun()
+            except OperationalError:
+                sess.rollback()
+                st.error("無法寫入資料庫（目前環境為唯讀）。")
+            except Exception as e:
+                sess.rollback()
+                st.error(f"復原失敗，什麼都沒刪：{e}")
+            finally:
+                sess.close()
