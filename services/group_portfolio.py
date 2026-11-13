@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Callable, Dict, List, Optional, Tuple
 
+import math
+
 from services.pnl_engine import Lot, compute_matches, net_pnl_for_match
 
 ALL_GROUP_ID = 0          # 不存表的後備分頁 id
@@ -353,6 +355,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
         fee_rate = rate_by_sid.get(sid) or trader_fee_rate(group.trader)
         rows.append({
             "stock_id": sid,
+            "is_etf": is_etf,
             "name": (getattr(m, "name", None) or sid) if m else sid,
             "exchange": getattr(m, "exchange", None) if m else None,
             "price": price if q.get("price") else None,
@@ -389,6 +392,38 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
         "realized": tot_real,
         "realized_pct": (tot_real / tot_real_cost * 100) if tot_real_cost else None,
     }
+
+
+# ─── 盤中可賣排序（docs/specs/盤中可賣排序.md）────────────────────────────
+
+def limit_up_price(prev_close: float, is_etf: bool = False) -> float:
+    """今天漲停價：昨收 ×1.1，依升降單位無條件捨去。"""
+    from services.trade_fees import tick_size
+    raw = float(prev_close) * 1.1
+    t = tick_size(raw, is_etf=is_etf)
+    return round(math.floor(round(raw / t, 6)) * t, 2)
+
+
+def sell_status(row: dict) -> Tuple[Optional[str], Optional[float]]:
+    """("profit", 高出底價 %)＝已過底價；("reach", 還差 %)＝漲停到得了底價；(None, None)＝其他。"""
+    price, be, qty = row.get("price"), row.get("breakeven"), row.get("qty")
+    if not qty or not price or not be:
+        return None, None
+    if price >= be:
+        return "profit", (price - be) / be * 100
+    prev = price - float(row.get("change") or 0)
+    if prev > 0 and limit_up_price(prev, bool(row.get("is_etf"))) >= be:
+        return "reach", (be - price) / price * 100
+    return None, None
+
+
+def sellable_first(rows: List[dict]) -> List[Tuple[Optional[str], dict, Optional[float]]]:
+    """[(區, 列, %)]：已過底價（高出多的在上）→ 今天有機會（差少的在上）→ 其他（原順序）。"""
+    tagged = [(*sell_status(r), r) for r in rows]
+    profit = sorted([x for x in tagged if x[0] == "profit"], key=lambda x: -x[1])
+    reach = sorted([x for x in tagged if x[0] == "reach"], key=lambda x: x[1])
+    rest = [x for x in tagged if x[0] is None]
+    return [(k, r, p) for k, p, r in profit + reach + rest]
 
 
 # ─── 防呆 ─────────────────────────────────────────────────────────────────

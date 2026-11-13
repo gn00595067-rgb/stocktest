@@ -132,6 +132,9 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; t
 .yh-td { text-align: right; line-height: 1.35; padding: .2rem 0; }
 .yh-td.l { text-align: left; }
 .yh-td .sub { color: #999; font-size: .85rem; }
+.yh-td .l2.sell { display: block; margin-left: 0; font-size: .78rem; font-weight: 700; }   /* 可賣標示：永遠獨立一行 */
+.yh-td .l2.sell.profit { color: #d32f2f; }
+.yh-td .l2.sell.reach { color: #1565c0; }
 .yh-td .l2.pledge { display: block; margin-left: 0; color: #e65100; font-size: .78rem; font-weight: 600; }   /* 質借：永遠獨立一行 */
 [class*="st-key-yh_pledge_save_"] button p { white-space: nowrap; }
 .yh-td.sm { color: #888; }
@@ -1035,6 +1038,11 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
     if search_sid:
         rows = [r for r in rows if r["stock_id"] == search_sid]
         st.caption(f"🔍 只顯示搜尋結果：{search_sid}；按搜尋框的 ✕ 回到全部股票。")
+    # 盤中可賣排序（老闆 11/13：有獲利、今天賣就賺的排上面）；盤中預設開、收盤後預設照市值
+    st.session_state.setdefault("yh_sellable_first", _tw_market_open())
+    sell_first = st.toggle("💰 可賣的排上面", key="yh_sellable_first",
+                           help="已過底價（今天賣就賺）排最上面；其次是還沒到底價、但今天漲停（昨收×1.1）到得了的；其他照市值。")
+    ordered = gp.sellable_first(rows) if sell_first else [(None, r, None) for r in rows]
     st.write("")
     thead = st.container(key="yh_thead")
     h0, h1 = thead.columns(_ROW_COLS)
@@ -1056,8 +1064,16 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
     if not summary["rows"]:
         st.info("這個分頁目前沒有交易。按「新增股票」加入股票，再展開輸入第一筆交易。")
 
-    for r in rows:
+    _sec_title = {"profit": "💰 已過底價：今天賣出扣費稅就賺", "reach": "📈 還沒到底價，但今天漲停到得了", None: "其他"}
+    _n_sec = {}
+    for k, _r, _p in ordered:
+        _n_sec[k] = _n_sec.get(k, 0) + 1
+    _last_sec = "__start__"
+    for sec, r, sec_pct in ordered:
         sid = r["stock_id"]
+        if sell_first and sec != _last_sec:
+            st.markdown(f"**{_sec_title[sec]}**（{_n_sec[sec]} 檔）")
+            _last_sec = sec
         is_open = st.session_state.get(open_key) == sid
         with st.container(key=f"yh_row_{sid}"):
             c0, c1 = st.columns(_ROW_COLS, vertical_alignment="center")
@@ -1086,7 +1102,10 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
             _pl = "".join(f'<span class="l2 pledge">{x}</span>' for x in _lines)
             c1.markdown(
                 '<div class="yh-grid">'
-                f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span></div>'
+                f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span>'
+                + (f'<span class="l2 sell profit">💰 已過底價 +{sec_pct:.1f}%</span>' if sec == "profit"
+                   else f'<span class="l2 sell reach">📈 差 {sec_pct:.1f}%</span>' if sec == "reach" else "")
+                + '</div>'
                 + price_html
                 + f'<div class="yh-td">{r["qty"]:,}<span class="unit">股</span>{_pl}</div>'
                 + f'<div class="yh-td">{avg_s}<span class="unit twd">TWD</span></div>'

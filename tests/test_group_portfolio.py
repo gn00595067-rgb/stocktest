@@ -224,3 +224,29 @@ def test_multi_person_group_persisted(sess):
     assert gp.list_groups(sess, "老闆", can_access=lambda p: p == "Peggy姐") == []
     gp.update_group(sess, gid, "11月短線", None, None, [], False, trader="Peggy姐", extra_traders=[])
     assert next(x for x in gp.list_groups(sess, "老闆") if x.id == gid).extra_traders == []
+
+
+def test_limit_up_price():
+    from services.group_portfolio import limit_up_price
+    assert limit_up_price(2395) == 2630.0     # 2634.5 → 5 元一檔捨去
+    assert limit_up_price(104) == 114.0       # 114.4 → 0.5 一檔
+    assert limit_up_price(9.5) == 10.45
+
+
+def test_sellable_first():
+    """老闆 11/13：盤中把今天賣就賺的排上面；漲停到得了底價的其次；其他照原順序。"""
+    from services.group_portfolio import sellable_first, sell_status
+    def row(sid, price, change, be, qty=1000):
+        return {"stock_id": sid, "price": price, "change": change, "breakeven": be, "qty": qty, "is_etf": False}
+    rows = [row("2330", 2340, -55, 2410),         # 昨收 2395、漲停 2630 ≥ 底價 → 有機會，差 3.0%
+            row("2303", 101, -3, 118.5),          # 漲停 114 < 118.5 → 其他
+            row("1303", 293, -20, 293),           # 剛好到底價 → 已過底價 0%
+            row("6805", 1980, -70, 2055),         # 差 3.8%
+            row("8150", 90, 2, 85),               # 已過底價 5.9%
+            row("2454", None, 0, 100),            # 沒報價 → 其他
+            row("0050", 200, 1, 150, qty=0)]      # 沒持股 → 其他
+    assert sell_status(rows[0])[0] == "reach"
+    out = sellable_first(rows)
+    assert [(k, r["stock_id"]) for k, r, _p in out] == [
+        ("profit", "8150"), ("profit", "1303"), ("reach", "2330"), ("reach", "6805"),
+        (None, "2303"), (None, "2454"), (None, "0050")]
