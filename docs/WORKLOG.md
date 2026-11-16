@@ -864,3 +864,9 @@
 **為什麼**：Peggy 截圖回饋：想換沖銷方式時直接看到總損益差多少；以及當沖賣出想保留當天買進當庫存、只沖舊庫存。
 **驗證**：pytest 239 passed（新增 test_daytrade_sell_prior_inventory_only）。
 **下一步**：請 Peggy 用同一份對帳單切換沖銷方式看合計是否符合預期；確認「只沖以前的庫存」時賣出仍標當沖（稅是當沖稅）是她要的。
+
+## 2026-11-16 — 新頁「收盤Yahoo key單」
+**做了什麼**：規格 `docs/specs/收盤Yahoo_key單.md`；`reports/yahoo_keysheet.py`（`build_keysheet`、`key_steps`）；頁面 `pages/13_收盤Yahoo_key單.py`：選日期＋買賣人，每檔列前一天庫存、今天買賣、沖掉以前庫存／今天買進各幾股多少成本、收盤後庫存均價，以及照抄的 Yahoo 改法步驟和「Yahoo 會算出的已實現」。
+**為什麼**：Elsa 公司同時在 Yahoo 記帳，Yahoo 只有日期／股數／價格、無稅費、先進先出；現在由系統決定沖哪幾筆，她不知道 Yahoo 那一包該怎麼改，已實現才不會被刪又跟系統一致。
+**驗證**：pytest 243 passed（新增 test_yahoo_keysheet 4 個，含模擬 Yahoo 先進先出連做兩天，累計已實現與庫存均價跟系統一致）；暫存 SQLite＋AppTest 用華通例子跑頁面無錯，系統 22,250／Yahoo 22,240（價格取 2 位小數差 10 元）。
+**下一步**：請 Elsa 用今天的華通照頁面步驟改 Yahoo，對已實現和均價；並測「同一天兩筆買入再賣出，Yahoo 先扣先 key 的那筆嗎」（新股當沖時 A、B 同一天會用到）。
