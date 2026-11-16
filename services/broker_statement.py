@@ -565,13 +565,16 @@ def allocate_picks(sells: List[Tuple[int, int, str]], picks: List[Tuple[int, int
 
 def plan_sell_matches(new_rows: List[dict], trades: List, rules: List[Tuple[int, int, int]],
                       strategy: str, overrides: Optional[Dict[int, str]] = None,
+                      prior_only: Optional[set] = None,
                       ) -> Tuple[List[Tuple[int, int, int]], Dict[int, int]]:
     """當沖以外剩下的新賣出，照統一方式從庫存沖。rules 要包含既有規則＋剛排好的當沖規則（＋自己挑的）。
 
     能沖的庫存見 _remaining_buys。overrides＝{賣出 tmp_id: 方式}：少數幾筆另外指定（§7.1）。
     賣出照（日期, id）逐筆、各用自己的方式從剩下的庫存挑（跟 compute_matches 一次沖的順序相同）。
+    prior_only＝賣出 tmp_id 集合：這幾筆只沖賣出日以前的庫存、不沖當天的買進（當沖賣出選「只沖以前的庫存」）。
     回傳 (規則, {賣出 tmp_id: 庫存不足股數})。方式是 NONE 的賣出不寫規則。
     """
+    prior_only = prior_only or set()
     overrides = {k: v for k, v in (overrides or {}).items() if v in SELL_STRATEGIES}
     if strategy not in SELL_STRATEGIES:
         return [], {}
@@ -590,7 +593,8 @@ def plan_sell_matches(new_rows: List[dict], trades: List, rules: List[Tuple[int,
             if how == "NONE":
                 continue
             got = 0
-            for b_id, s_id, q, *_ in compute_matches([b for b in remain.values() if b.qty > 0], [s], how):
+            cand = [b for b in remain.values() if b.qty > 0 and (s.trade_id not in prior_only or b.date < s.date)]
+            for b_id, s_id, q, *_ in compute_matches(cand, [s], how):
                 out.append((s_id, b_id, q))
                 got += q
                 b = remain[b_id]

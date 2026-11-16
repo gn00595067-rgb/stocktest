@@ -179,6 +179,15 @@ def test_daytrade_sell_can_match_old_inventory():
     assert sell == [(rows[1]["tmp_id"], 1, 1000), (rows[1]["tmp_id"], rows[0]["tmp_id"], 500)] and short == {}
 
 
+def test_daytrade_sell_prior_inventory_only():
+    """畫面選「只沖以前的庫存」：當沖賣出不沖當天的買進；以前庫存不夠就報庫存不足。"""
+    rows = assign_tmp_ids(_rows(("2303", D29, "BUY", 104, 1000, "A1"), ("2303", D29, "SELL", 105, 1500, "A2")))
+    trades = [T(1, "2303", D28, "BUY", 100, 1000)]
+    s = rows[1]["tmp_id"]
+    sell, short = plan_sell_matches(rows, trades, [], "OPTIMISTIC", prior_only={s})
+    assert sell == [(s, 1, 1000)] and short == {s: 500}
+
+
 def test_daytrade_with_existing_manual_buy():
     rows = assign_tmp_ids(_rows(("2303", D29, "SELL", 117, 1000, "A3")))
     trades = [T(3, "2303", D29, "BUY", 115, 1000), T(4, "2303", D28, "BUY", 100, 1000)]

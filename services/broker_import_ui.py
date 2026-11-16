@@ -469,30 +469,35 @@ def render_broker_statement_section():
         rr, ff = plan_daytrade(new_by_user[u], ctx[u].trades, ctx[u].rules, strategy)
         dt_rules += rr
         dt_flag |= ff
+    prior_only = set()   # 只沖以前庫存的當沖賣出（tmp_id）
     if dt_rules:
-        dt_any = st.radio(
+        dt_scope = st.radio(
             "當沖的賣出要沖哪裡的買進",
-            [True, False], key="bs_dt_any", horizontal=True,
-            format_func=lambda v: "以前的庫存＋當天的買進都可以（照上面方式挑）" if v else "只沖當天的買進",
+            ["any", "today", "prior"], key="bs_dt_scope", horizontal=True,
+            format_func={"any": "以前的庫存＋當天的買進都可以（照上面方式挑）", "today": "只沖當天的買進",
+                         "prior": "只沖以前的庫存，不沖當天買進"}.get,
             # 說明收進 ⓘ：放在畫面上會把下面「另外指定」擠到看不到（Elsa 11/11 找不到）
             help="怎麼判斷當沖：看券商扣的證交稅——稅是成交金額 0.15%（當沖減半）＝當沖，0.3%＝一般賣出。"
                  "當沖的賣出可以選要不要也沖以前幾天買的庫存；選「只沖當天的買進」時不動原本庫存，"
-                 "當天買的比賣的多，沖哪幾筆照上面選的方式（先進先出＝照成交順序）。",
+                 "當天買的比賣的多，沖哪幾筆照上面選的方式（先進先出＝照成交順序）。"
+                 "選「只沖以前的庫存」時當天的買進留著當庫存，以前的庫存不夠會顯示庫存不足。",
         )
-        if dt_any:
-            # 新匯入的當沖賣出改走統一沖銷（從全部庫存挑）；稅是當沖稅，賣出仍標當沖。
+        if dt_scope != "today":
+            # 新匯入的當沖賣出改走統一沖銷（從庫存挑）；稅是當沖稅，賣出仍標當沖。
             # 手 key 的既有賣出配上這次的買進，維持當沖互沖（統一沖銷只處理新賣出）
             keep = [x for x in dt_rules if x[0] > 0]
             new_dt_sells = {x[0] for x in dt_rules if x[0] < 0}
             dt_flag = new_dt_sells | {i for x in keep for i in x[:2]}
             dt_rules = keep
+            if dt_scope == "prior":
+                prior_only = new_dt_sells
     # §7.1 少數幾筆另外指定：自己挑的先佔掉買進，其他賣出逐筆照各自的方式
     overrides, pick_rules, pick_err = _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id,
                                                       key_sfx=f"{main_user}_{getattr(f, 'name', '')}")
     sell_rules, shortage = [], {}
     for u in users:
         rr, sh = plan_sell_matches(new_by_user[u], ctx[u].trades, ctx[u].rules + dt_rules + pick_rules,
-                                   strategy, overrides)
+                                   strategy, overrides, prior_only)
         sell_rules += rr
         shortage.update(sh)
 
@@ -547,9 +552,11 @@ def render_broker_statement_section():
 
     if by_stock:
         with st.expander(f"📊 預估損益分股看（{len(by_stock)} 檔；跟自己的帳對不起來時看這裡）", expanded=len(by_stock) > 1):
+            # 最後一列加總：換沖銷方式時可以直接比較總損益（Peggy 11/16）
             st.dataframe(pd.DataFrame([
                 {"股票": f"{sid} {name_by_id.get(sid, '')}", "沖銷股數": q, "預估已實現損益": v}
-                for sid, (q, v) in sorted(by_stock.items())]).style.format(
+                for sid, (q, v) in sorted(by_stock.items())]
+                + [{"股票": "合計", "沖銷股數": sum(q for q, _v in by_stock.values()), "預估已實現損益": pnl}]).style.format(
                     {"沖銷股數": "{:,.0f}", "預估已實現損益": "{:+,.0f}"}),
                 use_container_width=True, hide_index=True)
             st.caption(
