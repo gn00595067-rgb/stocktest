@@ -1,0 +1,99 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- 分頁拖拉排序元件（docs/specs/分頁拖拉排序.md）：不靠第三方套件，直接走 Streamlit 元件訊息協定 -->
+<style>
+  :root { --fg: #31333f; --bg: #ffffff; --line: #d6d6d9; --accent: #ff4b4b; --card: #f7f7f9; }
+  html, body { margin: 0; padding: 0; background: transparent; color: var(--fg);
+    font-family: "Source Sans Pro", "Noto Sans TC", sans-serif; font-size: 15px; }
+  ul { list-style: none; margin: 0; padding: 2px; }
+  li { display: flex; align-items: center; gap: 10px; padding: 9px 12px; margin: 0 0 6px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+    cursor: grab; user-select: none; touch-action: none; }
+  li .grip { opacity: .45; font-size: 16px; letter-spacing: -2px; }
+  li .no { opacity: .55; min-width: 1.6em; text-align: right; font-variant-numeric: tabular-nums; }
+  li.dragging { border-color: var(--accent); box-shadow: 0 4px 12px rgba(0,0,0,.18);
+    cursor: grabbing; position: relative; z-index: 2; }
+</style>
+</head>
+<body>
+<ul id="list"></ul>
+<script>
+const send = (type, extra) => window.parent.postMessage(
+  Object.assign({ isStreamlitMessage: true, type }, extra || {}), "*");
+const list = document.getElementById("list");
+let lastKey = null;
+
+function fitHeight() { send("streamlit:setFrameHeight", { height: document.body.scrollHeight + 4 }); }
+function renumber() { [...list.children].forEach((li, k) => li.querySelector(".no").textContent = (k + 1) + "."); }
+function emit() {
+  send("streamlit:setComponentValue", { value: [...list.children].map(li => Number(li.dataset.id)), dataType: "json" });
+}
+
+function render(items) {
+  list.innerHTML = "";
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.dataset.id = it.id;
+    li.innerHTML = '<span class="grip">⋮⋮</span><span class="no"></span><span class="lab"></span>';
+    li.querySelector(".lab").textContent = it.label;
+    li.addEventListener("pointerdown", startDrag);
+    list.appendChild(li);
+  }
+  renumber();
+  fitHeight();
+}
+
+let drag = null;
+function startDrag(e) {
+  // 監聽掛在 window：列在 DOM 裡被搬動時瀏覽器會丟掉 pointer capture，掛在列上會收不到放開
+  e.preventDefault();
+  const li = e.currentTarget;
+  li.classList.add("dragging");
+  drag = { li, moved: false };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", endDrag);
+  window.addEventListener("pointercancel", endDrag);
+}
+function onMove(e) {
+  if (!drag) return;
+  const others = [...list.children].filter(x => x !== drag.li);
+  // 指標落在哪一列的上半部，就插到那一列前面；都不是就放最後
+  const before = others.find(x => { const r = x.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+  if (before) { if (drag.li.nextSibling !== before) { list.insertBefore(drag.li, before); drag.moved = true; } }
+  else if (list.lastChild !== drag.li) { list.appendChild(drag.li); drag.moved = true; }
+  renumber();
+}
+function endDrag() {
+  if (!drag) return;
+  const { li, moved } = drag;
+  li.classList.remove("dragging");
+  window.removeEventListener("pointermove", onMove);
+  window.removeEventListener("pointerup", endDrag);
+  window.removeEventListener("pointercancel", endDrag);
+  drag = null;
+  if (moved) emit();
+}
+
+// 拖到 iframe 外面放開時收不到 pointerup：滑出去就當放開
+document.documentElement.addEventListener("pointerleave", endDrag);
+
+window.addEventListener("message", ev => {
+  const d = ev.data || {};
+  if (d.type !== "streamlit:render") return;
+  const t = d.theme;
+  if (t) {
+    const s = document.documentElement.style;
+    if (t.textColor) s.setProperty("--fg", t.textColor);
+    if (t.secondaryBackgroundColor) s.setProperty("--card", t.secondaryBackgroundColor);
+    if (t.primaryColor) s.setProperty("--accent", t.primaryColor);
+  }
+  const items = (d.args && d.args.items) || [];
+  const key = JSON.stringify(items);
+  if (key !== lastKey && !drag) { lastKey = key; render(items); }   // 重跑時同一份清單不重畫，免得拖好的順序被蓋回去
+});
+send("streamlit:componentReady", { apiVersion: 1 });
+</script>
+</body>
+</html>

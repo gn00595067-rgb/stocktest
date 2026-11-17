@@ -96,6 +96,16 @@ def sess():
     s.close()
 
 
+def test_reorder_keeps_hidden_groups_in_place(sess):
+    """看不到的分頁（沒權限）不在拖拉清單裡，位置不能跑掉。"""
+    a, _ = gp.create_group(sess, "admin", "Peggy姐", "A")
+    h, _ = gp.create_group(sess, "admin", "秘密", "H")
+    b, _ = gp.create_group(sess, "admin", "Peggy姐", "B")
+    c, _ = gp.create_group(sess, "admin", "Peggy姐", "C")
+    gp.reorder_groups(sess, "admin", [c, b, a, 9999])          # 不存在的 id 忽略
+    assert [g.name for g in gp.list_groups(sess, "admin")] == ["C", "H", "B", "A"]
+
+
 def test_group_crud_never_touches_trades(sess):
     """分頁屬於登入帳號（owner）；一個帳號的分頁可以是不同人的帳。"""
     sess.add(Trade(id=1, user="雅雲姐", stock_id="2330", trade_date=date(2026, 10, 1), side="BUY", price=1, quantity=1))
@@ -119,6 +129,10 @@ def test_group_crud_never_touches_trades(sess):
     assert gp.update_group(sess, gid2, "王小姐", None, None, [], False, trader="王小姐") is None
     assert [(g.name, g.trader) for g in gp.list_groups(sess, "admin")] == [
         ("全部", "Peggy姐"), ("王小姐", "王小姐"), ("1001起", "Peggy姐")]
+    # 拖拉排序：一次寫入整個新順序
+    gp.reorder_groups(sess, "admin", [gid, gid0, gid2])
+    assert [g.name for g in gp.list_groups(sess, "admin")] == ["1001起", "全部", "王小姐"]
+    gp.reorder_groups(sess, "admin", [gid0, gid2, gid])
     gp.delete_group(sess, gid)
     assert [g.name for g in gp.list_groups(sess, "admin")] == ["全部", "王小姐"]
     assert sess.query(Trade).count() == 1          # 刪分頁不動交易

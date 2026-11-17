@@ -45,6 +45,7 @@ from services.trade_entry_service import (
 import pandas as pd
 from services.mobile_ui import inject_mobile_css
 import services.group_portfolio as gp
+from services.tab_sorter import tab_sorter
 import importlib
 import inspect
 # Streamlit Cloud 部署後只重跑頁面、不一定重載 services 模組：簽名不對就是舊版，強制重載一次
@@ -353,6 +354,26 @@ def _dlg_delete_group(owner: str, g: gp.GroupSpec):
         st.session_state.pop(f"yh_group_{owner}", None)   # 回到第一個分頁
         st.rerun()
     if c2.button("取消", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("排序分頁")
+def _dlg_sort_groups(owner: str, groups: list):
+    """拖拉排序（docs/specs/分頁拖拉排序.md）：取代 ◀ ▶ 一格一格移；按儲存才寫入。"""
+    _mark_dialog()
+    st.caption("按住分頁拖到想要的位置，可以連續拖好幾個，排好按「儲存順序」。")
+    new_ids = tab_sorter([(g.id, g.name) for g in groups], key=f"yh_sort_{owner}")
+    c1, c2 = st.columns(2)
+    if c1.button("儲存順序", type="primary", use_container_width=True, disabled=not new_ids):
+        sess = get_session()
+        try:
+            gp.reorder_groups(sess, owner, new_ids)
+        finally:
+            sess.close()
+        st.session_state.pop(f"yh_sort_{owner}", None)
+        st.rerun()
+    if c2.button("取消", use_container_width=True):
+        st.session_state.pop(f"yh_sort_{owner}", None)
         st.rerun()
 
 
@@ -911,18 +932,16 @@ st.session_state["last_user"] = trader
 
 # 分頁操作列（在收合區裡）
 # 搜尋框放第二格，但選項要等算完分頁內股票才知道，所以先佔位、稍後才填
-a = _tools.columns([1.1, 2.1, 1.3, 1.3, 0.5, 0.5, 1.3], vertical_alignment="center")
+a = _tools.columns([1.1, 2.1, 1.3, 1.3, 1.1, 1.3], vertical_alignment="center")
 if a[0].button("新增股票", key="yh_add_stock"):
     _dlg_add_stock(trader, group)
 if a[2].button("編輯此分頁", key="yh_edit_group", help="改名、改成誰的帳、改日期／股票條件"):
     _dlg_edit_group(owner, group.id, trader_opts, _def)
 if a[3].button("刪除此分頁", key="yh_del_group"):
     _dlg_delete_group(owner, group)
-if a[4].button("◀", key="yh_move_l", help="分頁往左移"):
-    s_ = get_session(); gp.move_group(s_, owner, group.id, -1); s_.close(); st.rerun()
-if a[5].button("▶", key="yh_move_r", help="分頁往右移"):
-    s_ = get_session(); gp.move_group(s_, owner, group.id, +1); s_.close(); st.rerun()
-a[6].markdown(f'<div class="yh-desc" style="text-align:right" title="{group.describe()}">{group.describe()}</div>', unsafe_allow_html=True)
+if a[4].button("⇅ 排序分頁", key="yh_sort_groups", help="用拖的調整分頁順序", disabled=len(groups) < 2):
+    _dlg_sort_groups(owner, groups)
+a[5].markdown(f'<div class="yh-desc" style="text-align:right" title="{group.describe()}">{group.describe()}</div>', unsafe_allow_html=True)
 
 # 輸入日期：設一次，之後展開任何一檔「新增交易」都預設這天（補登好幾天前的交易用）。
 # 存在 session：重新打開系統就回到今天；快速鈕用交易日（跳過週末）。

@@ -229,6 +229,26 @@ def move_group(sess, owner: str, group_id: int, direction: int) -> None:
     sess.commit()
 
 
+def reorder_groups(sess, owner: str, ordered_ids) -> None:
+    """拖拉排序後一次寫入（docs/specs/分頁拖拉排序.md）。
+    ordered_ids 只含畫面上看得到的分頁；沒列到的（沒權限的分頁）留在原本的位置，
+    看得到的分頁依新順序填回它們原本佔的位置。"""
+    rows = _owner_rows(sess, owner)
+    by_id = {r.id: r for r in rows}
+    seen = set()
+    wanted = []
+    for i in ordered_ids:
+        i = int(i)
+        if i in by_id and i not in seen:
+            wanted.append(by_id[i])
+            seen.add(i)
+    it = iter(wanted)
+    new_rows = [next(it) if r.id in seen else r for r in rows]
+    for k, r in enumerate(new_rows, start=1):
+        r.sort_order = k
+    sess.commit()
+
+
 def add_stock_to_group(sess, group_id: int, stock_id: str) -> None:
     """把股票加進分頁清單（全部帳分頁：多顯示一列 0 股；只看清單的分頁：加入清單）。"""
     from db.models import PortfolioGroup

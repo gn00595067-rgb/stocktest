@@ -870,3 +870,9 @@
 **為什麼**：Elsa 公司同時在 Yahoo 記帳，Yahoo 只有日期／股數／價格、無稅費、先進先出；現在由系統決定沖哪幾筆，她不知道 Yahoo 那一包該怎麼改，已實現才不會被刪又跟系統一致。
 **驗證**：pytest 243 passed（新增 test_yahoo_keysheet 4 個，含模擬 Yahoo 先進先出連做兩天，累計已實現與庫存均價跟系統一致）；暫存 SQLite＋AppTest 用華通例子跑頁面無錯，系統 22,250／Yahoo 22,240（價格取 2 位小數差 10 元）。
 **下一步**：請 Elsa 用今天的華通照頁面步驟改 Yahoo，對已實現和均價；並測「同一天兩筆買入再賣出，Yahoo 先扣先 key 的那筆嗎」（新股當沖時 A、B 同一天會用到）。
+
+## 2026-11-17 — 仿Yahoo 分頁改用拖拉排序
+**做了什麼**：規格 `docs/specs/分頁拖拉排序.md`；收合區 ◀ ▶ 換成「⇅ 排序分頁」，跳出視窗用拖的排好、按「儲存順序」一次寫入（`gp.reorder_groups`，看不到的分頁位置不動）；自寫本機元件 `services/tab_sorter/`（HTML＋pointer 事件，滑鼠／觸控都可）。
+**為什麼**：11/17 回饋：分頁要重排時 ◀ ▶ 一格一格點太慢。
+**驗證**：pytest 245 passed（新增 test_reorder_keeps_hidden_groups_in_place）；headless Chrome 實際拖拉 1200／400 寬，回傳順序正確、版面整齊。
+**下一步**：請 Peggy 試拖拉排序（電腦和手機）；若還是希望直接在分頁列上拖再評估。
