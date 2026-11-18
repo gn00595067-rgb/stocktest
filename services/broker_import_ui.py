@@ -664,6 +664,12 @@ def render_broker_statement_section():
                 t = sess.get(Trade, tid)
                 if t is not None:
                     t.is_daytrade = True
+        # 照對帳單修正手 key 且股數有變：先清掉那筆原本的沖銷規則，再寫這次排好的規則
+        # （原本寫完才清，會把這次剛排好、沖到那筆的規則一起刪掉，寫進去的跟預覽不一樣）
+        for _k, fx in fixes:
+            if fx["qty_changed"]:
+                sess.query(CustomMatchRule).filter((CustomMatchRule.sell_trade_id == fx["trade_id"])
+                                                   | (CustomMatchRule.buy_trade_id == fx["trade_id"])).delete()
         for (s_id, b_id), q in all_rules.items():
             sess.add(CustomMatchRule(sell_trade_id=id_map.get(s_id, s_id),
                                      buy_trade_id=id_map.get(b_id, b_id), matched_qty=int(q)))
@@ -679,9 +685,6 @@ def render_broker_statement_section():
             t = sess.get(Trade, fx["trade_id"])
             if t is not None:
                 t.price, t.quantity, t.fee, t.tax = fx["price"], fx["quantity"], fx["fee"], fx["tax"]
-                if fx["qty_changed"]:
-                    sess.query(CustomMatchRule).filter((CustomMatchRule.sell_trade_id == t.id)
-                                                       | (CustomMatchRule.buy_trade_id == t.id)).delete()
         fix_refs = [(r["user"], r["trade_date"], r["order_no"], r["claim_trade_id"]) for r in rows
                     if r["status"] == REVIEW and (r["user"], r["trade_date"], r["stock_id"], r["side"]) in fix_keys]
         for u in users:
