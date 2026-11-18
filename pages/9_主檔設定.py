@@ -280,6 +280,8 @@ with st.expander("展開檢查／重算手續費", expanded=False):
         _frows = []
         _fid_to_new = {}
         for t in _all_t:
+            if (t.side or "").strip() == "配股" or not float(t.price or 0) > 0:
+                continue   # 配股（價格 0）不重算：否則會把原本的手續費蓋成 0
             if trader_discounts(t.user)[1]:
                 continue   # 可切換折數的人：猜不到每筆用哪個，不動
             _new_fee = estimate_broker_fee(float(t.price or 0), int(t.quantity or 0),
