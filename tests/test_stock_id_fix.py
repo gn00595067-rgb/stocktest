@@ -76,3 +76,22 @@ def test_master_sync_migrates_old_short_ids(monkeypatch):
     s.close()
     assert write_to_stock_master(items) == (True, None)
     assert S().query(Trade).filter(Trade.stock_id == "6208").count() == 0
+
+
+def test_retired_ids_not_written_back(monkeypatch):
+    """控股改組的舊代號（神達 2315 等）同步時跳過：試算表沒清也不會加回主檔。"""
+    from services import stock_list_loader as sll
+    from services.stock_id_fix import RETIRED_IDS
+    assert RETIRED_IDS["2315"] == "3706"
+    seen = []
+    class _Sess:
+        def query(self, *_a):
+            class Q:
+                def all(self_inner):
+                    seen.append("query")
+                    return []
+            return Q()
+        def close(self): pass
+    monkeypatch.setattr("db.database.get_session", lambda: _Sess())
+    ok, err = sll.write_to_stock_master([{"stock_id": "2315", "name": "神達"}])
+    assert ok and err is None and seen == []   # 全是舊代號：直接略過，不碰資料庫

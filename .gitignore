@@ -45,3 +45,6 @@ scripts/manual/shots/
 scripts/manual/chprof*/
 scripts/manual/manual_illustrated.*
 scripts/manual/*.log
+
+# 一次性修正腳本的資料備份（含交易，不進 git）
+backups/

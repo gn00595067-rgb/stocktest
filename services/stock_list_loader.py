@@ -8,7 +8,7 @@ import pandas as pd
 import requests
 from sqlalchemy.exc import OperationalError, IntegrityError
 
-from services.stock_id_fix import migrate_stock_ids, normalize_stock_id, short_etf_id_map
+from services.stock_id_fix import RETIRED_IDS, migrate_stock_ids, normalize_stock_id, short_etf_id_map
 
 # Google Sheet 股票清單：請將試算表設為「知道連結的任何人可檢視」，第一張工作表欄位為 stock_id, name, industry_name, market, exchange, is_etf
 STOCK_LIST_GOOGLE_SHEET_ID = "1MwFZ1W_CJ-U1a7YEmu4dDgddTywbOuJQKwFamAbVd-8"
@@ -75,6 +75,7 @@ def write_to_stock_master(items: List[dict]) -> Tuple[bool, Optional[str]]:
     將 [{"stock_id", "name", ...}, ...] 寫入 stock_master（upsert）。
     回傳 (True, None) 成功；(False, error_str) 失敗。
     """
+    items = [x for x in items if x.get("stock_id") not in RETIRED_IDS]   # 已不交易的舊代號不寫回主檔
     if not items:
         return True, None
     from db.database import get_session

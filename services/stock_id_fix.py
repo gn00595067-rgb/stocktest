@@ -12,6 +12,11 @@ from typing import Dict, Iterable
 from sqlalchemy import inspect, text
 
 
+# 控股改組後已不交易的舊代號（舊 → 新）：主檔同步一律跳過，避免搜尋同名股票選到舊的
+# （2026-11-18 Peggy 的神達交易記到 2315，抓不到報價）。股票清單試算表沒清也不會再加回來。
+RETIRED_IDS = {"2315": "3706", "9915": "8464", "1716": "3705", "2463": "6579", "2336": "4915"}
+
+
 def normalize_stock_id(stock_id, is_etf: bool) -> str:
     sid = str(stock_id or "").strip()
     if is_etf and sid.isdigit() and len(sid) <= 4 and not sid.startswith("0"):
