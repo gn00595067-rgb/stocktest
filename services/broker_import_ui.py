@@ -675,9 +675,9 @@ def render_broker_statement_section():
                                      buy_trade_id=id_map.get(b_id, b_id), matched_qty=int(q)))
         batch_id = datetime.now().strftime("%Y%m%d%H%M%S")
         for u in users:
-            # 沒書號的檔不記 trade_refs（重匯靠內容比對認回來）
-            refs_new = [(r["trade_date"], r["order_no"], id_map[r["tmp_id"]], "import")
-                        for r in to_import if r["user"] == u and r["order_no"]]
+            # 沒書號的檔：記佔位書號（~批次-序號），只給「復原匯入」找批次用；重匯仍靠內容比對認回來（11/19 Elsa）
+            refs_new = [(r["trade_date"], r["order_no"] or trs.placeholder_order_no(batch_id, i), id_map[r["tmp_id"]], "import")
+                        for i, r in enumerate(to_import) if r["user"] == u]
             refs_new += [(r["trade_date"], r["order_no"], r["claim_trade_id"], "backfill")
                          for r in keyed if r["user"] == u and r["order_no"]]
             trs.add_refs(sess, u, refs_new, batch_id)
@@ -743,7 +743,8 @@ def render_undo_section():
             return (f"{t:%m/%d %H:%M} 匯入｜{x['user']}｜{x['n']} 筆（成交日 {days}）"
                     + (f"｜⚠️ 其中 {x['dup']} 筆跟別的交易一模一樣，疑似重複" if x["dup"] else ""))
 
-        st.caption("每一列是一次「確認匯入」（台灣時間）。疑似重複＝同一人同一天有內容完全相同的交易（同股、同價、同股數）。")
+        st.caption("每一列是一次「確認匯入」（台灣時間）。疑似重複＝同一人同一天有內容完全相同的交易（同股、同價、同股數）。"
+                   "只有**有新增交易**的匯入才會列出來；整份都已在系統裡（只補書號、只更新手續費）的匯入沒有東西可復原，不會列。")
         idx = st.radio("選要復原哪一次", range(len(batches)), format_func=lambda i: label(batches[i]),
                        key="bs_undo_pick", index=None)
         if idx is None:

@@ -31,12 +31,25 @@ def ensure_table(session) -> None:
         _ready.add(id(bind))
 
 
+# 沒有委託書號的對帳單（國泰電腦版）也要記「哪一批匯入的」，復原匯入才找得到（11/19 Elsa）：
+# 書號欄存「~批次-序號」當佔位。它不是真的書號——比對、防重複一律當作沒有書號。
+PLACEHOLDER_PREFIX = "~"
+
+
+def is_placeholder(order_no) -> bool:
+    return str(order_no or "").startswith(PLACEHOLDER_PREFIX)
+
+
+def placeholder_order_no(batch_id: str, n: int) -> str:
+    return f"{PLACEHOLDER_PREFIX}{batch_id}-{n}"
+
+
 def load_refs(session, user: str) -> List[Tuple[date, str, int]]:
-    """這個買賣人的所有書號 [(成交日, 書號, 交易 id)]（含交易已刪除的，由呼叫端過濾）。"""
+    """這個買賣人的所有書號 [(成交日, 書號, 交易 id)]（含交易已刪除的，由呼叫端過濾）。不含佔位（沒書號的匯入紀錄）。"""
     ensure_table(session)
     rows = session.execute(
         select(trade_refs.c.trade_date, trade_refs.c.order_no, trade_refs.c.trade_id)
-        .where(trade_refs.c.user == user)
+        .where((trade_refs.c.user == user) & ~trade_refs.c.order_no.startswith(PLACEHOLDER_PREFIX))
         .order_by(trade_refs.c.trade_date, trade_refs.c.order_no)
     ).all()
     return [(d if isinstance(d, date) else datetime.strptime(str(d)[:10], "%Y-%m-%d").date(), str(o), int(t))
@@ -73,7 +86,8 @@ def refs_by_trade(session, trade_ids: Iterable[int]) -> Dict[int, List[str]]:
     ensure_table(session)
     out: Dict[int, List[str]] = {}
     for tid, o in session.execute(
-            select(trade_refs.c.trade_id, trade_refs.c.order_no).where(trade_refs.c.trade_id.in_(ids))).all():
+            select(trade_refs.c.trade_id, trade_refs.c.order_no).where(
+                trade_refs.c.trade_id.in_(ids) & ~trade_refs.c.order_no.startswith(PLACEHOLDER_PREFIX))).all():
         out.setdefault(int(tid), []).append(str(o))
     return out
 
@@ -86,6 +100,7 @@ def load_live_refs_all_users(session) -> List[Tuple[date, str, str, str, str]]:
     rows = session.execute(
         select(trade_refs.c.trade_date, trade_refs.c.order_no, trade_refs.c.user, t.c.stock_id, t.c.side)
         .select_from(trade_refs.join(t, t.c.id == trade_refs.c.trade_id))
+        .where(~trade_refs.c.order_no.startswith(PLACEHOLDER_PREFIX))
         .order_by(trade_refs.c.trade_date, trade_refs.c.order_no)
     ).all()
     return [(d if isinstance(d, date) else datetime.strptime(str(d)[:10], "%Y-%m-%d").date(),

@@ -78,3 +78,24 @@ def test_already_imported_recheck():
     assert trs.already_imported(s, [("雅雲", d, "A1"), ("短線", d, None)]) == 0
     s.delete(t); s.commit()
     assert trs.already_imported(s, [("短線", d, "A1")]) == 0
+
+
+def test_no_order_no_import_listed_and_undoable_but_placeholder_not_a_real_ref():
+    """11/19 Elsa：國泰電腦版（沒書號）匯入後，復原匯入看不到。佔位書號要讓批次列得出來、復原得掉，
+    但比對（load_refs）、跨人防重複、畫面書號都當作沒有。"""
+    s = _sess()
+    d = date.today()
+    k = f"{d:%Y%m%d}150000"
+    t1 = Trade(user="11/17", stock_id="2303", trade_date=d, side="BUY", price=89.9, quantity=5000)
+    t2 = Trade(user="11/17", stock_id="2303", trade_date=d, side="SELL", price=93.3, quantity=5000)
+    s.add_all([t1, t2]); s.flush()
+    trs.add_refs(s, "11/17", [(d, trs.placeholder_order_no(k, 0), t1.id, "import"),
+                              (d, trs.placeholder_order_no(k, 1), t2.id, "import")], k)
+    s.commit()
+    assert [(x["batch_id"], x["n"]) for x in trs.list_import_batches(s)] == [(k, 2)]
+    assert trs.load_refs(s, "11/17") == []
+    assert trs.load_live_refs_all_users(s) == []
+    assert trs.refs_by_trade(s, [t1.id, t2.id]) == {}
+    assert trs.undo_batch(s, k, "11/17") == 2
+    s.commit()
+    assert s.query(Trade).count() == 0
