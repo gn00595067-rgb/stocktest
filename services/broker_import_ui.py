@@ -491,6 +491,8 @@ def render_broker_statement_section():
             dt_rules = keep
             if dt_scope == "prior":
                 prior_only = new_dt_sells
+    # 切換沖銷方式時馬上看到總損益（Elsa 11/19：「切換不同的沖銷方式，但損益不會加總」）；數字下面算完才填
+    pnl_slot = st.empty() if any(r["side"] == "SELL" for r in to_import) else None
     # §7.1 少數幾筆另外指定：自己挑的先佔掉買進，其他賣出逐筆照各自的方式
     overrides, pick_rules, pick_err = _sell_overrides(users, new_by_user, ctx, dt_rules, strategy, name_by_id,
                                                       key_sfx=f"{main_user}_{getattr(f, 'name', '')}")
@@ -525,6 +527,9 @@ def render_broker_statement_section():
         acc[1] += p
         match_text.setdefault(s_id, []).append(f"{b.trade_date:%m/%d} {b.price:g}×{q:,}")
 
+    if pnl_slot is not None:
+        pnl_slot.info(f"👉 照目前選的方式：預估這次多出已實現損益 **{pnl:+,.0f}**（{len(pnl_by_sell)} 筆賣出）"
+                      if all_rules else "👉 照目前選的方式：這次的賣出沒有寫沖銷規則，損益交給各頁面的計算方式")
     n_dt_sell = sum(1 for r in to_import if r["side"] == "SELL" and r["tmp_id"] in dt_flag)
     keyed = [r for r in rows if r["status"] in (KEYED_EXACT, KEYED_MERGED)]
     fee_updates = [r["fee_update"] for r in keyed if r["fee_update"]]
@@ -595,16 +600,20 @@ def render_broker_statement_section():
 
     fmt = {"股數": "{:,.0f}", "價格": "{:,.2f}", "手續費": "{:,.0f}", "稅": "{:,.0f}"}
 
-    def show(rs):
+    def show(rs, total=False):
         df = pd.DataFrame([view(r) for r in rs])
         # 只有買進時「當沖／沖銷到／預估損益」整欄空白，拿掉讓表比較好讀
         df = df.drop(columns=[c for c in ("當沖", "沖銷到", "預估損益", "同日相同", "委託書號") if (df[c] == "").all()])
-        st.dataframe(df.style.format(fmt), use_container_width=True, hide_index=True)
+        if total and "預估損益" in df.columns:
+            # 最後一列合計（Elsa 11/19）；數字欄留空（NaN），格式化時顯示空白
+            tot = sum(pnl_by_sell.get(r.get("tmp_id"), 0.0) for r in rs if r["seq"] in import_seqs)
+            df.loc[len(df)] = {c: (float("nan") if c in fmt else "") for c in df.columns} | {"狀態": "合計", "預估損益": f"{tot:+,.0f}"}
+        st.dataframe(df.style.format(fmt, na_rep=""), use_container_width=True, hide_index=True)
 
     main = [r for r in rows if r["status"] in (NEW, REVIEW)]
     other = [r for r in rows if r["status"] not in (NEW, REVIEW)]
     if main:
-        show(main)
+        show(main, total=True)
     if other:
         with st.expander(f"已在系統裡、這次不匯的 {len(other)} 筆"):
             show(other)

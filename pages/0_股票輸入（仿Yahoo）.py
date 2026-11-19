@@ -877,9 +877,58 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
         if st.button("收起，只看最近 10 筆" if _show_all else f"顯示全部 {len(_all)} 筆交易", key=f"yh_more_{sid}"):
             st.session_state[f"yh_showall_{sid}"] = not _show_all
             _rerun_fragment()
+    if _all:
+        _bulk_delete(sid, _all)
     # 質押不常改（董事長 2026-11-06：輸入區要像 Yahoo 簡單），收在最下面
     with st.expander(f"🏦 質押{'中 ' + format(pledged, ',') + ' 股' if pledged else ''}（{group.trader}）"):
         _pledge_editor(group.trader, sid, holding_qty, pledged)
+
+
+def _bulk_delete(sid: str, trades_desc: list):
+    """一次刪多筆（Elsa 11/19：一筆一筆刪、每次整頁重跑太慢）。規格 docs/specs/批次刪除與匯入損益合計.md"""
+    with st.expander("🗑 一次刪多筆"):
+        days = sorted({t.trade_date for t in trades_desc}, reverse=True)
+        quick = st.selectbox("快速勾選", [None] + days, key=f"yh_bulk_q_{sid}",
+                             format_func=lambda d: "不預先勾" if d is None else f"{d:%Y/%m/%d} 的全部交易")
+        df = pd.DataFrame([{
+            "刪": quick is not None and t.trade_date == quick, "id": int(t.id),
+            "日期": f"{t.trade_date:%Y/%m/%d}", "買賣人": t.user,
+            "買賣": "買入" if str(t.side).upper() == "BUY" else ("賣出（當沖）" if t.is_daytrade else "賣出"),
+            "股數": int(t.quantity), "價格": float(t.price), "手續費": float(t.fee or 0), "稅": float(t.tax or 0),
+        } for t in trades_desc])
+        # key 帶快速勾選的值：換一天時表格重建、預設勾選跟著換
+        ed = st.data_editor(df, key=f"yh_bulk_ed_{sid}_{quick}", hide_index=True, use_container_width=True,
+                            disabled=[c for c in df.columns if c != "刪"],
+                            column_config={"id": None, "刪": st.column_config.CheckboxColumn("刪", width="small"),
+                                           "股數": st.column_config.NumberColumn(format="localized"),
+                                           "價格": st.column_config.NumberColumn(format="%.2f"),
+                                           "手續費": st.column_config.NumberColumn(format="localized"),
+                                           "稅": st.column_config.NumberColumn(format="localized")},
+                            height=min(35 * (len(df) + 1) + 3, 420))
+        ids = [int(i) for i in ed.loc[ed["刪"], "id"]]
+        if not ids:
+            st.caption("勾選要刪的交易（可用上面「快速勾選」一次勾某一天）。")
+            return
+        by_id = {int(t.id): t for t in trades_desc}
+        ok = st.checkbox(f"確定刪除勾選的 {len(ids)} 筆（連同沖銷配對）", key=f"yh_bulk_ok_{sid}_{quick}")
+        if st.button(f"🗑 刪除勾選的 {len(ids)} 筆", type="primary", disabled=not ok, key=f"yh_bulk_do_{sid}"):
+            if not all(can_access_trader(by_id[i].user) for i in ids):
+                st.error("有幾筆是你沒有權限的買賣人，這次沒有刪。")
+                return
+            sess = get_session()
+            try:
+                sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id.in_(ids)
+                                                   | CustomMatchRule.buy_trade_id.in_(ids)).delete(synchronize_session=False)
+                sess.query(Trade).filter(Trade.id.in_(ids)).delete(synchronize_session=False)
+                sess.commit()
+            except Exception as e:
+                sess.rollback()
+                st.error(f"刪除失敗：{e}")
+                return
+            finally:
+                sess.close()
+            st.session_state["yh_flash"] = f"已刪除 {len(ids)} 筆交易（{sid}）"
+            st.rerun()   # 整頁：持股、均價、總覽一起更新
 
 
 class _NS:
