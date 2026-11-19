@@ -135,6 +135,7 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; t
 .yh-td .sub { color: #999; font-size: .85rem; }
 .yh-td .l2.sell { display: block; margin-left: 0; font-size: .78rem; font-weight: 700; }   /* 可賣標示：永遠獨立一行 */
 .yh-td .l2.sell.profit { color: #d32f2f; }
+.yh-td .l2.sell.hot { color: #e0262b; }
 .yh-td .l2.sell.reach { color: #1565c0; }
 .yh-td .l2.pledge { display: block; margin-left: 0; color: #e65100; font-size: .78rem; font-weight: 600; }   /* 質借：永遠獨立一行 */
 [class*="st-key-yh_pledge_save_"] button p { white-space: nowrap; }
@@ -148,6 +149,8 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-yh_thead) { position: sticky; t
 .yh-up { color: #e0262b; } .yh-down { color: #12a150; } .yh-flat { color: #666; }
 [class*="st-key-yh_row_"] { background: #f4f5f7; border-radius: 6px; padding: .15rem .4rem; margin-bottom: .35rem; }
 [class*="st-key-yh_row_"] button { border: none; background: transparent; }
+/* 獲利 ≥3% 紅框（Peggy 11/19）：用 inset 陰影畫框，不改列高、不推擠版面 */
+[class*="st-key-yh_row_hot_"] { box-shadow: inset 0 0 0 2px #e0262b; background: #fff1f1; }
 /* 列與列之間不要 Streamlit 預設的 1rem 空白；展開鈕不撐高列（整列都在 2.1rem 內，手指仍好點） */
 div[data-testid="stLayoutWrapper"]:has(> [class*="st-key-yh_row_"]) { margin-bottom: -.75rem; }
 [class*="st-key-yh_row_"] [data-testid="stMarkdownContainer"],
@@ -1094,7 +1097,9 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
             st.markdown(f"**{_sec_title[sec]}**（{_n_sec[sec]} 檔）")
             _last_sec = sec
         is_open = st.session_state.get(open_key) == sid
-        with st.container(key=f"yh_row_{sid}"):
+        # 獲利 ≥3% 整列紅框（Peggy 11/19），不管有沒有開「可賣的排上面」
+        hot = gp.sell_alert(r)
+        with st.container(key=f"yh_row_hot_{sid}" if hot is not None else f"yh_row_{sid}"):
             c0, c1 = st.columns(_ROW_COLS, vertical_alignment="center")
             if c0.button("▾" if is_open else "▸", key=f"yh_tg_{sid}", help="收合" if is_open else "展開交易明細／新增交易"):
                 st.session_state[open_key] = None if is_open else sid
@@ -1122,7 +1127,8 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
             c1.markdown(
                 '<div class="yh-grid">'
                 f'<div class="yh-td l"><b>{r["name"]}</b><span class="l2 sub">{sid}{suffix}</span>'
-                + (f'<span class="l2 sell profit">💰 已過底價 +{sec_pct:.1f}%</span>' if sec == "profit"
+                + (f'<span class="l2 sell hot">🔴 獲利 +{hot:.1f}% 可賣</span>' if hot is not None
+                   else f'<span class="l2 sell profit">💰 已過底價 +{sec_pct:.1f}%</span>' if sec == "profit"
                    else f'<span class="l2 sell reach">📈 差 {sec_pct:.1f}%</span>' if sec == "reach" else "")
                 + '</div>'
                 + price_html

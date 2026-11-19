@@ -264,3 +264,16 @@ def test_sellable_first():
     assert [(k, r["stock_id"]) for k, r, _p in out] == [
         ("profit", "8150"), ("profit", "1303"), ("reach", "2330"), ("reach", "6805"),
         (None, "2303"), (None, "2454"), (None, "0050")]
+
+
+def test_sell_alert_at_3pct():
+    """Peggy 11/19：高出底價 ≥3% 才紅框；剛好 3% 也算。"""
+    from services.group_portfolio import sell_alert
+    def row(price, be, qty=1000):
+        return {"price": price, "change": 0, "breakeven": be, "qty": qty, "is_etf": False}
+    assert sell_alert(row(103, 100)) == 3.0
+    assert sell_alert(row(110, 100)) == 10.0
+    assert sell_alert(row(102.9, 100)) is None
+    assert sell_alert(row(95, 100)) is None
+    assert sell_alert(row(110, 100, qty=0)) is None
+    assert sell_alert(row(None, 100)) is None

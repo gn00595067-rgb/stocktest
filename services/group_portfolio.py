@@ -437,6 +437,16 @@ def sell_status(row: dict) -> Tuple[Optional[str], Optional[float]]:
     return None, None
 
 
+# 獲利 % ≥ 此值整列紅框（Peggy 11/19：短線早上買，3% 就提醒趕快賣）。規格 docs/specs/獲利3%紅框.md
+SELL_ALERT_PCT = 3.0
+
+
+def sell_alert(row: dict) -> Optional[float]:
+    """高出底價 % ≥ SELL_ALERT_PCT 時回傳該 %，否則 None。"""
+    k, pct = sell_status(row)
+    return pct if k == "profit" and pct >= SELL_ALERT_PCT - 1e-9 else None
+
+
 def sellable_first(rows: List[dict]) -> List[Tuple[Optional[str], dict, Optional[float]]]:
     """[(區, 列, %)]：已過底價（高出多的在上）→ 今天有機會（差少的在上）→ 其他（原順序）。"""
     tagged = [(*sell_status(r), r) for r in rows]
