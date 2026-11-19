@@ -166,7 +166,8 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
             errors.append((row_no, f"{name}：幣別是「{cur}」，只匯入台幣交易"))
             continue
         kind = _cell(rec, "類別")
-        if kind and not kind.startswith("現股"):
+        # 現股買賣＋現股當沖（國泰電腦版：當沖買進標「現沖買進」、當沖賣出標「現股沖賣」，11/19 Elsa）
+        if kind and not kind.startswith(("現股", "現沖")):
             errors.append((row_no, f"{name}：類別是「{kind}」，只匯入現股買賣（融資融券請先手 key）"))
             continue
         m = NAME_WITH_ID.match(name)
@@ -206,6 +207,7 @@ def parse_statement(records: List[dict], name_map: Dict[str, List[str]],
             "fee": float(_num(rec.get("手續費")) or 0), "tax": float(_num(rec.get("交易稅")) or 0),
             "order_no": order_no, "note": _cell(rec, "備註") or None, "status": None, "dup_user": None,
             "net": float(net),   # 淨收付（負＝付、正＝收），加總就是券商的交割款
+            "dt_kind": "沖" in kind,   # 券商標成當沖的（現沖買進／現股沖賣）：配當沖時優先用這些買進
         }
         key = (d, order_no, row["stock_id"], side, row["price"], row["quantity"], row["fee"], row["tax"])
         if with_order and key in seen:   # 同一個檔裡一模一樣的列（重複下載拼檔）只算一次
@@ -256,13 +258,17 @@ def _fee_update(trade, fee: float, tax: float) -> Optional[dict]:
     return {"trade_id": int(trade.id), "old_fee": old_fee, "old_tax": old_tax, "fee": fee, "tax": tax}
 
 
-def classify_rows(rows: List[dict], trades: List, refs: List[Tuple[date, str, int]]) -> List[dict]:
+def classify_rows(rows: List[dict], trades: List, refs: List[Tuple[date, str, int]],
+                  by_content: bool = False) -> List[dict]:
     """trades：同一個買賣人的既有交易（只傳這個人的，所以不會被別人的手 key 影響）。
     refs：這個買賣人的書號紀錄 [(成交日, 書號, 交易 id)]。依規格 §4.2 標狀態，回傳新的 rows。
+    by_content：檔案沒有委託書號（用內容比對）。這時之前用有書號的檔匯入的交易也要能被認領——
+    例：盤中用手機 App（有書號、只有前 50 筆）匯了一部分，盤後再用電腦版（沒書號、全部）匯（11/19 Elsa）。
     """
     trade_ids = {int(t.id) for t in trades}
     live_refs = {(d, o) for d, o, tid in refs if tid in trade_ids}         # 交易被刪掉的書號不算
-    ref_trade_ids = {tid for _d0, _o, tid in refs if tid in trade_ids}     # 已有書號的交易不再被認領
+    # 有書號的檔：已有書號的交易不再被認領（書號不同就是不同筆）；沒書號的檔沒得比書號，全部照內容認
+    ref_trade_ids = set() if by_content else {tid for _d0, _o, tid in refs if tid in trade_ids}
     # 已有狀態的列（mark_cross_user_dups 標過的）保留不動
     out = [dict(r, status=r.get("status"), claim_trade_id=None, fee_update=None, review_with=None) for r in rows]
 
@@ -337,7 +343,8 @@ def orphan_keyed_trades(rows: List[dict], trades: List, refs: List[Tuple[date, s
         lo, hi = min(days), max(days)
         days = {_d(t.trade_date) for t in trades if lo <= _d(t.trade_date) <= hi} | days
     used = {r.get("claim_trade_id") for r in rows} | {i for r in rows for i in (r.get("review_trade_ids") or [])}
-    with_ref = {tid for _d0, _o, tid in refs}
+    # 沒書號的檔＝這段期間的全部交易：之前有書號匯入的也要對得到，對不到一樣列出
+    with_ref = set() if whole_range else {tid for _d0, _o, tid in refs}
     return [t for t in sorted(trades, key=lambda x: int(x.id))
             if _d(t.trade_date) in days and _side(t) in ("BUY", "SELL")
             and int(t.id) not in used and int(t.id) not in with_ref]
@@ -450,18 +457,22 @@ def plan_daytrade(new_rows: List[dict], trades: List, rules: List[Tuple[int, int
             continue
         rem = int(t.quantity or 0) - (used_buy if sd == "BUY" else used_sell).get(int(t.id), 0)
         if rem > 0:
-            by_day[(_d(t.trade_date), str(t.stock_id).strip())][sd].append([int(t.id), rem, False, float(t.price or 0)])
+            by_day[(_d(t.trade_date), str(t.stock_id).strip())][sd].append(
+                [int(t.id), rem, False, float(t.price or 0), bool(getattr(t, "is_daytrade", False))])
     for r in sorted(new_rows, key=lambda x: x["seq"]):
         cap = daytrade_cap(r)   # 稅率顯示是一般賣出 → 不拿來配當沖
         qty = r["quantity"] if cap is None else min(cap, r["quantity"])
         if qty > 0:
-            by_day[(r["trade_date"], r["stock_id"])][r["side"]].append([r["tmp_id"], qty, True, float(r["price"])])
+            by_day[(r["trade_date"], r["stock_id"])][r["side"]].append(
+                [r["tmp_id"], qty, True, float(r["price"]), bool(r.get("dt_kind"))])
 
     out, flagged = [], set()
     for _key, sides in by_day.items():
         sells = sides["SELL"]
         s_avg = sum(x[1] * x[3] for x in sells) / sum(x[1] for x in sells) if sells and sum(x[1] for x in sells) else 0.0
         buys = _order_day_buys(sides["BUY"], strategy, s_avg)
+        # 券商標成當沖的買進（現沖買進）先配，一般現股買進留著當庫存（同順序內保持原排序）
+        buys = sorted(buys, key=lambda b: not b[4])
         if not buys or not sells or not any(x[2] for x in buys + sells):
             continue
         for s in sells:

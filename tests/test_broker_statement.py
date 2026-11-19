@@ -491,3 +491,47 @@ def test_noloss_daytrade_day_buys():
                                 ("2303", D29, "BUY", 98, 1000, "A3"), ("2303", D29, "SELL", 100, 1000, "A4")))
     a1, a2, a3, a4 = (r["tmp_id"] for r in rows)
     assert plan_daytrade(rows, [], [], "NOLOSS")[0] == [(a4, a2, 1000)]
+
+
+# ---------------------------------------------------------------- 國泰電腦版：現沖買進／現股沖賣、盤中先用手機版匯（11/19 Elsa）
+D19 = date(2026, 11, 19)
+DT_LINES = NO_ORDER_LINES[:1] + [
+    ["2026/11/19", "現股沖賣", "聯電(2303)", "2000", "93.5", "187000", "66", "280", "", "", "0", "", "0", "186654"],
+    ["2026/11/19", "現沖買進", "聯電(2303)", "2000", "89.9", "179800", "64", "0", "", "", "0", "", "0", "-179864"],
+    ["2026/11/19", "現股買進", "聯電(2303)", "1000", "88.6", "88600", "31", "0", "", "", "0", "", "0", "-88631"],
+    ["2026/11/19", "現股買進", "南亞(1303)", "1000", "228.5", "228500", "81", "0", "", "", "0", "", "0", "-228581"],
+]
+
+
+def test_parse_cathay_daytrade_kinds():
+    """現沖買進（當沖的買進）也要匯，不能當成融資融券擋掉，不然當沖賣出會變成庫存不夠。"""
+    _recs, rows, errors = _parse_no_order(DT_LINES)
+    assert errors == []
+    assert [(r["side"], r["dt_kind"]) for r in rows] == [("SELL", True), ("BUY", True), ("BUY", False), ("BUY", False)]
+
+
+def test_daytrade_prefers_broker_daytrade_buys():
+    """當沖賣出先配券商標「現沖買進」的那筆，一般現股買進留著當庫存（FIFO 下現股買進就算排前面也一樣）。"""
+    lines = DT_LINES[:1] + [DT_LINES[3], DT_LINES[1], DT_LINES[2]]   # 現股買進排最前面
+    _recs, rows, _ = _parse_no_order(lines)
+    rows = assign_tmp_ids(rows)
+    by = {(r["side"], r["dt_kind"]): r["tmp_id"] for r in rows}
+    rules, _flag = plan_daytrade(rows, [], [], "FIFO")
+    assert rules == [(by[("SELL", True)], by[("BUY", True)], 2000)]
+
+
+def test_no_order_file_claims_trades_imported_with_order_no():
+    """盤中用手機版（有書號）匯過的，盤後用電腦版（沒書號）再匯：要認成「系統裡已有」，不能再新增一次。"""
+    _recs, rows, _ = _parse_no_order(DT_LINES)
+    phone = [T(1, "2303", D19, "SELL", 93.5, 2000, 66, 280), T(2, "1303", D19, "BUY", 228.5, 1000, 81, 0)]
+    refs = [(D19, "A001", 1), (D19, "A002", 2)]
+    out = classify_rows(rows, phone, refs, by_content=True)
+    st = {(r["stock_id"], r["side"], r["price"]): r["status"] for r in out}
+    assert st[("2303", "SELL", 93.5)] == KEYED_EXACT and st[("1303", "BUY", 228.5)] == KEYED_EXACT
+    assert st[("2303", "BUY", 89.9)] == NEW and st[("2303", "BUY", 88.6)] == NEW
+    # 有書號的檔照舊：已有書號的交易不被別的列認領
+    assert all(r["status"] == NEW for r in classify_rows(rows, phone, refs))
+    # 電腦版＝當天全部：之前有書號匯入、但電腦版裡沒有的，也要列成「手 key 了但對帳單沒有」
+    extra = T(3, "2330", D19, "BUY", 2115, 100)
+    out = classify_rows(rows, phone + [extra], refs + [(D19, "A003", 3)], by_content=True)
+    assert [t.id for t in orphan_keyed_trades(out, phone + [extra], refs + [(D19, "A003", 3)], whole_range=True)] == [3]

@@ -350,7 +350,7 @@ def render_broker_statement_section():
         r["user"] = r.get("dup_user") or main_user
     for u in users:
         mine = [r for r in rows if r["status"] is None and assign[r["seq"]] == u]
-        for r in classify_rows(mine, ctx[u].trades, ctx[u].refs):
+        for r in classify_rows(mine, ctx[u].trades, ctx[u].refs, by_content=not with_order):
             r["user"] = u
             done.append(r)
     rows = sorted(done, key=lambda r: r["seq"])
