@@ -23,7 +23,7 @@ from services.report_ui import render_report_filter, trader_multiselect, render_
 from services.manual_figures import load_manual_figures, save_manual_figures
 from reports.daily_detail_report import build_daily_stock_summary, STOCK_SUMMARY_COLUMNS
 from reports.realized_report import build_realized_ledger, monthly_series
-from reports.period_profit import build_period_blocks, manual_period_keys, SYSTEM_START
+from reports.period_profit import build_period_blocks, manual_period_keys, merge_manual, SYSTEM_START
 from services.trader_service import all_trader_names
 
 st.set_page_config(page_title="當日交易明細", layout="wide")
@@ -190,7 +190,7 @@ table.pp-tbl tr.pp-balance td{font-weight:700;border-top:2px solid #6b7280}
 
 
 def _render_period_tab():
-    """期間獲利表（Peggy Excel 版）：115/9 起用系統數字，之前與帳戶結餘手動輸入。規格見 docs/specs/Peggy回饋_2026-10-14.md §8。"""
+    """期間獲利表（Peggy Excel 版）：115/11 起用系統數字，之前與帳戶結餘手動輸入。規格見 docs/specs/Peggy回饋_2026-10-14.md §8。"""
     from db import models as _models
     if not hasattr(_models, "ManualFigure"):   # Cloud 沒重載 db.models：要 Reboot 才會建新表
         st.error("系統剛更新，資料表需要重新載入。請管理者到 Streamlit Cloud「Manage app → Reboot app」重開一次。")
@@ -199,16 +199,19 @@ def _render_period_tab():
         st.info("尚無買賣人。")
         return
     st.markdown("#### 篩選條件")
-    _def = resolve_default_trader(users) or users[0]
     c1, _c2 = st.columns([1.4, 3])
-    trader = c1.selectbox("買賣人", users, index=users.index(_def), key="pp_trader")
+    with c1:
+        picked = trader_multiselect(users, "pp_trader_multi")
+    sel = list(users) if picked is None else picked
+    # 手動數字是一人一份：選多人時表格顯示加總，輸入只開給單選
+    trader = sel[0] if len(sel) == 1 else None
 
     sess = get_session()
     try:
-        manual = load_manual_figures(sess, trader)
+        manual = merge_manual([load_manual_figures(sess, u) for u in sel])
     finally:
         sess.close()
-    t_trades = [t for t in trades if (getattr(t, "user", None) or "").strip() == trader]
+    t_trades = [t for t in trades if (getattr(t, "user", None) or "").strip() in sel]
     mdf = monthly_series(build_realized_ledger(t_trades, masters, policy, custom_rules=custom_rules))
     system_monthly = dict(zip(mdf["月份"], mdf["當月已實現"])) if not mdf.empty else {}
     blocks = build_period_blocks(manual, system_monthly, date.today())
@@ -221,10 +224,13 @@ def _render_period_tab():
             col.markdown(_period_table_html(rows), unsafe_allow_html=True)
     st.caption(f"標「系統」的月份＝系統已實現損益（{SYSTEM_START:%Y/%m} 起，依賣出月份）；其他為手動輸入，空白＝還沒填。")
 
+    if trader is None:
+        st.info("✏️ 要輸入／修改手動數字，請在「買賣人」只選一位。上表是所選買賣人的加總。")
+        return
     with st.expander("✏️ 輸入／修改手動數字", expanded=not any(v is not None for v in manual.values())):
         if USE_GOOGLE_SHEET:
             st.warning("目前是試算表模式：手動數字不會寫進試算表，重開 app 後會不見。")
-        st.caption("點格子直接打數字（灰色 None＝還沒填），全部改完按「💾 儲存」。")
+        st.caption("點格子直接打數字（灰色 None＝還沒填），全部改完按「💾 儲存」。加減數(a)：要加填正數、要減填負數（前面打 -）。")
         keys = manual_period_keys(date.today())
         edit_df = pd.DataFrame({
             "key": [k for k, _ in keys],
@@ -411,5 +417,5 @@ render_page_notes(
     "若券商另有其他費用／利息，請以帳單為準。",
     "**沖銷方式**：自定沖銷 ＋ 其餘先進先出（固定；所有賣出都計入），與「已實現損益」頁相同。",
     "**每股損益簡表**：買進支出＝成交金額＋手續費；賣出收入＝成交金額－手續費－證交稅；損益＝該檔在這段期間賣出的已實現損益。",
-    "**期間獲利表**：115/9 月起用系統的已實現損益（依賣出月份）；之前的月份與帳戶結餘是手動輸入（在表格下方「✏️ 輸入／修改手動數字」）。",
+    "**期間獲利表**：115/11 月起用系統的已實現損益（依賣出月份）；之前的月份與帳戶結餘是手動輸入（在表格下方「✏️ 輸入／修改手動數字」）。",
 )

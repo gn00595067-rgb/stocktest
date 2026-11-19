@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 """期間獲利表（Peggy Excel 版的系統化）：每月／每年獲利、累計、帳戶結餘。
 
-- 系統從 115/9（2026-09）起才有完整交易紀錄 → 這之後的月份用系統已實現損益（依賣出月份）。
-- 之前的期間（112/7/19～112/12/31、113 全年、114 各月、115/1～8 月）與帳戶結餘由使用者手動輸入。
+- 115/11（2026-11）起的月份用系統已實現損益（依賣出月份）。
+- 之前的期間（112/7/19～112/12/31、113 全年、114 各月、115/1～10 月）與帳戶結餘由使用者手動輸入。
+  （原訂 115/9 起；11/19 Peggy 回饋 9、10 月也要手 key）
 規格：docs/specs/Peggy回饋_2026-10-14.md §8
 """
 from datetime import date
 from typing import Dict, List, Optional
 
-SYSTEM_START = date(2026, 9, 1)     # 115/9 起用系統數字
+SYSTEM_START = date(2026, 11, 1)    # 115/11 起用系統數字
 FIRST_DAY = date(2023, 7, 19)       # 112/7/19 開戶起算
 MONTHLY_FROM_YEAR = 2025            # 114 年起逐月列
 BALANCE_KEY = "balance"
-# Excel 右側紅框：「虧(a)」手動填、「(含虧)c=a+b」＝a＋當年小計(b)。意思待確認，先照字面做（Jonathan 2026-10-14）
+# Excel 右側紅框：「加減數(a)」手動填（可正可負，賺填正、虧填負）、「c=a+b」＝a＋當年小計(b)。
+# 原標「虧(a)」；11/19 Peggy：不管虧或賺，要一個可加減的數。key 沿用 loss_a（已存的資料不用搬）
 LOSS_A_KEY = "loss_a"
-LOSS_A_LABEL = "虧(a)"
-LOSS_C_LABEL = "(含虧)c=a+b"
+LOSS_A_LABEL = "加減數(a)"
+LOSS_C_LABEL = "(加減後)c=a+b"
 # 逐月之前的整段期間（只有一格）
 LUMP_PERIODS = [("2023H2", "112/7/19～112/12/31"), ("2024", "113/1-12月")]
 
@@ -42,6 +44,18 @@ def manual_period_keys(today: date, system_start: date = SYSTEM_START) -> List[t
             out.append((month_key(y, m), f"{roc(y)}/{m}月"))
     out.append((LOSS_A_KEY, LOSS_A_LABEL))
     out.append((BALANCE_KEY, "帳戶結餘"))
+    return out
+
+
+def merge_manual(per_trader: List[Dict[str, Optional[float]]]) -> Dict[str, Optional[float]]:
+    """多位買賣人的手動數字逐期間相加；某期間每個人都沒填才是 None。"""
+    out: Dict[str, Optional[float]] = {}
+    for m in per_trader:
+        for k, v in m.items():
+            if v is None or v != v:
+                out.setdefault(k, None)
+            else:
+                out[k] = (out.get(k) or 0.0) + float(v)
     return out
 
 
