@@ -277,3 +277,23 @@ def test_sell_alert_at_3pct():
     assert sell_alert(row(95, 100)) is None
     assert sell_alert(row(110, 100, qty=0)) is None
     assert sell_alert(row(None, 100)) is None
+
+
+def test_unrealized_net_deducts_sell_fee_and_tax():
+    """Peggy 11/19：未實現（扣費稅）＝市值－賣出手續費－證交稅－持股成本。聯電例：現價高於均價但低於底價 → 帳面賺、扣費稅賠。"""
+    from types import SimpleNamespace as NS
+    from datetime import date
+    from services.trade_fees import estimate_broker_fee, estimate_sell_tax, breakeven_sell_price
+    from services.trader_service import trader_fee_rate
+    t = NS(id=1, user="甲", stock_id="2303", trade_date=date(2026, 11, 19), side="BUY",
+           price=89.6, quantity=24000, is_daytrade=False, fee=None, tax=None)
+    g = gp.builtin_all_group("甲")
+    s = gp.summarize_group([t], g, [], "CUSTOM_PLUS_FIFO", {"2303": {"price": 89.9}}, {})
+    r = s["rows"][0]
+    rate = trader_fee_rate("甲")
+    expect = 89.9 * 24000 - estimate_broker_fee(89.9, 24000, fee_rate=rate) - estimate_sell_tax(89.9, 24000) - r["cost"]
+    assert abs(r["unrealized_net"] - expect) < 1e-6
+    assert r["unrealized"] > 0 > r["unrealized_net"]
+    assert r["price"] < r["breakeven"]
+    assert abs(s["unrealized_net"] - r["unrealized_net"]) < 1e-6
+    assert abs(r["unrealized_net_pct"] - r["unrealized_net"] / r["cost"] * 100) < 1e-9

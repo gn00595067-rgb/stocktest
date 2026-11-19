@@ -346,7 +346,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
 
     trades：全部交易（不需先篩分頁；這裡會依 group 篩）。
     """
-    from services.trade_fees import breakeven_sell_price
+    from services.trade_fees import breakeven_sell_price, estimate_broker_fee, estimate_sell_tax
     from services.trader_service import trader_fee_rate
 
     keys = ("qty", "cost", "cost_ex_fee", "realized", "realized_cost", "n_trades")
@@ -373,6 +373,9 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
         m = masters.get(sid)
         is_etf = bool(getattr(m, "is_etf", False)) if m else False
         fee_rate = rate_by_sid.get(sid) or trader_fee_rate(group.trader)
+        # 扣賣出費稅的未實現（Peggy 11/19：像國泰樹精靈，今天全部賣掉扣完手續費＋證交稅真正賺賠多少）
+        sell_cost = (estimate_broker_fee(price, qty, fee_rate=fee_rate) + estimate_sell_tax(price, qty, is_etf=is_etf)) if qty else 0.0
+        unrealized_net = mv - sell_cost - cost if qty else 0.0
         rows.append({
             "stock_id": sid,
             "is_etf": is_etf,
@@ -392,6 +395,8 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
             "has_realized": p["has_realized"],
             "unrealized": unrealized,
             "unrealized_pct": (unrealized / cost * 100) if qty and cost else None,
+            "unrealized_net": unrealized_net,
+            "unrealized_net_pct": (unrealized_net / cost * 100) if qty and cost else None,
             "n_trades": p["n_trades"],
         })
     rows.sort(key=lambda r: (-r["market_value"], -r["n_trades"], r["stock_id"]))
@@ -399,6 +404,7 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
     tot_mv = sum(r["market_value"] for r in rows)
     tot_cost = sum(r["cost"] for r in rows if r["qty"])
     tot_unreal = sum(r["unrealized"] for r in rows)
+    tot_unreal_net = sum(r["unrealized_net"] for r in rows)
     tot_real = sum(r["realized"] for r in rows)
     tot_real_cost = 0.0
     for r in rows:
@@ -409,6 +415,8 @@ def summarize_group(trades, group: GroupSpec, custom_rules, policy: str, quotes:
         "market_value": tot_mv,
         "unrealized": tot_unreal,
         "unrealized_pct": (tot_unreal / tot_cost * 100) if tot_cost else None,
+        "unrealized_net": tot_unreal_net,
+        "unrealized_net_pct": (tot_unreal_net / tot_cost * 100) if tot_cost else None,
         "realized": tot_real,
         "realized_pct": (tot_real / tot_real_cost * 100) if tot_real_cost else None,
     }

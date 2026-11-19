@@ -119,7 +119,7 @@ st.markdown("""
 .st-key-yh_edit_group button p, .st-key-yh_del_group button p { white-space: nowrap; }
 .st-key-yh_new_group button { min-height: 0; padding: .15rem .6rem; }
 .st-key-yh_new_group button p { font-size: .85rem; }
-.st-key-yh_avg_ex_fee label p { white-space: nowrap; font-size: .85rem; }
+.st-key-yh_avg_ex_fee label p, .st-key-yh_unreal_net label p { white-space: nowrap; font-size: .85rem; }
 .st-key-yh_refresh button { min-height: 0; padding: .2rem .7rem; }
 .yh-th, .yh-td { white-space: nowrap; }
 .yh-grid { font-size: .92rem; }
@@ -1001,16 +1001,20 @@ pos_by_person = {p: compute_position_and_cost_by_stock([t for t in trades if (t.
                                                        custom_rules=rules, policy=POLICY)
                  for p in group.traders}
 
+# 未實現要不要扣賣出手續費＋證交稅（Peggy 11/19：未實現應＝今天賣掉真正賺賠，像國泰樹精靈）；預設扣
+st.session_state.setdefault("yh_unreal_net", True)
+_UK = "unrealized_net" if st.session_state["yh_unreal_net"] else "unrealized"
+
 # 總覽卡
-rp, up = summary["realized_pct"], summary["unrealized_pct"]
+rp, up = summary["realized_pct"], summary[f"{_UK}_pct"]
 st.markdown(f"""
 <div class="yh-cardwrap"><div class="yh-card">
   <div class="cell"><div class="lbl">持有股票市值</div>
     <div class="val big">${summary['market_value']:,.0f}<span class="unit">TWD</span></div></div>
   <div class="cell"><div class="lbl">已實現損益</div>
     <div class="val mid {_cls(summary['realized'])}">{_arrow(summary['realized'])}{abs(summary['realized']):,.2f}<span class="pct">{f"({abs(rp):.2f}%)" if rp is not None else ""}</span></div></div>
-  <div class="cell"><div class="lbl">未實現損益</div>
-    <div class="val mid {_cls(summary['unrealized'])}">{_arrow(summary['unrealized'])}{abs(summary['unrealized']):,.2f}<span class="pct">{f"({abs(up):.2f}%)" if up is not None else ""}</span></div></div>
+  <div class="cell"><div class="lbl">未實現損益{"（扣賣出費稅）" if _UK == "unrealized_net" else ""}</div>
+    <div class="val mid {_cls(summary[_UK])}">{_arrow(summary[_UK])}{abs(summary[_UK]):,.2f}<span class="pct">{f"({abs(up):.2f}%)" if up is not None else ""}</span></div></div>
 </div></div>
 """, unsafe_allow_html=True)
 rc1, rc_fee, rc2 = st.columns([3.4, 1.5, 1.1], vertical_alignment="center")
@@ -1035,6 +1039,9 @@ if rc2.button("🔄 更新股價", key="yh_refresh"):
 rc_fee.toggle("均價不含手續費", key="yh_avg_ex_fee",
           help="打開：「持股成本均價」只算買進價格（不含買進手續費），方便跟券商 App 的成交均價對。"
                "底價、未實現損益仍含手續費，不受影響。")
+rc_fee.toggle("未實現扣賣出費稅", key="yh_unreal_net",
+          help="打開（預設）：未實現損益＝今天全部賣掉、扣完賣出手續費和證交稅，真正賺賠多少（同國泰樹精靈）。"
+               "關掉：帳面數字＝（現價−成本均價）×股數，沒扣賣出費稅（同 Yahoo 股市）。")
 
 if _live:
     st.session_state["yh_page_ts"] = time.time()
@@ -1075,7 +1082,8 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
     h1.markdown('<div class="yh-grid">' + "".join(
         (f'<div class="yh-th" title="{_be_tip}">{lab} ⓘ</div>' if lab == "底價"
          else f'<div class="yh-th{" l" if left else ""}">{lab}</div>')
-        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", _avg_lab, "底價", "市值", "已實現損益", "未實現損益"],
+        for lab, left in zip(["股名/股號", "股價/漲跌(%)", "持有股數", _avg_lab, "底價", "市值", "已實現損益",
+                              "未實現(扣費稅)" if _UK == "unrealized_net" else "未實現損益"],
                              [1, 0, 0, 0, 0, 0, 0, 0])) + '</div>', unsafe_allow_html=True)
 
     open_key = f"yh_open_{trader}"
@@ -1137,7 +1145,7 @@ def _holdings_table(summary, trader, group, g_trades, pos_by_person, quotes, sea
                 + f'<div class="yh-td">{be_s}<span class="unit twd">TWD</span></div>'
                 + f'<div class="yh-td">{mv_s}</div>'
                 + _pnl_html(r["realized"], r["realized_pct"], show=r["has_realized"])
-                + _pnl_html(r["unrealized"], r["unrealized_pct"], show=bool(r["qty"]))
+                + _pnl_html(r[_UK], r[f"{_UK}_pct"], show=bool(r["qty"]))
                 + '</div>', unsafe_allow_html=True)
         if is_open:
             with st.container(border=True, key=f"yh_exp_{sid}"):
