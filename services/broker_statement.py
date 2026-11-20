@@ -630,6 +630,38 @@ def stock_available(sid: str, day: date, new_rows: List[dict], trades: List,
     return sum(b.qty for b in _remaining_buys(sid, new_rows, trades, rules) if b.date <= str(day))
 
 
+def plan_overflow(need: int, picks: List[Tuple[str, int]]) -> List[Tuple[str, int]]:
+    """不夠的股數照選的順序分給幾個人（Elsa 11/20：11/17 不夠、短線也不夠，要再選 Peggy姐 才沖得完）。
+    picks＝[(買賣人, 這檔可沖股數)]，照選的順序；前面的人拿到可沖的為止，最後一個人收剩下全部（可能也不夠）。
+    回傳 [(買賣人, 股數)]，略過 0 股的。"""
+    out, left = [], int(need)
+    for i, (who, avail) in enumerate(picks):
+        if left <= 0:
+            break
+        take = left if i == len(picks) - 1 else min(left, max(0, int(avail)))
+        if take > 0:
+            out.append((who, take))
+            left -= take
+    return out
+
+
+def spread_overflow(shorts: List[int], plan: List[Tuple[str, int]]) -> List[List[Tuple[str, int]]]:
+    """把 plan（[(買賣人, 股數)]）照順序填進每筆賣出不夠的股數 shorts，回傳每筆 [(買賣人, 股數)]。"""
+    queue = [[w, q] for w, q in plan if q > 0]
+    out = []
+    for need in shorts:
+        mine = []
+        while need > 0 and queue:
+            take = min(need, queue[0][1])
+            mine.append((queue[0][0], take))
+            queue[0][1] -= take
+            need -= take
+            if queue[0][1] == 0:
+                queue.pop(0)
+        out.append(mine)
+    return out
+
+
 def split_overflow(row: dict, qty: int, to_user: str, new_seq: int) -> Tuple[dict, dict]:
     """賣出拆兩筆：原本的人留 quantity−qty、to_user 記 qty；手續費、稅、淨收付照股數比例拆（合計不變）。
     回傳 (改過的原列, 新列)；新列 seq＝new_seq（tmp_id 之後再給）。"""

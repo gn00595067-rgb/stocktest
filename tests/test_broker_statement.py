@@ -535,3 +535,42 @@ def test_no_order_file_claims_trades_imported_with_order_no():
     extra = T(3, "2330", D19, "BUY", 2115, 100)
     out = classify_rows(rows, phone + [extra], refs + [(D19, "A003", 3)], by_content=True)
     assert [t.id for t in orphan_keyed_trades(out, phone + [extra], refs + [(D19, "A003", 3)], whole_range=True)] == [3]
+
+
+# ---------------------------------------------------------------- 不夠的股數依序記到多人（11/20 Elsa）
+from services.broker_statement import plan_overflow, spread_overflow, split_overflow   # noqa: E402
+
+
+def test_plan_overflow_in_order():
+    """11/17 不夠 9,000：短線只能沖 2,000、再選 Peggy姐 收剩下的 7,000。"""
+    assert plan_overflow(9000, [("短線", 2000), ("Peggy姐", 50000)]) == [("短線", 2000), ("Peggy姐", 7000)]
+    assert plan_overflow(9000, [("短線", 20000), ("Peggy姐", 50000)]) == [("短線", 9000)]   # 第一個就夠
+    assert plan_overflow(9000, [("短線", 0), ("Peggy姐", 3000)]) == [("Peggy姐", 9000)]      # 沒庫存的略過；最後一個收全部
+    assert plan_overflow(9000, [("短線", 2000)]) == [("短線", 9000)]                          # 只選一個＝舊行為
+    assert plan_overflow(9000, []) == []
+
+
+def test_spread_overflow_across_sells():
+    """5 筆賣出各不夠 1000/2000/2000/2000/2000，照順序先填短線 2,000、再 Peggy姐。"""
+    out = spread_overflow([1000, 2000, 2000, 2000, 2000], [("短線", 2000), ("Peggy姐", 7000)])
+    assert out == [[("短線", 1000)], [("短線", 1000), ("Peggy姐", 1000)], [("Peggy姐", 2000)],
+                   [("Peggy姐", 2000)], [("Peggy姐", 2000)]]
+
+
+def test_split_twice_keeps_totals():
+    """一筆賣出拆給兩個人：股數、手續費、稅、淨收付合計不變。"""
+    r = {"seq": 0, "user": "11/17", "quantity": 5000, "fee": 161.0, "tax": 678.0, "net": 451161.0, "price": 90.4}
+    pieces = spread_overflow([5000], [("短線", 2000), ("Peggy姐", 3000)])[0]
+    rows, seq = [], 1
+    for i, (v, a) in enumerate(pieces):
+        if i == len(pieces) - 1:   # 整筆都不夠：最後一份整筆改記
+            r = {**r, "user": v}
+            break
+        kept, new = split_overflow(r, a, v, seq)
+        seq += 1
+        r = {**r, **kept}
+        rows.append(new)
+    rows.append(r)
+    assert sorted((x["user"], x["quantity"]) for x in rows) == [("Peggy姐", 3000), ("短線", 2000)]
+    for k in ("fee", "tax", "net"):
+        assert abs(sum(x[k] for x in rows) - {"fee": 161, "tax": 678, "net": 451161}[k]) < 1e-6

@@ -19,7 +19,7 @@ from services import trade_ref_service as trs
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW, SELL_STRATEGIES, STATUS_LABEL,
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
-    plan_daytrade, plan_sell_matches, settlement_by_user_date, table_from_lines,
+    plan_daytrade, plan_overflow, plan_sell_matches, spread_overflow, settlement_by_user_date, table_from_lines,
     orphan_keyed_trades, plan_review_fix, has_order_no, same_day_dup_counts, content_key,
     cross_user_same_content, available_buys, allocate_picks, pending_sells, old_sells_short,
     inventory_shortage, split_overflow, stock_available,
@@ -240,8 +240,9 @@ def _overflow_split(rows, to_import, users, ctx, traders, name_by_id, key_sfx):
     if not short:
         return []
     st.markdown("##### ⚠️ 庫存不夠的賣出：不夠的股數要記到誰？")
-    st.caption("例如短線帳沒有這檔、是 Peggy姐 以前買的：選 Peggy姐，這筆就拆成兩筆，"
-               "夠的留在原本的人、不夠的記到選的人（手續費、稅照股數比例拆），各自沖自己的庫存。")
+    st.caption("例如短線帳沒有這檔、是 Peggy姐 以前買的：選 Peggy姐，這筆就拆開，"
+               "夠的留在原本的人、不夠的記到選的人（手續費、稅照股數比例拆），各自沖自己的庫存。"
+               "一個人不夠可以**再選第二、第三個人**：照選的順序沖，前面的人沖完庫存才換下一個。")
     others_ctx = {}
     added, moved, next_seq = [], [], max(r["seq"] for r in rows) + 1
     by_tmp = {r["tmp_id"]: r for r in to_import}
@@ -253,7 +254,7 @@ def _overflow_split(rows, to_import, users, ctx, traders, name_by_id, key_sfx):
     for (u, sid), items in groups.items():
         need = sum(q for _r, q in items)
         last_day = max(r["trade_date"] for r, _q in items)
-        opts, labels = [None], {None: f"先不處理（照樣記在 {u}，庫存不足 {need:,} 股）"}
+        avail, labels = {}, {}
         for v in traders:
             if v == u:
                 continue
@@ -261,28 +262,36 @@ def _overflow_split(rows, to_import, users, ctx, traders, name_by_id, key_sfx):
                 others_ctx[v] = _load_user(v)
             c = ctx.get(v) or others_ctx[v]
             mine_v = [x for x in to_import if x["user"] == v]
-            avail = stock_available(sid, last_day, mine_v, c.trades, c.rules)
-            opts.append(v)
-            labels[v] = f"{v}（這檔可沖 {avail:,} 股" + ("" if avail >= need else "，也不夠") + "）"
-        to = st.selectbox(
-            f"{u}｜{sid} {name_by_id.get(sid, '')}：{len(items)} 筆賣出共不夠 **{need:,} 股** → 記到",
-            opts, format_func=labels.get, key=f"bs_ovf_{key_sfx}_{u}_{sid}",
+            avail[v] = stock_available(sid, last_day, mine_v, c.trades, c.rules)
+            labels[v] = f"{v}（這檔可沖 {avail[v]:,} 股）"
+        picked = st.multiselect(
+            f"{u}｜{sid} {name_by_id.get(sid, '')}：{len(items)} 筆賣出共不夠 **{need:,} 股** → 依序記到"
+            "（不選＝先不處理，照樣記在原本的人）",
+            list(avail), format_func=labels.get, key=f"bs_ovfm_{key_sfx}_{u}_{sid}",
+            placeholder=f"先不處理（照樣記在 {u}，庫存不足 {need:,} 股）",
         )
+        plan = plan_overflow(need, [(v, avail[v]) for v in picked])
+        if plan:
+            left = need - sum(min(q, avail[v]) for v, q in plan)
+            st.caption("→ " + "、".join(f"{v} {q:,} 股" for v, q in plan)
+                       + (f"（{plan[-1][0]} 也不夠 {left:,} 股，仍會照記；可再多選一個人）" if left > 0 else ""))
         with st.expander(f"是哪 {len(items)} 筆"):
             st.dataframe(pd.DataFrame([{
                 "日期": f"{r['trade_date']:%m/%d}", "價格": r["price"], "股數": r["quantity"], "不夠": q,
                 "書號": r["order_no"] or "—"} for r, q in items]), use_container_width=True, hide_index=True)
-        if to is None:
+        if not plan:
             continue
-        for r, q in items:
-            if q >= r["quantity"]:   # 整筆都沒庫存：整筆改記到選的人，不拆出 0 股的交易
-                r.update(user=to, note=f"對帳單匯入時改記（{u} 沒有庫存）")
-                moved.append(r)
-                continue
-            kept, new = split_overflow(r, q, to, next_seq)
-            next_seq += 1
-            r.update(kept)
-            added.append(new)
+        for (r, q), pieces in zip(items, spread_overflow([q for _r, q in items], plan)):
+            whole = q >= r["quantity"]   # 整筆都沒庫存：最後一份不拆，整筆改記（不拆出 0 股的交易）
+            for i, (v, a) in enumerate(pieces):
+                if whole and i == len(pieces) - 1:
+                    r.update(user=v, note=f"對帳單匯入時改記（{u} 沒有庫存）")
+                    moved.append(r)
+                    break
+                kept, new = split_overflow(r, a, v, next_seq)
+                next_seq += 1
+                r.update(kept)
+                added.append(new)
     if not added and not moved:
         return []
     assign_tmp_ids(added)
