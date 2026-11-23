@@ -297,3 +297,21 @@ def test_unrealized_net_deducts_sell_fee_and_tax():
     assert r["price"] < r["breakeven"]
     assert abs(s["unrealized_net"] - r["unrealized_net"]) < 1e-6
     assert abs(r["unrealized_net_pct"] - r["unrealized_net"] / r["cost"] * 100) < 1e-9
+
+
+def test_lot_net_pnl_normal_and_daytrade():
+    """Peggy 11/23：每筆買進剩餘股數現價賣出的淨損益；當沖證交稅減半、ETF 不減半；剩 0 股回 None。"""
+    import math
+    rate = 0.001425 * 0.25
+    lot = {"price": 100, "remaining_qty": 600, "original_qty": 1000, "fee": 35}
+    r = gp.lot_net_pnl(lot, 105, rate)
+    cost = 100 * 600 + 35 * 0.6
+    assert abs(r["cost"] - cost) < 1e-9
+    assert abs(r["pnl"] - (105 * 600 - math.floor(105 * 600 * rate) - math.floor(105 * 600 * 0.003) - cost)) < 1e-6
+    full = {"price": 100, "remaining_qty": 1000, "original_qty": 1000, "fee": 35}
+    n, d = gp.lot_net_pnl(full, 101, rate), gp.lot_net_pnl(full, 101, rate, daytrade=True)
+    assert abs((d["pnl"] - n["pnl"]) - (math.floor(101000 * 0.003) - math.floor(101000 * 0.0015))) < 1e-6
+    e = gp.lot_net_pnl(full, 101, rate, is_etf=True, daytrade=True)
+    assert abs(e["pnl"] - (101000 - math.floor(101000 * rate) - math.floor(101000 * 0.001) - 100035)) < 1e-6
+    assert gp.lot_net_pnl({**lot, "remaining_qty": 0}, 105, rate) is None
+    assert gp.lot_net_pnl(lot, 0, rate) is None

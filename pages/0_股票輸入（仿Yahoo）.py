@@ -66,7 +66,7 @@ render_auth_sidebar()
 
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
 # 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
-_DETAIL_COLS = [1.25, 1.25, 0.95, 0.95, 0.55, 0.55, 1.1, 0.35, 0.35]   # 最後兩欄＝✏️、🗑
+_DETAIL_COLS = [1.2, 1.2, 0.9, 0.9, 0.5, 0.5, 1.05, 1.1, 0.35, 0.35]   # 未實現(扣費稅)（Peggy 11/23）；最後兩欄＝✏️、🗑
 _FORM_COLS = [1.25, 1.25, 0.95, 0.95, 0.55, 0.55, 1.1, 0.7]           # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
 _ROW_COLS = [0.35, 9.45]   # 展開鈕｜其餘 8 欄合成一個 HTML grid（.yh-grid）
 
@@ -659,6 +659,33 @@ def _pledge_editor(trader: str, sid: str, holding_qty: int, pledged: int):
         p[2].caption(f"持股 {holding_qty:,} 股，質押 {pledged:,} 股 → **可動用 {max(0, holding_qty - pledged):,} 股**")
 
 
+def _daytrade_trial(sid: str, person: str, price_now: float, is_etf: bool):
+    """今天買進、還沒沖掉的股數若現在當沖賣出的損益（Peggy 11/23；預設收起來，標題就有合計）。只試算不寫入。"""
+    today = gp.tw_today()
+    items = []
+    for lot in get_open_buy_lots(trades, sid, person, rules, POLICY):
+        if str(lot["date"])[:10] != f"{today:%Y-%m-%d}":
+            continue
+        r = gp.lot_net_pnl(lot, price_now, trader_fee_rate(person), is_etf=is_etf, daytrade=True)
+        if r:
+            items.append((lot, r))
+    if not items:
+        return
+    total = sum(r["pnl"] for _l, r in items)
+    cost = sum(r["cost"] for _l, r in items)
+    qty = sum(l["remaining_qty"] for l, _r in items)
+    sign = lambda v: f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):,.0f}"
+    with st.expander(f"⚡ 今天買進若現在當沖賣出（現價 {price_now:,.2f}）：預估 {sign(total)}（{len(items)} 筆，共 {qty:,} 股）"):
+        rows = [{"買進價": f"{l['price']:,.2f}", "還沒沖的股數": f"{l['remaining_qty']:,}", "若現在當沖賣出": sign(r["pnl"]),
+                 "報酬率": f"{r['pct']:+.2f}%" if r["pct"] is not None else ""} for l, r in items]
+        if len(items) > 1:
+            rows.append({"買進價": "合計", "還沒沖的股數": f"{qty:,}", "若現在當沖賣出": sign(total),
+                         "報酬率": f"{total / cost * 100:+.2f}%" if cost else ""})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.caption("只算今天買進、還沒被沖掉的股數。損益＝現價賣出扣手續費和當沖證交稅（減半 0.15%"
+                   + ("；ETF 為 0.1% 不減半" if is_etf else "") + "），再減買進成本（含買進手續費）。只是試算，不會寫入任何資料。")
+
+
 def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: dict, quote: dict, pledged_by: dict):
     """holding_by／pledged_by：{人: 這檔全部持股／質押股數}（多人分頁每人各一）。"""
     sid = row["stock_id"]
@@ -671,10 +698,11 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
     holding_qty = int(holding_by.get(group.trader, 0))
     pledged = int(pledged_by.get(group.trader, 0))
     price_now = row["price"] or 0.0
+    _daytrade_trial(sid, group.trader, price_now, bool(getattr(_MASTERS.get(sid), "is_etf", False)))
     # 共用表頭：新增列與交易明細同一組欄位（像 Yahoo）
     hdr = st.container(key=f"yh_exphdr_{sid}").columns(_DETAIL_COLS)
     for c, lab in zip(hdr, ["交易日期", "買入/賣出", '交易股數<span class="u">股</span>',
-                            '交易股價<span class="u">元</span>', "手續費", "稅", "金額／市值"]):
+                            '交易股價<span class="u">元</span>', "手續費", "稅", "金額／市值", "未實現(扣費稅)"]):
         c.markdown(f'<div class="yh-th c">{lab}</div>', unsafe_allow_html=True)
     # 新增交易（送出後換一組 key，輸入框自動清空）
     n = st.session_state.get(f"yh_form_n_{sid}", 0)
@@ -824,6 +852,23 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
 
     st.markdown('<hr style="margin:.2rem 0;border:none;border-top:1px solid #eee">', unsafe_allow_html=True)
     _dcols = _DETAIL_COLS
+    # 每筆買進還沒沖掉的股數（照目前沖銷），「未實現(扣費稅)」欄用（Peggy 11/23）
+    _lots = {lot["trade_id"]: lot for p in {str(t.user).strip() for t in stock_trades}
+             for lot in get_open_buy_lots(trades, sid, p, rules, POLICY)}
+
+    def _unreal_html(t):
+        if str(t.side).upper() != "BUY":
+            return '<div class="yh-td sm c">—</div>'
+        lot = _lots.get(t.id)
+        if lot is None:
+            return '<div class="yh-td sm c">已沖完</div>'
+        r = gp.lot_net_pnl(lot, price_now, trader_fee_rate(str(t.user).strip()), is_etf=is_etf)
+        if r is None:
+            return '<div class="yh-td sm c">—</div>'
+        part = (f'<span class="l2 sub">剩 {lot["remaining_qty"]:,} 股</span>'
+                if lot["remaining_qty"] < lot["original_qty"] else "")
+        return f'<div class="yh-td c {_cls(r["pnl"])}">{_arrow(r["pnl"])}{abs(r["pnl"]):,.0f}{part}</div>'
+
     pend_key = f"yh_del_pending_{sid}"
     edit_key = f"yh_edit_pending_{sid}"
     _all = sorted(stock_trades, key=lambda x: (x.trade_date, x.id), reverse=True)
@@ -842,11 +887,12 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
         c[4].markdown(f'<div class="yh-td sm c">{float(t.fee or 0):,.0f}</div>', unsafe_allow_html=True)
         c[5].markdown(f'<div class="yh-td sm c">{float(t.tax or 0):,.0f}</div>', unsafe_allow_html=True)
         c[6].markdown(f'<div class="yh-td c">{int(t.quantity) * price_now:,.2f}</div>', unsafe_allow_html=True)
-        if c[7].button("✏️", key=f"yh_ed_{t.id}", help="修改這筆交易（日期、股數、股價）"):
+        c[7].markdown(_unreal_html(t), unsafe_allow_html=True)
+        if c[8].button("✏️", key=f"yh_ed_{t.id}", help="修改這筆交易（日期、股數、股價）"):
             st.session_state[edit_key] = t.id
             st.session_state.pop(pend_key, None)
             _rerun_fragment()
-        if c[8].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
+        if c[9].button("🗑", key=f"yh_del_{t.id}", help="刪除這筆交易"):
             st.session_state[pend_key] = t.id
             st.session_state.pop(edit_key, None)
             _rerun_fragment()

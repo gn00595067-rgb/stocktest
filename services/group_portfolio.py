@@ -445,6 +445,23 @@ def sell_status(row: dict) -> Tuple[Optional[str], Optional[float]]:
     return None, None
 
 
+def lot_net_pnl(lot: dict, price_now: float, fee_rate: float, is_etf: bool = False,
+                daytrade: bool = False) -> Optional[dict]:
+    """這筆買進還沒沖掉的股數（lot＝get_open_buy_lots 的一列）若用 price_now 賣掉的淨損益（扣手續費、證交稅）。
+    成本＝買價×股數＋買進手續費照股數比例；daytrade＝證交稅減半（ETF 不減半）。剩 0 股或沒報價回 None。
+    Peggy 11/23：明細的「未實現(扣費稅)」欄、今天買進若當沖的試算。規格 docs/specs/明細未實現與當沖試算.md"""
+    from services.trade_fees import estimate_broker_fee, estimate_sell_tax
+    q = int(lot.get("remaining_qty") or 0)
+    if q <= 0 or not price_now or price_now <= 0:
+        return None
+    orig = int(lot.get("original_qty") or 0)
+    cost = float(lot["price"]) * q + (float(lot.get("fee") or 0) * q / orig if orig else 0.0)
+    fee = estimate_broker_fee(price_now, q, fee_rate=fee_rate)
+    tax = estimate_sell_tax(price_now, q, is_etf=is_etf, is_daytrade=daytrade)
+    pnl = price_now * q - fee - tax - cost
+    return {"pnl": pnl, "cost": cost, "pct": (pnl / cost * 100) if cost else None}
+
+
 # 獲利 % ≥ 此值整列紅框（Peggy 11/19：短線早上買，3% 就提醒趕快賣）。規格 docs/specs/獲利3%紅框.md
 SELL_ALERT_PCT = 3.0
 
