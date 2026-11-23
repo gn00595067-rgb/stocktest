@@ -183,3 +183,18 @@ def test_sequential_match_plans_not_enough_leaves_short():
     plans = sequential_match_plans([(1500, 361.0), (1500, 361.0)], _lots(), "all", "profit_max")
     assert sum(q for _, q in plans[0]) == 1500
     assert sum(q for _, q in plans[1]) == 500
+
+
+def test_today_daytrade_and_cost_high_low():
+    """Elsa 11/23：手 key 當沖只沖賣出那天買的；今天買兩張只沖一張時可選成本高或低的。"""
+    from datetime import date
+    from services.trade_entry_service import combined_match_plan, filter_lots_by_time
+    d = date(2026, 11, 23)
+    lots = [{"trade_id": 1, "date": "2026-11-19", "price": 596.0, "remaining_qty": 600},
+            {"trade_id": 2, "date": "2026-11-23", "price": 557.0, "remaining_qty": 1000},
+            {"trade_id": 3, "date": "2026-11-23", "price": 562.0, "remaining_qty": 1000}]
+    assert [l["trade_id"] for l in filter_lots_by_time(lots, "today", d)] == [2, 3]
+    assert combined_match_plan(1000, lots, "today", "cost_high", 560, d) == [(3, 1000)]
+    assert combined_match_plan(1000, lots, "today", "cost_low", 560, d) == [(2, 1000)]
+    assert combined_match_plan(1500, lots, "today", "cost_low", 560, d) == [(2, 1000), (3, 500)]
+    assert combined_match_plan(1000, lots, "all", "cost_high", 560, d) == [(1, 600), (3, 400)]

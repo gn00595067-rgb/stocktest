@@ -221,6 +221,11 @@ def sort_lots_by_strategy(open_lots: List[dict], strategy: Optional[str]) -> Lis
         return sorted(lots, key=lambda x: (float(x["price"]), x["trade_id"]))
     if strategy in ("profit_min", "loss_max"):
         return sorted(lots, key=lambda x: (-float(x["price"]), x["trade_id"]))
+    # 成本高／低的先：不管賺賠都排（同對帳單匯入的保守／樂觀；Elsa 11/23 當沖要能選）
+    if strategy == "cost_high":
+        return sorted(lots, key=lambda x: (-float(x["price"]), str(x["date"])[:10], x["trade_id"]))
+    if strategy == "cost_low":
+        return sorted(lots, key=lambda x: (float(x["price"]), str(x["date"])[:10], x["trade_id"]))
     if strategy == "nearest_avg":
         total = sum(int(lot["remaining_qty"]) for lot in lots)
         avg = (
@@ -245,9 +250,12 @@ def filter_lots_by_time(
 ) -> List[dict]:
     """依時間範圍篩選買進批次。
 
-    time_key："all"（不限，預設）／"3d"（近3天）／"5d"（近5天）。
-    anchor：計算「近 N 天」的基準日，預設今天。
+    time_key："all"（不限，預設）／"today"（當沖：只留買進日＝anchor）／"3d"（近3天）／"5d"（近5天）。
+    anchor：計算「近 N 天」的基準日、當沖的賣出日，預設今天。
     """
+    if time_key == "today":   # Elsa 11/23：手 key 當沖只沖當天買的
+        base = anchor or date.today()
+        return [lot for lot in open_lots if str(lot["date"])[:10] == base.isoformat()]
     days = _TIME_DAYS.get(time_key)
     if not days:
         return list(open_lots)
@@ -281,13 +289,14 @@ def combined_match_plan(
     time_key: str = "all",
     sort_key: str = "fifo",
     sell_price: Optional[float] = None,
+    anchor: Optional[date] = None,
 ) -> List[Tuple[int, int]]:
     """時間範圍 × 賺賠排序 交集後，由前到後填滿賣出股數的配對計畫。
 
     先依 time_key 篩時間，再依 sort_key（含賺/賠篩選）排序，最後由前往後配到滿。
     符合條件的批次不足時，計畫合計會小於 sell_qty（進度條會顯示尚缺）。
     """
-    lots = filter_lots_by_time(open_lots, time_key)
+    lots = filter_lots_by_time(open_lots, time_key, anchor)
     lots = filter_and_sort_lots(lots, sort_key, sell_price)
     plan: List[Tuple[int, int]] = []
     left = int(sell_qty)
@@ -306,6 +315,7 @@ def sequential_match_plans(
     open_lots: List[dict],
     time_key: str = "all",
     sort_key: str = "nearest_avg",
+    anchor: Optional[date] = None,
 ) -> List[List[Tuple[int, int]]]:
     """多筆賣出用同一種沖銷方式依序自動配對（仿Yahoo 多筆賣出）。
 
@@ -316,7 +326,7 @@ def sequential_match_plans(
     plans: List[List[Tuple[int, int]]] = []
     for qty, price in sells:
         lots = [dict(lot, remaining_qty=left[lot["trade_id"]]) for lot in open_lots if left[lot["trade_id"]] > 0]
-        plan = combined_match_plan(int(qty or 0), lots, time_key, sort_key, price)
+        plan = combined_match_plan(int(qty or 0), lots, time_key, sort_key, price, anchor)
         for buy_id, q in plan:
             left[buy_id] -= q
         plans.append(plan)

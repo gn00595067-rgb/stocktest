@@ -427,15 +427,16 @@ def _rerun_fragment():
 # ─── 展開區：交易明細＋新增交易（fragment：輸入時不整頁重畫） ──────────────
 
 _MATCH_METHODS = {
-    "nearest_avg": "⚖️ 接近均價", "fifo": "先進先出", "profit_max": "💰 賺多",
-    "profit_min": "🪙 賺少", "loss_max": "🔻 賠多", "loss_min": "🩹 賠少",
+    "nearest_avg": "⚖️ 接近均價", "fifo": "先進先出", "cost_high": "⬆️ 成本高的先", "cost_low": "⬇️ 成本低的先",
+    "profit_max": "💰 賺多", "profit_min": "🪙 賺少", "loss_max": "🔻 賠多", "loss_min": "🩹 賠少",
 }
-_MATCH_TIMES = {"all": "全部", "3d": "近3天", "5d": "近5天"}
+# today＝當沖：只沖賣出那天買的，選了自動勾「當沖」（Elsa 11/23：手 key 也要像對帳單匯入一樣能選）
+_MATCH_TIMES = {"all": "全部", "today": "⚡ 當沖（只沖當天買的）", "3d": "近3天", "5d": "近5天"}
 
 
 def _match_method_picker(k: str):
     """沖銷方式＋時間範圍兩排選項。預設沿用這次登入上次選的（連續 key 賣出不用每次重選）。"""
-    m1, m2 = st.columns([3, 1.2])
+    m1, m2 = st.columns([3, 1.6])
     mm, mt = st.session_state.get("yh_mm_pref", "nearest_avg"), st.session_state.get("yh_mt_pref", "all")
     method = m1.radio("沖銷方式", list(_MATCH_METHODS), format_func=_MATCH_METHODS.get, horizontal=True,
                       index=list(_MATCH_METHODS).index(mm), key=f"{k}_mm", label_visibility="collapsed")
@@ -443,6 +444,11 @@ def _match_method_picker(k: str):
                      index=list(_MATCH_TIMES).index(mt), key=f"{k}_mt", label_visibility="collapsed")
     st.session_state["yh_mm_pref"], st.session_state["yh_mt_pref"] = method, tmode
     return method, tmode
+
+
+def _match_time_now(k: str) -> str:
+    """這張表單目前選的時間範圍（配對選項畫在輸入列下面，輸入列要先知道是不是當沖）"""
+    return st.session_state.get(f"{k}_mt") or st.session_state.get("yh_mt_pref", "all")
 
 
 def _multi_sell_match_ui(sid: str, trader: str, entries: list, k: str):
@@ -455,7 +461,8 @@ def _multi_sell_match_ui(sid: str, trader: str, entries: list, k: str):
     if not lots:
         return [], ["這一檔目前沒有可沖銷的買進庫存。"]
     method, tmode = _match_method_picker(k)
-    plans = sequential_match_plans([(int(e["qty"]), float(e["price"])) for e in entries], lots, tmode, method)
+    plans = sequential_match_plans([(int(e["qty"]), float(e["price"])) for e in entries], lots, tmode, method,
+                                   entries[0]["d"])
     by_id, lot_px = {t.id: t for t in trades}, {l["trade_id"]: float(l["price"]) for l in lots}
     rows, errs, est_total = [], [], 0.0
     for j, (e, plan) in enumerate(zip(entries, plans)):
@@ -481,7 +488,7 @@ def _multi_sell_match_ui(sid: str, trader: str, entries: list, k: str):
     return plans, errs
 
 
-def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, tax: float, k: str):
+def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, tax: float, k: str, day=None):
     """賣出沖銷配對（同舊「交易輸入」頁的口徑：預設接近均價，可換方式、可逐批改）。
 
     回傳 (plan=[(買進ID, 股數)], 錯誤訊息或 None)。
@@ -491,7 +498,7 @@ def _sell_match_ui(sid: str, trader: str, qty: int, price: float, fee: float, ta
     if not lots:
         return [], "這一檔目前沒有可沖銷的買進庫存。"
     method, tmode = _match_method_picker(k)
-    plan = dict(combined_match_plan(qty, lots, tmode, method, price))
+    plan = dict(combined_match_plan(qty, lots, tmode, method, price, day))
     shown = sort_lots_by_strategy(lots, method)  # 表格順序跟著沖銷方式走，配到的批次排在前面
     df = pd.DataFrame([{
         "買進ID": int(l["trade_id"]), "買進日": str(l["date"])[:10], "買價": float(l["price"]),
@@ -739,7 +746,10 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
         price = f[3].number_input("股價", min_value=0.0, value=None, step=0.05, format="%.2f", key=f"{rk}_p",
                                   placeholder="股價", label_visibility="collapsed")
         is_dt = False
-        if side == "SELL":
+        if side == "SELL" and _match_time_now(k) == "today":   # 配對選了「⚡ 當沖」：一定是當沖
+            is_dt = f[7].checkbox("當沖", value=True, disabled=True, key=f"{rk}_dtf",
+                                  help="下面沖銷配對選了「⚡ 當沖」，證交稅自動減半")
+        elif side == "SELL":
             is_dt = f[7].checkbox("當沖", key=f"{rk}_dt", help="當沖賣出：證交稅減半")
         elif i > 0 and f[7].button("✕", key=f"{rk}_x", help="移除這一列"):
             row_ids.remove(rid)
@@ -786,7 +796,7 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
     plans = [[] for _ in entries]   # 每筆賣出各自的沖銷配對 [(買進ID, 股數)]
     if side == "SELL" and not multi and e0["qty"] and e0["price"] and not e0["errors"]:
         plans[0], match_err = _sell_match_ui(sid, group.trader, int(e0["qty"]), float(e0["price"]),
-                                             e0["fee"], e0["tax"], k)
+                                             e0["fee"], e0["tax"], k, e0["d"])
         if match_err:
             errors.append(match_err)
     elif side == "SELL" and multi and filled and not any(e["errors"] for e in entries):

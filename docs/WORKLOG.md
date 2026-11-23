@@ -936,3 +936,9 @@
 **為什麼**：Peggy 11/23：想在明細直接看每筆買進扣完稅費的未實現，判斷今天適不適合當沖；當日買入的當沖損益放這頁、要能收起來不佔版面。
 **驗證**：pytest 260 passed（新增 test_lot_net_pnl_normal_and_daytrade）；AppTest（暫存 SQLite＋假報價）：今天買 100→現價 101 明細 ▲622、當沖試算 +774（差＝證交稅減半）、部分沖掉標「剩 500 股」、沖完標「已沖完」。
 **下一步**：請 Peggy 在 iPad 試用。
+
+## 2026-11-23 — 手 key 賣出可選「⚡ 當沖」＋「成本高／低的先」（新舊版）
+**做了什麼**：`trade_entry_service`：`filter_lots_by_time` 加 `today`（只留賣出那天買的）、`sort_lots_by_strategy` 加 `cost_high`／`cost_low`，配對函式帶賣出日；仿Yahoo 配對選項加這三個，選當沖時輸入列「當沖」自動勾且鎖住。規格追加在 `docs/specs/明細未實現與當沖試算.md`。新版同步（b66be32）。
+**為什麼**：Elsa 11/23 影片：盤中手 key 當沖，配對預設沖到舊庫存，沒有匯入頁的「只沖當天」；今天買兩張只沖一張還要能選成本高或低的。
+**驗證**：pytest 261 passed（新增 test_today_daytrade_and_cost_high_low）；AppTest：今天買 100、選成本高的先＋當沖 → 當沖自動勾、只沖今天那筆、預估 +774（同當沖試算），按鈕「確認新增：賣出（當沖）」。
+**下一步**：請 Elsa／Peggy 試；圖解給 Peggy 確認。
