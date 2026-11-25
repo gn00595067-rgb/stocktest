@@ -174,10 +174,13 @@ def undo_batch(session, batch_id: str, user: str) -> int:
     if not ids:
         return 0
     ids = list(set(ids) | _unref_in_range(session, user, ids))
+    from services import audit_service as audit   # 操作紀錄（11/25）：刪之前拍快照（含書號）
+    before = audit.snapshot_trades(session, ids)
     session.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id.in_(ids)
                                           | CustomMatchRule.buy_trade_id.in_(ids)).delete(synchronize_session=False)
     session.query(Trade).filter(Trade.id.in_(ids)).delete(synchronize_session=False)
     session.execute(delete(trade_refs).where(trade_refs.c.trade_id.in_(ids)))
+    audit.log_many(session, "undo_import", "舊系統・對帳單匯入", before, note=f"復原匯入｜批次 {batch_id}（共 {len(set(ids))} 筆）")
     return len(set(ids))
 
 

@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 from db.database import get_session
 from db.models import CustomMatchRule, StockMaster, Trade
 from services import trade_ref_service as trs
+from services import audit_service as audit
 from services.broker_statement import (
     DUP_IMPORT, KEYED_EXACT, KEYED_MERGED, NEW, REVIEW, SELL_STRATEGIES, STATUS_LABEL,
     assign_tmp_ids, build_name_map, classify_rows, mark_cross_user_dups, parse_statement,
@@ -676,6 +677,12 @@ def render_broker_statement_section():
             st.error("這份對帳單**剛剛已經匯入過了**（可能按了兩次、或另一個視窗同時在匯），這次沒有寫入。"
                      "請重新整理頁面確認。")
             return
+        # 操作紀錄（11/25）：會被修正／刪除／更新費稅的既有交易，動之前先拍快照
+        _fix_ids = [fx["trade_id"] for _k, fx in fixes]
+        _merge_del = [i for _k, fx in fixes for i in fx.get("delete_ids", [])]
+        _fee_ids = [u["trade_id"] for u in fee_updates if u["trade_id"] not in _fix_ids] if do_fee else []
+        _before_edit = audit.snapshot_trades(sess, _fix_ids + _fee_ids, "edited")
+        _before_del = audit.snapshot_trades(sess, _merge_del + sorted(orphan_del), "deleted")
         id_map = {}
         for r in sorted(to_import, key=lambda x: x["seq"]):
             t = Trade(user=r["user"], stock_id=r["stock_id"], trade_date=r["trade_date"], side=r["side"],
@@ -729,6 +736,24 @@ def render_broker_statement_section():
                 t = sess.get(Trade, upd["trade_id"])
                 if t is not None:
                     t.fee, t.tax = upd["fee"], upd["tax"]
+        _src = "舊系統・對帳單匯入"
+        _fx_by = {fx["trade_id"]: fx for _k, fx in fixes}
+        _fee_by = {u["trade_id"]: u for u in fee_updates}
+        for b in _before_edit:
+            fx = _fx_by.get(b["trade"]["id"])
+            if fx:
+                audit.log(sess, "import_fix", _src, before=b,
+                          after={k: fx[k] for k in ("quantity", "price", "fee", "tax")},
+                          note=("照對帳單修正" + (f"（{len(fx['delete_ids']) + 1} 筆合成一筆）" if fx.get("delete_ids") else ""))
+                          + f"｜批次 {batch_id}")
+            else:
+                u = _fee_by.get(b["trade"]["id"], {})
+                audit.log(sess, "import_fix", _src, before=b, after={"fee": u.get("fee"), "tax": u.get("tax")},
+                          note=f"照對帳單更新手續費／稅｜批次 {batch_id}")
+        for b in _before_del:
+            audit.log(sess, "import_delete", _src, before=b,
+                      note=("照對帳單合成一筆，刪掉這筆" if b["trade"]["id"] in _merge_del else "對帳單沒有、勾選刪除的手 key")
+                      + f"｜批次 {batch_id}")
         sess.commit()
         st.session_state.pop("bs_split", None)   # 下一份對帳單預設回到整份給一個人
         st.session_state["bs_done_msg"] = (

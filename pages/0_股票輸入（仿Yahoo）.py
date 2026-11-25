@@ -45,6 +45,7 @@ from services.trade_entry_service import (
 import pandas as pd
 from services.mobile_ui import inject_mobile_css
 import services.group_portfolio as gp
+from services import audit_service as audit
 from services.tab_sorter import tab_sorter
 import importlib
 import inspect
@@ -65,6 +66,7 @@ login_guard()
 render_auth_sidebar()
 
 POLICY = "CUSTOM_PLUS_FIFO"   # 與庫存損益、交易輸入頁同口徑
+_SRC = "舊系統・仿Yahoo"      # 操作紀錄的來源
 # 展開區：新增列與交易明細共用前 7 欄寬度（日期｜買賣｜股數｜股價｜手續費｜稅｜金額/市值），上下對齊
 _DETAIL_COLS = [1.2, 1.2, 0.9, 0.9, 0.5, 0.5, 1.05, 1.1, 0.35, 0.35]   # 未實現(扣費稅)（Peggy 11/23）；最後兩欄＝✏️、🗑
 _FORM_COLS = [1.25, 1.25, 0.95, 0.95, 0.55, 0.55, 1.1, 0.7]           # 最後一欄＝當沖（賣出）或 ✕（多筆買入）
@@ -630,11 +632,16 @@ def _edit_trade_form(t, holding_qty: int, quote: dict, edit_key: str):
                 if row is None:
                     st.error("找不到這筆交易（可能已被刪除），請重新整理。")
                     return
+                _before = audit.snapshot_trades(sess, [t.id], "edited")   # 操作紀錄（11/25）
                 row.trade_date, row.quantity, row.price = d, int(qty), float(price)
                 row.fee, row.tax = fee, tax
                 if changed_core:
                     sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == t.id).delete()
                     sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == t.id).delete()
+                if _before:
+                    audit.log(sess, "edit", _SRC, before=_before[0],
+                              after={"tradeDate": f"{d:%Y-%m-%d}", "quantity": int(qty), "price": float(price),
+                                     "fee": fee, "tax": tax, "clearRules": bool(changed_core)})
                 sess.commit()
             except Exception as e:
                 sess.rollback()
@@ -844,6 +851,12 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
                         for buy_id, mq in plan:
                             sess.add(CustomMatchRule(sell_trade_id=new_t.id, buy_trade_id=int(buy_id),
                                                      matched_qty=int(mq)))
+                    audit.log(sess, "add", _SRC,
+                              trade={"id": int(new_t.id), "user": group.trader, "stockId": sid,
+                                     "tradeDate": f"{e['d']:%Y-%m-%d}"},
+                              after={"side": side, "quantity": int(e["qty"]), "price": float(e["price"]),
+                                     "fee": e["fee"], "tax": e["tax"], "isDaytrade": bool(e["is_dt"]),
+                                     "rules": [[int(b), int(q)] for b, q in plan]})
                 sess.commit()
             except Exception as e:
                 sess.rollback()
@@ -918,9 +931,11 @@ def _expanded(row: dict, group: gp.GroupSpec, stock_trades: list, holding_by: di
                 else:
                     sess = get_session()
                     try:
+                        _before = audit.snapshot_trades(sess, [t.id])   # 操作紀錄（11/25）
                         sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id == t.id).delete()
                         sess.query(CustomMatchRule).filter(CustomMatchRule.buy_trade_id == t.id).delete()
                         sess.query(Trade).filter(Trade.id == t.id).delete()
+                        audit.log_many(sess, "delete", _SRC, _before)
                         sess.commit()
                     finally:
                         sess.close()
@@ -973,9 +988,11 @@ def _bulk_delete(sid: str, trades_desc: list):
                 return
             sess = get_session()
             try:
+                _before = audit.snapshot_trades(sess, ids)   # 操作紀錄（11/25）
                 sess.query(CustomMatchRule).filter(CustomMatchRule.sell_trade_id.in_(ids)
                                                    | CustomMatchRule.buy_trade_id.in_(ids)).delete(synchronize_session=False)
                 sess.query(Trade).filter(Trade.id.in_(ids)).delete(synchronize_session=False)
+                audit.log_many(sess, "delete", _SRC, _before, note=f"一次刪多筆（共 {len(ids)} 筆）")
                 sess.commit()
             except Exception as e:
                 sess.rollback()
