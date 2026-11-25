@@ -392,7 +392,8 @@ def render_broker_statement_section():
                     "買/賣": "買" if r["side"] == "BUY" else "賣", "股數": r["quantity"], "價格": r["price"],
                 } for r, u in cross]), use_container_width=True, hide_index=True)
 
-    # ⚠️ 要確認的組：預設先不處理；可選「照對帳單修正手 key 的那筆」或「另外匯入」（Peggy 2026-11-06：key 錯的要修正）
+    # ⚠️ 要確認的組：預設「照對帳單修正」（11/25 Elsa：對帳單是正確的，蓋過手 key）；
+    # 也可選「先不處理」或「另外匯入」。手 key 好幾筆也能修正：留第一筆改成對帳單合計、其他刪掉
     review_groups = {}
     for r in rows:
         if r["status"] == REVIEW:
@@ -404,21 +405,25 @@ def render_broker_statement_section():
             u, d, sid, side = gk
             desc = "、".join(f"{r['price']:g} × {r['quantity']:,}" for r in grp)
             tids = grp[0].get("review_trade_ids") or []
-            opts = ["skip"] + (["fix"] if len(tids) == 1 else []) + ["import"]
+            opts = ["skip"] + (["fix"] if tids else []) + ["import"]
             choice = st.radio(
                 f"{u}｜{d:%m/%d} {sid} {name_by_id.get(sid, '')} {'買' if side == 'BUY' else '賣'}｜"
                 f"手 key：{grp[0]['review_with']}｜對帳單：{desc}",
-                opts, horizontal=True, key=f"bs_review_{u}_{d}_{sid}_{side}",
-                format_func={"skip": "先不處理", "fix": "✏️ 手 key 打錯了：照對帳單修正那筆",
+                opts, horizontal=True, key=f"bs_review_{u}_{d}_{sid}_{side}", index=opts.index("fix") if tids else 0,
+                format_func={"skip": "先不處理", "fix": "✏️ 手 key 打錯了：照對帳單修正" + ("那筆" if len(tids) == 1 else f"（{len(tids)} 筆合成一筆）"),
                              "import": "手 key 那筆是另一筆交易：對帳單照樣匯入"}.get,
             )
             if choice == "import":
                 force.add(gk)
             elif choice == "fix":
-                t0 = next(t for t in ctx[u].trades if int(t.id) == tids[0])
-                fx = plan_review_fix(grp, t0)
+                ts = [t for t in ctx[u].trades if int(t.id) in tids]
+                t0 = next(t for t in ts if int(t.id) == tids[0])
+                fx = plan_review_fix(grp, t0, ts)
                 fixes.append((gk, fx))
-                if fx["qty_changed"]:
+                if fx["delete_ids"]:
+                    st.caption(f"　↳ 手 key 的 {len(ts)} 筆（{fx['old']}）會合成一筆、改成對帳單的 {fx['quantity']:,} 股"
+                               f"（均價 {fx['price']:g}），原本的沖銷配對會清掉、改用預設沖銷（要指定再到「自定沖銷設定」）。")
+                elif fx["qty_changed"]:
                     st.caption(f"　↳ 股數會從 {int(t0.quantity):,} 改成 {fx['quantity']:,}，這筆原本的沖銷配對會清掉、改用預設沖銷"
                                "（要指定再到「自定沖銷設定」）。")
         if len(review_groups) > len(fixes) + len(force):
@@ -447,10 +452,12 @@ def render_broker_statement_section():
 
     # 修正／刪除先套用到記憶體裡的交易，下面配當沖、沖銷、預估損益才會照修正後的算
     fix_by_tid = {fx["trade_id"]: fx for _gk, fx in fixes}
+    fix_del = {i for _gk, fx in fixes for i in fx.get("delete_ids", [])}   # 合成一筆時其他幾筆手 key
     for u in users:
         c = ctx[u]
-        drop = orphan_del | {tid for tid, fx in fix_by_tid.items() if fx["qty_changed"]}
+        drop = orphan_del | fix_del | {tid for tid, fx in fix_by_tid.items() if fx["qty_changed"]}
         c.rules = [x for x in c.rules if x[0] not in drop and x[1] not in drop]
+        c.trades = [t for t in c.trades if int(t.id) not in fix_del]
         c.trades = [SimpleNamespace(**{**{k: getattr(t, k) for k in ("id", "user", "stock_id", "trade_date", "side",
                                                                    "price", "quantity", "fee", "tax", "is_daytrade")},
                                        **({k: fix_by_tid[int(t.id)][k] for k in ("price", "quantity", "fee", "tax")}
@@ -688,6 +695,10 @@ def render_broker_statement_section():
             if fx["qty_changed"]:
                 sess.query(CustomMatchRule).filter((CustomMatchRule.sell_trade_id == fx["trade_id"])
                                                    | (CustomMatchRule.buy_trade_id == fx["trade_id"])).delete()
+            for tid in fx.get("delete_ids", []):   # 手 key 好幾筆合成一筆：其他幾筆連同沖銷配對刪掉
+                sess.query(CustomMatchRule).filter((CustomMatchRule.sell_trade_id == tid)
+                                                   | (CustomMatchRule.buy_trade_id == tid)).delete()
+                sess.query(Trade).filter(Trade.id == tid).delete()
         for (s_id, b_id), q in all_rules.items():
             sess.add(CustomMatchRule(sell_trade_id=id_map.get(s_id, s_id),
                                      buy_trade_id=id_map.get(b_id, b_id), matched_qty=int(q)))

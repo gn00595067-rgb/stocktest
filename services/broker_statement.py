@@ -320,14 +320,20 @@ def classify_rows(rows: List[dict], trades: List, refs: List[Tuple[date, str, in
     return out
 
 
-def plan_review_fix(grp: List[dict], trade) -> dict:
-    """「要確認」那組選「以對帳單修正手 key 的」：把那一筆手 key 改成對帳單這幾列的合計（同合併 key 的口徑：股數加總、加權均價）。"""
+def plan_review_fix(grp: List[dict], trade, extra_trades: Iterable = ()) -> dict:
+    """「要確認」那組選「以對帳單修正手 key 的」：把那一筆手 key 改成對帳單這幾列的合計（同合併 key 的口徑：股數加總、加權均價）。
+
+    extra_trades：同一組裡其他幾筆手 key（11/25 Elsa：手 key 兩筆時也要能照對帳單修正）——一併刪掉，
+    只留第一筆改成對帳單合計；回傳 delete_ids。這幾筆的沖銷配對跟著清掉（qty_changed＝True）。"""
     qty = sum(r["quantity"] for r in grp)
     price = round(sum(r["price"] * r["quantity"] for r in grp) / qty, 4) if qty else 0.0
     old_qty = int(trade.quantity or 0)
+    extra = [t for t in extra_trades if int(t.id) != int(trade.id)]
+    old = "、".join(f"{float(t.price):g} × {int(t.quantity or 0):,}" for t in [trade] + extra)
     return {"trade_id": int(trade.id), "price": price, "quantity": qty,
             "fee": sum(r["fee"] for r in grp), "tax": sum(r["tax"] for r in grp),
-            "old": f"{float(trade.price):g} × {old_qty:,}", "qty_changed": qty != old_qty}
+            "old": old, "qty_changed": qty != old_qty or bool(extra),
+            "delete_ids": [int(t.id) for t in extra]}
 
 
 def orphan_keyed_trades(rows: List[dict], trades: List, refs: List[Tuple[date, str, int]],

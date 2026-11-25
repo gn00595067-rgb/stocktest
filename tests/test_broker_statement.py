@@ -574,3 +574,18 @@ def test_split_twice_keeps_totals():
     assert sorted((x["user"], x["quantity"]) for x in rows) == [("Peggy姐", 3000), ("短線", 2000)]
     for k in ("fee", "tax", "net"):
         assert abs(sum(x[k] for x in rows) - {"fee": 161, "tax": 678, "net": 451161}[k]) < 1e-6
+
+
+def test_review_fix_merges_several_keyed_trades():
+    """11/25 Elsa：手 key 兩筆（3650×110、3655×40）、對帳單五筆 → 也能照對帳單修正：留第一筆改成合計、其他刪掉。"""
+    d = date(2026, 11, 25)
+    grp = [dict(price=p, quantity=q, fee=f, tax=0) for p, q, f in
+           [(3655, 10, 13), (3650, 10, 13), (3645, 100, 130), (3650, 100, 130), (3655, 30, 39)]]
+    keyed = [T(1, "2454", d, "BUY", 3650, 110, 143, 0), T(2, "2454", d, "BUY", 3655, 40, 52, 0)]
+    fx = plan_review_fix(grp, keyed[0], keyed)
+    assert fx["trade_id"] == 1 and fx["delete_ids"] == [2]
+    assert fx["quantity"] == 250 and fx["fee"] == 325 and fx["qty_changed"] is True
+    assert abs(fx["price"] - (3655 * 10 + 3650 * 10 + 3645 * 100 + 3650 * 100 + 3655 * 30) / 250) < 1e-3
+    assert fx["old"] == "3650 × 110、3655 × 40"
+    # 只有一筆手 key：同舊行為
+    assert plan_review_fix(grp, keyed[0])["delete_ids"] == []
